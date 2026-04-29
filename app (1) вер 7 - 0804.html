@@ -1,0 +1,2515 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
+  <style>
+    :root {
+      --bg: #f6f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #6d28d9;
+      --accent-soft: #f3e8ff;
+      --good: #0f9d58;
+      --bad: #c62828;
+      --shadow: 0 12px 28px rgba(17, 24, 39, 0.08);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .wrap { max-width: 1560px; margin: 0 auto; padding: 24px; }
+    .hero {
+      display: flex; gap: 16px; align-items: center; justify-content: space-between;
+      margin-bottom: 22px; flex-wrap: wrap;
+    }
+    .hero h1 { margin: 0; font-size: 32px; line-height: 1.1; }
+    .hero p { margin: 8px 0 0; color: var(--muted); max-width: 820px; }
+    .badge {
+      padding: 10px 14px; background: var(--accent-soft); color: var(--accent);
+      border-radius: 999px; font-weight: 700; white-space: nowrap;
+    }
+    .tabs {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;
+    }
+    .tab-btn {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--text);
+      padding: 11px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .page-panel { display: none; }
+    .page-panel.active { display: block; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(560px, 1fr) minmax(360px, 520px);
+      gap: 22px;
+      align-items: start;
+    }
+    .stack { display: grid; gap: 18px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+    .card h2 { margin: 0 0 6px; font-size: 20px; }
+    .sub { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .field { display: grid; gap: 7px; }
+    .field label { font-size: 13px; color: var(--muted); font-weight: 600; }
+    .input, .select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 15px;
+      color: var(--text);
+      background: #fff;
+      outline: none;
+      transition: 0.2s ease;
+    }
+    .input:focus, .select:focus {
+      border-color: #c4b5fd;
+      box-shadow: 0 0 0 4px rgba(109, 40, 217, 0.08);
+    }
+    .hint { color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      background: #fff;
+      color: var(--text);
+    }
+    .results { position: sticky; top: 18px; display: grid; gap: 18px; }
+    .kpi-main {
+      border-radius: 16px;
+      padding: 18px;
+      background: linear-gradient(135deg, #faf5ff, #ffffff);
+      border: 1px solid #e9d5ff;
+    }
+    .kpi-main .title {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    .kpi-main .value {
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1.05;
+    }
+    .positive { color: var(--good); }
+    .negative { color: var(--bad); }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .mini {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: #fff;
+    }
+    .mini .label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-weight: 700;
+    }
+    .mini .value {
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+    .list {
+      display: grid; gap: 10px;
+    }
+    .row {
+      display: flex; justify-content: space-between; gap: 12px;
+      border-bottom: 1px dashed var(--line);
+      padding-bottom: 10px;
+      font-size: 14px;
+    }
+    .row:last-child { border-bottom: none; padding-bottom: 0; }
+    .row .key { color: var(--muted); }
+    .row .val { font-weight: 700; text-align: right; }
+    .inline-check {
+      display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 14px;
+    }
+    .note {
+      font-size: 13px; color: var(--muted); line-height: 1.45;
+      background: #fafafa; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px;
+    }
+    .hidden { display: none !important; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .results { position: static; }
+    }
+    @media (min-width: 1400px) {
+      .layout { grid-template-columns: minmax(760px, 1fr) minmax(420px, 560px); }
+      #products-tab .layout, #shipments-tab .layout, #analytics-tab .layout { grid-template-columns: minmax(0, 1fr) 420px; }
+    }
+    @media (max-width: 720px) {
+      .grid, .grid-3, .mini-grid { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 28px; }
+      .wrap { padding: 16px; }
+    }
+  
+    .toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+    .btn-primary, .btn-secondary, .btn-danger {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: .2s ease;
+    }
+    .btn-primary { background: linear-gradient(135deg,#6d28d9,#8b5cf6); color:#fff; border-color:#6d28d9; box-shadow:0 12px 24px rgba(109,40,217,.18); }
+    .btn-secondary { background:#fff; color:var(--text); }
+    .btn-danger { background:#fff1f2; color:#b91c1c; border-color:#fecdd3; }
+    .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:14px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; background:#fff; table-layout: fixed; }
+    th, td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:#fafafa; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.02em; position:sticky; top:0; }
+    td { overflow-wrap: anywhere; word-break: break-word; }
+    tr:last-child td { border-bottom:none; }
+    .chip { display:inline-block; padding:6px 10px; border-radius:999px; background:#f3f4f6; font-size:12px; font-weight:700; }
+    .muted { color:var(--muted); }
+    .empty { padding:18px; border:1px dashed var(--line); border-radius:14px; color:var(--muted); background:#fff; }
+    .canvas-box { border:1px solid var(--line); border-radius:16px; background:#fff; padding:16px; min-height:320px; }
+    .chart-title { margin:0 0 8px; font-size:18px; }
+    .svg-chart { width:100%; height:280px; display:block; }
+    .pill-good { background:#ecfdf5; color:#065f46; }
+    .pill-bad { background:#fef2f2; color:#991b1b; }
+
+  
+    #products-tab .layout, #shipments-tab .layout, #analytics-tab .layout { grid-template-columns: minmax(0, 1fr) 380px; }
+    #products-tab .card, #shipments-tab .card, #analytics-tab .card { overflow: hidden; }
+    #products-tab .results, #shipments-tab .results, #analytics-tab .results { min-width: 0; }
+    #products-tab .table-wrap, #shipments-tab .table-wrap { width: 100%; max-width: 100%; }
+    #products-tab th:nth-child(1), #products-tab td:nth-child(1) { width: 22%; }
+    #products-tab th:nth-child(2), #products-tab td:nth-child(2) { width: 18%; }
+    #products-tab th:nth-child(3), #products-tab td:nth-child(3) { width: 14%; text-align: center; }
+    #products-tab th:nth-child(4), #products-tab td:nth-child(4) { width: 14%; }
+    #products-tab th:nth-child(5), #products-tab td:nth-child(5) { width: 18%; }
+    #products-tab th:nth-child(6), #products-tab td:nth-child(6) { width: 14%; }
+    .product-name-cell { font-weight: 700; line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+    .sku-cell { font-weight: 800; line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+    .open-link-btn {
+      display:inline-flex; align-items:center; justify-content:center;
+      min-width: 92px; padding: 10px 14px; border-radius: 12px;
+      border: 1px solid var(--line); background:#fff; color:var(--text);
+      text-decoration:none; font-weight:700;
+    }
+    .search-select-wrap { position: relative; }
+    .search-dropdown {
+      position: absolute; left: 0; right: 0; top: calc(100% + 6px);
+      background: #fff; border: 1px solid var(--line); border-radius: 14px;
+      box-shadow: var(--shadow); z-index: 20; max-height: 240px; overflow: auto; display: none;
+    }
+    .search-dropdown.open { display: block; }
+    .search-option {
+      padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--line);
+    }
+    .search-option:last-child { border-bottom: none; }
+    .search-option:hover, .search-option.active { background: #faf5ff; }
+    .search-option .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  
+    .editor-panel { display: none; }
+    .editor-panel.open { display: block; }
+    .editor-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
+    .editor-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    
+
+    .app-shell { display:grid; grid-template-columns: 300px minmax(0,1fr); gap: 22px; align-items:start; }
+    .sidebar {
+      position: sticky; top: 18px; background: rgba(255,255,255,.82); backdrop-filter: blur(10px);
+      border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); padding: 18px;
+      min-height: calc(100vh - 36px);
+    }
+    .brand-box { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+    .brand-logo {
+      width: 48px; height: 48px; border-radius: 16px; display:grid; place-items:center;
+      background: linear-gradient(135deg,#6d28d9,#8b5cf6); color:#fff; font-size:20px; font-weight:800;
+      box-shadow: 0 14px 30px rgba(109,40,217,.22);
+    }
+    .brand-meta h1 { margin:0; font-size:22px; }
+    .brand-meta p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .lang-switch { display:flex; gap:8px; margin: 12px 0 18px; }
+    .lang-btn {
+      flex:1; border:1px solid var(--line); background:#fff; border-radius:12px; padding:10px 12px;
+      font-size:13px; font-weight:800; cursor:pointer;
+    }
+    .lang-btn.active { background: var(--accent); color:#fff; border-color:var(--accent); }
+    .nav-menu { display:grid; gap:8px; }
+    .nav-btn {
+      border: 1px solid transparent; background: transparent; border-radius: 16px; padding: 14px 14px;
+      display:flex; align-items:center; gap:12px; cursor:pointer; font-size:15px; font-weight:700; color:var(--text);
+      text-align:left;
+    }
+    .nav-btn:hover { background:#faf5ff; border-color:#ede9fe; }
+    .nav-btn.active { background: linear-gradient(135deg,#6d28d9,#8b5cf6); color:#fff; box-shadow:0 12px 24px rgba(109,40,217,.18); }
+    .nav-icon {
+      width:38px; height:38px; border-radius:12px; background: rgba(109,40,217,.10); color: var(--accent);
+      display:grid; place-items:center; font-size:18px; flex:0 0 auto;
+    }
+    .nav-btn.active .nav-icon { background: rgba(255,255,255,.18); color:#fff; }
+    .content-wrap { min-width:0; }
+    .topbar {
+      display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:18px; flex-wrap:wrap;
+    }
+    .topbar-card {
+      background: rgba(255,255,255,.82); backdrop-filter: blur(10px); border:1px solid var(--line);
+      border-radius: 22px; box-shadow: var(--shadow); padding: 18px 20px;
+    }
+    .topbar-card h2 { margin:0 0 6px; font-size:28px; line-height:1.05; }
+    .topbar-card p { margin:0; color:var(--muted); max-width:760px; }
+    .status-chip {
+      display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); background:#fff;
+      border-radius:999px; padding:11px 14px; font-size:13px; font-weight:800;
+    }
+    .status-dot { width:10px; height:10px; border-radius:50%; background:#16a34a; display:inline-block; }
+    .dashboard-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }
+    .dashboard-card {
+      background: var(--card); border:1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); padding: 22px;
+      display:grid; gap:14px; cursor:pointer; transition: .2s ease;
+    }
+    .dashboard-card:hover { transform: translateY(-2px); box-shadow: 0 18px 36px rgba(17,24,39,.10); }
+    .dashboard-card .dash-icon {
+      width:56px; height:56px; border-radius:18px; background: linear-gradient(135deg,#faf5ff,#ede9fe);
+      display:grid; place-items:center; font-size:26px;
+    }
+    .dashboard-card h3 { margin:0; font-size:22px; }
+    .dashboard-card p { margin:0; color:var(--muted); }
+    .dashboard-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .dashboard-link { font-weight:800; color:var(--accent); }
+
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-box">
+          <div class="brand-logo">YO</div>
+          <div class="brand-meta">
+            <h1 id="appBrandTitle">YO</h1>
+            <p id="appBrandSub">Marketplace operating system</p>
+          </div>
+        </div>
+
+        <div class="lang-switch">
+          <button class="lang-btn active" data-lang="ru">RU</button>
+          <button class="lang-btn" data-lang="uz">UZ</button>
+        </div>
+
+        <nav class="nav-menu">
+          <button class="nav-btn active" data-page="dashboard-page">
+            <span class="nav-icon">🏠</span>
+            <span data-i18n="menu_dashboard">Главная</span>
+          </button>
+          <button class="nav-btn" data-page="unit-tab">
+            <span class="nav-icon">📊</span>
+            <span data-i18n="menu_unit">Юнит-экономика</span>
+          </button>
+          <button class="nav-btn" data-page="cost-tab">
+            <span class="nav-icon">🧵</span>
+            <span data-i18n="menu_cost">Себестоимость</span>
+          </button>
+          <button class="nav-btn" data-page="products-tab">
+            <span class="nav-icon">📦</span>
+            <span data-i18n="menu_products">База товаров</span>
+          </button>
+          <button class="nav-btn" data-page="shipments-tab">
+            <span class="nav-icon">🚚</span>
+            <span data-i18n="menu_shipments">Поставки</span>
+          </button>
+          <button class="nav-btn" data-page="analytics-tab">
+            <span class="nav-icon">📈</span>
+            <span data-i18n="menu_analytics">Аналитика</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="content-wrap">
+        <div class="topbar">
+          <div class="topbar-card">
+            <h2 id="heroTitle">YO — главная панель</h2>
+            <p id="heroText">Выбери нужный раздел слева или открой один из быстрых сценариев ниже.</p>
+          </div>
+          <div class="status-chip">
+            <span class="status-dot"></span>
+            <span id="statusChipText">Интерфейс v5 · dashboard mode</span>
+          </div>
+        </div>
+
+        <section class="page-panel active" id="dashboard-page">
+          <div class="dashboard-grid">
+            <article class="dashboard-card" data-open-page="unit-tab">
+              <div class="dash-icon">📊</div>
+              <div>
+                <h3 data-i18n="card_unit_title">Юнит-экономика</h3>
+                <p data-i18n="card_unit_text">Считай прибыль, маржу, ROI, точку безубыточности, логистику и НДС по одному SKU.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">P&L</span>
+                <span class="dashboard-link" data-i18n="open_section">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="cost-tab">
+              <div class="dash-icon">🧵</div>
+              <div>
+                <h3 data-i18n="card_cost_title">Себестоимость</h3>
+                <p data-i18n="card_cost_text">Собери полную себестоимость товара из ткани, пошива, упаковки, логистики и прочих затрат.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">COGS</span>
+                <span class="dashboard-link" data-i18n="open_section">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="products-tab">
+              <div class="dash-icon">📦</div>
+              <div>
+                <h3 data-i18n="card_products_title">База товаров</h3>
+                <p data-i18n="card_products_text">Храни SKU, ссылки и снапшоты расчётов, чтобы быстро собирать поставки и работать без дублей.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">SKU DB</span>
+                <span class="dashboard-link" data-i18n="open_section">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="shipments-tab">
+              <div class="dash-icon">🚚</div>
+              <div>
+                <h3 data-i18n="card_shipments_title">Поставки и аналитика</h3>
+                <p data-i18n="card_shipments_text">Собирай поставки, выгружай их и смотри динамику себестоимости и сумм по периодам.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">Flow</span>
+                <span class="dashboard-link" data-i18n="open_section">Открыть раздел →</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page-panel" id="unit-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Блок А. Продажа</h2>
+            <p class="sub">Основные данные для расчёта прибыли по 1 единице товара.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="price">Цена продажи, сум</label>
+                <input id="price" class="input" type="number" min="0" step="0.01" value="148500" />
+              </div>
+              <div class="field">
+                <label for="commission">Комиссия маркетплейса, %</label>
+                <input id="commission" class="input" type="number" min="0" step="0.01" value="22" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Блок Б. Себестоимость</h2>
+            <p class="sub">Себестоимость можно ввести вручную или подставить из вкладки расчёта товара.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="cost">Себестоимость товара, сум</label>
+                <input id="cost" class="input" type="number" min="0" step="0.01" value="86214" />
+              </div>
+              <div class="field">
+                <label for="costVatMode">Себестоимость</label>
+                <select id="costVatMode" class="select">
+                  <option value="with">включает НДС</option>
+                  <option value="without">без НДС</option>
+                </select>
+              </div>
+            </div>
+            <label class="inline-check">
+              <input id="useProductCost" type="checkbox" />
+              Автоматически брать себестоимость из вкладки «Себестоимость товара»
+            </label>
+            <p class="hint" id="productCostSyncText">Сейчас можно считать юнит отдельно, без привязки к вкладке себестоимости.</p>
+          </div>
+
+          <div class="card">
+            <h2>Блок В. Маркетплейс</h2>
+            <p class="sub">Логистика и хранение считаются по ВГХ и оборачиваемости.</p>
+            <div class="grid-3">
+              <div class="field">
+                <label for="length">Длина, мм</label>
+                <input id="length" class="input" type="number" min="0" step="1" value="310" />
+              </div>
+              <div class="field">
+                <label for="width">Ширина, мм</label>
+                <input id="width" class="input" type="number" min="0" step="1" value="200" />
+              </div>
+              <div class="field">
+                <label for="height">Высота, мм</label>
+                <input id="height" class="input" type="number" min="0" step="1" value="130" />
+              </div>
+            </div>
+            <div class="pill-row">
+              <div class="pill">1-й литр: 5 250 сум</div>
+              <div class="pill">каждый следующий: 250 сум</div>
+              <div class="pill">максимум логистики: 50 000 сум</div>
+            </div>
+            <div class="grid" style="margin-top: 14px;">
+              <div class="field">
+                <label for="stockStatus">Статус товара</label>
+                <select id="stockStatus" class="select">
+                  <option value="existing">уже на складе</option>
+                  <option value="new">только выйдет / новый SKU</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="turnover">Оборачиваемость, дней</label>
+                <input id="turnover" class="input" type="number" min="0" step="1" value="90" />
+              </div>
+            </div>
+            <div class="grid hidden" id="newSkuBlock">
+              <div class="field">
+                <label for="newSkuDays">Дней с первой поставки</label>
+                <input id="newSkuDays" class="input" type="number" min="0" step="1" value="10" />
+              </div>
+            </div>
+            <p class="hint" id="storageRuleText"></p>
+            <p class="hint" id="storageSyncText">Пока расчёт юнит-экономики использует свои параметры ВГХ и хранения.</p>
+          </div>
+
+          <div class="card">
+            <h2>Блок Г. Налоги</h2>
+            <p class="sub">НДС считается по схеме: исходящий минус входящий.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="vatRate">Ставка НДС, %</label>
+                <input id="vatRate" class="input" type="number" min="0" step="0.01" value="12" />
+              </div>
+              <div class="field">
+                <label for="saleVatMode">Цена продажи</label>
+                <select id="saleVatMode" class="select">
+                  <option value="with">включает НДС</option>
+                  <option value="without">без НДС</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <div class="kpi-main">
+              <div class="title">Прибыль с 1 единицы</div>
+              <div class="value" id="profitMain">0 сум</div>
+            </div>
+
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Маржа</div>
+                <div class="value" id="marginVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">Наценка</div>
+                <div class="value" id="markupVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">ROI</div>
+                <div class="value" id="roiVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">Точка безубыточности</div>
+                <div class="value" id="bepVal">0 сум</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Детализация</h2>
+            <div class="list">
+              <div class="row"><div class="key">Объём, л</div><div class="val" id="litersVal">0</div></div>
+              <div class="row"><div class="key">Округлённый литраж</div><div class="val" id="roundedLitersVal">0</div></div>
+              <div class="row"><div class="key">Комиссия</div><div class="val" id="commissionVal">0 сум</div></div>
+              <div class="row"><div class="key">Логистика Uzum</div><div class="val" id="logisticsVal">0 сум</div></div>
+              <div class="row"><div class="key">Хранение в день</div><div class="val" id="storageVal">0 сум</div></div>
+              <div class="row"><div class="key">Исходящий НДС</div><div class="val" id="outputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Входящий НДС</div><div class="val" id="inputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Источник входящего НДС</div><div class="val" id="inputVatSourceVal">ручной режим</div></div>
+              <div class="row"><div class="key">Статус переноса из себестоимости</div><div class="val" id="linkedProductVal">нет связи</div></div>
+              <div class="row"><div class="key">НДС к оплате</div><div class="val" id="vatPayableVal">0 сум</div></div>
+              <div class="row"><div class="key">Все расходы</div><div class="val" id="totalCostsVal">0 сум</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Пояснение</h2>
+            <div class="note">
+              Комиссия считается от цены продажи. Логистика и хранение считаются отдельно и не зависят от того, что комиссия уже удержана. Точка безубыточности показывает минимальную цену, при которой прибыль становится нулевой.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page-panel" id="cost-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Калькуляция самого товара</h2>
+            <p class="sub">Тут считается фактическая себестоимость единицы товара до передачи на склад Uzum Market.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="sku">SKU товара</label>
+                <input id="sku" class="input" type="text" placeholder="например, BHKRASH-SIN" />
+              </div>
+              <div class="field">
+                <label for="productName">Название товара (по желанию)</label>
+                <input id="productName" class="input" type="text" placeholder="например, Наволочка 50×70 синяя" />
+              </div>
+              <div class="field">
+                <label for="productArticle1c">Артикул 1С</label>
+                <input id="productArticle1c" class="input" type="text" placeholder="например, ART-0001" />
+              </div>
+              <div class="field">
+                <label for="productCode1c">Код 1С</label>
+                <input id="productCode1c" class="input" type="text" placeholder="например, 000000123" />
+              </div>
+            </div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="productStockQty">Количество на остатке, шт</label>
+                <input id="productStockQty" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+              <div class="field">
+                <label for="productLink">Ссылка на товар (по желанию)</label>
+                <input id="productLink" class="input" type="text" placeholder="https://..." />
+              </div>
+              <div class="field">
+                <label for="fabricPrice">Цена ткани, сум</label>
+                <input id="fabricPrice" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label for="fabricVatIncluded">Ткань куплена с НДС?</label>
+                <select id="fabricVatIncluded" class="select">
+                  <option value="with">да, сумма уже с НДС</option>
+                  <option value="without">нет, сумма без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="fabricVatRate">Ставка НДС по закупке ткани, %</label>
+                <input id="fabricVatRate" class="input" type="number" min="0" step="0.01" value="12" />
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label for="fabricConsumption">Расход ткани на изделие</label>
+                <input id="fabricConsumption" class="input" type="number" min="0" step="0.001" value="0" />
+              </div>
+              <div class="field">
+                <label for="fabricUnit">Единица расхода ткани</label>
+                <select id="fabricUnit" class="select">
+                  <option value="m">метры</option>
+                  <option value="kg">килограммы</option>
+                  <option value="unit">условная единица</option>
+                </select>
+              </div>
+            </div>
+            <p class="hint">Стоимость ткани на изделие считается как цена ткани × расход ткани.</p>
+          </div>
+
+          <div class="card">
+            <h2>Расходы на товар</h2>
+            <div class="grid">
+              <div class="field">
+                <label for="sewingCost">Пошив, сум</label>
+                <input id="sewingCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="sewingCostVatIncluded">Пошив: сумма с НДС?</label>
+                <select id="sewingCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="packageCost">Пакет, сум</label>
+                <input id="packageCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="packageCostVatIncluded">Пакет: сумма с НДС?</label>
+                <select id="packageCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="zipperCost">Замок, сум</label>
+                <input id="zipperCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="zipperCostVatIncluded">Замок: сумма с НДС?</label>
+                <select id="zipperCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="elasticCost">Резинка, сум</label>
+                <input id="elasticCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="elasticCostVatIncluded">Резинка: сумма с НДС?</label>
+                <select id="elasticCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="polygraphyCost">Полиграфия, сум</label>
+                <input id="polygraphyCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="polygraphyCostVatIncluded">Полиграфия: сумма с НДС?</label>
+                <select id="polygraphyCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="stickersCost">Стикеры, сум</label>
+                <input id="stickersCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="stickersCostVatIncluded">Стикеры: сумма с НДС?</label>
+                <select id="stickersCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="promoPolygraphyCost">Рекламная полиграфия, сум</label>
+                <input id="promoPolygraphyCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="promoPolygraphyCostVatIncluded">Рекламная полиграфия: сумма с НДС?</label>
+                <select id="promoPolygraphyCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="inboundLogisticsCost">Логистика до склада Uzum, сум</label>
+                <input id="inboundLogisticsCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="inboundLogisticsCostVatIncluded">Логистика до склада Uzum: сумма с НДС?</label>
+                <select id="inboundLogisticsCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="transportBoxCost">Коробка транспортная, сум</label>
+                <input id="transportBoxCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="transportBoxCostVatIncluded">Коробка транспортная: сумма с НДС?</label>
+                <select id="transportBoxCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otherProductCost">Прочие расходы, сум</label>
+                <input id="otherProductCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="otherProductCostVatIncluded">Прочие расходы: сумма с НДС?</label>
+                <select id="otherProductCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Хранение для себестоимости</h2>
+            <p class="sub">Если товар уже лежит на складе и по нему идёт платное хранение, можно сразу включить это в себестоимость.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="productOnWarehouse">Товар уже на складе?</label>
+                <select id="productOnWarehouse" class="select">
+                  <option value="no">нет</option>
+                  <option value="yes">да</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="productStorageDays">Сколько дней хранения закладывать</label>
+                <input id="productStorageDays" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+            </div>
+
+            <div id="productWarehouseDetails" class="hidden">
+              <div class="grid" style="margin-top: 12px;">
+                <div class="field">
+                  <label for="productTurnover">Оборачиваемость, дней</label>
+                  <input id="productTurnover" class="input" type="number" min="0" step="1" value="90" />
+                </div>
+                <div class="field">
+                  <label for="productStockStatus">Статус SKU</label>
+                  <select id="productStockStatus" class="select">
+                    <option value="existing">уже на складе</option>
+                    <option value="new">только выйдет / новый SKU</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid-3" style="margin-top: 12px;">
+                <div class="field">
+                  <label for="productLength">Длина упаковки, мм</label>
+                  <input id="productLength" class="input" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="field">
+                  <label for="productWidth">Ширина упаковки, мм</label>
+                  <input id="productWidth" class="input" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="field">
+                  <label for="productHeight">Высота упаковки, мм</label>
+                  <input id="productHeight" class="input" type="number" min="0" step="1" value="0" />
+                </div>
+              </div>
+              <div class="grid hidden" id="productNewSkuBlock" style="margin-top: 12px;">
+                <div class="field">
+                  <label for="productNewSkuDays">Дней с первой поставки</label>
+                  <input id="productNewSkuDays" class="input" type="number" min="0" step="1" value="10" />
+                </div>
+              </div>
+              <p class="hint" id="productStorageRuleText"></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <div class="kpi-main">
+              <div class="title">Себестоимость изделия</div>
+              <div class="value" id="productCostMain">0 сум</div>
+            </div>
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Входящий НДС по себестоимости</div>
+                <div class="value" id="productInputVatVal">0 сум</div>
+              </div>
+              <div class="mini">
+                <div class="label">Себестоимость без входящего НДС</div>
+                <div class="value" id="productCostNetVatVal">0 сум</div>
+              </div>
+            </div>
+            <div style="margin-top:12px;">
+              <button id="sendToUnitBtn" class="tab-btn" style="border-radius:14px; background:linear-gradient(135deg,#6d28d9,#8b5cf6); color:#fff; border-color:#6d28d9; box-shadow:0 12px 24px rgba(109,40,217,.25); padding:14px 18px; width:100%; text-align:center;">Перенести этот товар в юнит-экономику →</button>
+            </div>
+            <p class="hint">При переносе в юнит автоматически уйдут: себестоимость, логика НДС по себестоимости и SKU.</p>
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">SKU</div>
+                <div class="value" id="skuVal">—</div>
+              </div>
+              <div class="mini">
+                <div class="label">Название</div>
+                <div class="value" id="productNameVal">—</div>
+              </div>
+              <div class="mini">
+                <div class="label">Ткань на изделие</div>
+                <div class="value" id="fabricCostVal">0 сум</div>
+              </div>
+              <div class="mini">
+                <div class="label">Ссылка</div>
+                <div class="value" id="productLinkVal">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Состав себестоимости</h2>
+            <div class="list">
+              <div class="row"><div class="key">Ткань</div><div class="val" id="fabricCostDetail">0 сум</div></div>
+              <div class="row"><div class="key">Входящий НДС по ткани</div><div class="val" id="fabricInputVatDetail">0 сум</div></div>
+              <div class="row"><div class="key">Пошив</div><div class="val" id="sewingCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Пакет</div><div class="val" id="packageCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Замок</div><div class="val" id="zipperCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Резинка</div><div class="val" id="elasticCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Полиграфия</div><div class="val" id="polygraphyCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Стикеры</div><div class="val" id="stickersCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Рекламная полиграфия</div><div class="val" id="promoPolygraphyCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Логистика до склада Uzum</div><div class="val" id="inboundLogisticsCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Коробка транспортная</div><div class="val" id="transportBoxCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Хранение, включённое в себестоимость</div><div class="val" id="storageReserveVal">0 сум</div></div>
+              <div class="row"><div class="key">Прочие расходы</div><div class="val" id="otherProductCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Весь входящий НДС</div><div class="val" id="productAllInputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Себестоимость без входящего НДС</div><div class="val" id="productTotalNoVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Итоговая себестоимость</div><div class="val" id="productTotalCostVal">0 сум</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Пояснение</h2>
+            <div class="note">
+              Эта вкладка считает внутреннюю себестоимость единицы товара. Если включить чекбокс в юнит-экономике, итоговая себестоимость отсюда автоматически подставится в поле «Себестоимость товара».
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    
+    <section class="page-panel" id="products-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>База товаров</h2>
+            <p class="sub">Здесь только база: список товаров и остатки.</p>
+            <div class="toolbar">
+              <button id="refreshProductsBtn" class="btn-secondary">Обновить список</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Список товаров</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Название</th>
+                    <th>Код товара</th>
+                    <th>SKU</th>
+                    <th>Остаток</th>
+                    <th>Ср. себестоимость</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="productsTableBody"></tbody>
+              </table>
+            </div>
+            <div id="productsEmpty" class="empty hidden">Пока база товаров пустая.</div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <h2>Сводка базы</h2>
+            <div class="list">
+              <div class="row"><div class="key">Товаров в базе</div><div class="val" id="productsCountVal">0</div></div>
+              <div class="row"><div class="key">Общий остаток, шт</div><div class="val" id="productsStockTotalVal">0</div></div>
+              <div class="row"><div class="key">Товаров без остатка</div><div class="val" id="productsZeroStockVal">0</div></div>
+              <div class="row"><div class="key">Средняя себестоимость</div><div class="val" id="productsAvgCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Последнее обновление</div><div class="val" id="productsLastUpdatedVal">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+<section class="page-panel" id="shipments-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Создать поставку</h2>
+            <p class="sub">Добавляй товары из базы по SKU. В поставке сохраняется снимок цены и калькуляции на момент добавления.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="shipmentName">Название поставки</label>
+                <input id="shipmentName" class="input" type="text" placeholder="например, Поставка май 1" />
+              </div>
+              <div class="field">
+                <label for="shipmentDate">Дата поставки</label>
+                <input id="shipmentDate" class="input" type="date" />
+              </div>
+              <div class="field">
+                <label for="shipmentSkuSearch">Товар из базы</label>
+                <div class="search-select-wrap">
+                  <input id="shipmentSkuSearch" class="input" type="text" placeholder="Начни писать SKU или название..." autocomplete="off" />
+                  <div id="shipmentSkuDropdown" class="search-dropdown"></div>
+                </div>
+                <input id="shipmentSkuSelect" type="hidden" />
+                <div class="hint" id="shipmentSkuSelectedText">Товар пока не выбран.</div>
+              </div>
+              <div class="field">
+                <label for="shipmentQty">Количество, шт</label>
+                <input id="shipmentQty" class="input" type="number" min="1" step="1" value="1" />
+              </div>
+            </div>
+            <div class="toolbar" style="margin-top:12px;">
+              <button id="addShipmentItemBtn" class="btn-primary">Добавить в поставку</button>
+              <button id="saveShipmentBtn" class="btn-secondary">Сохранить поставку</button>
+              <button id="resetShipmentBtn" class="btn-secondary">Новая поставка</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Состав поставки</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Название</th>
+                    <th>Себест. 1 шт</th>
+                    <th>Кол-во</th>
+                    <th>Общая сумма</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="shipmentItemsBody"></tbody>
+              </table>
+            </div>
+            <div id="shipmentItemsEmpty" class="empty">В поставке пока нет позиций.</div>
+          </div>
+
+          <div class="card">
+            <h2>История поставок</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Дата</th>
+                    <th>Поставка</th>
+                    <th>SKU</th>
+                    <th>Шт</th>
+                    <th>Сумма</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="shipmentsHistoryBody"></tbody>
+              </table>
+            </div>
+            <div id="shipmentsEmpty" class="empty hidden">Пока ни одной поставки не сохранено.</div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <div class="kpi-main">
+              <div class="title">Сводка по текущей поставке</div>
+              <div class="value" id="shipmentTotalCostVal">0 сум</div>
+            </div>
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Всего товаров, шт</div>
+                <div class="value" id="shipmentTotalQtyVal">0</div>
+              </div>
+              <div class="mini">
+                <div class="label">Уникальных SKU</div>
+                <div class="value" id="shipmentTotalSkuVal">0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Редактор строки поставки</h2>
+            <p class="sub">Нажми «Изменить» у товара в поставке. Справа откроется подробная калькуляция именно этой строки. После сохранения сумма в поставке обновится, а база товаров не изменится.</p>
+
+            <div id="shipmentEditorEmpty" class="empty">Пока строка поставки не выбрана. Нажми «Изменить» у нужного товара.</div>
+
+            <div id="shipmentEditorPanel" class="editor-panel">
+              <div class="grid">
+                <div class="field"><label for="editShipmentSku">SKU</label><input id="editShipmentSku" class="input" type="text" readonly /></div>
+                <div class="field"><label for="editShipmentName">Название</label><input id="editShipmentName" class="input" type="text" /></div>
+                <div class="field"><label for="editShipmentQty">Количество, шт</label><input id="editShipmentQty" class="input" type="number" min="1" step="1" /></div>
+                <div class="field"><label for="editShipmentUnitCost">Себестоимость 1 шт, сум</label><input id="editShipmentUnitCost" class="input" type="number" min="0" step="0.01" readonly /></div>
+              </div>
+
+              <div class="editor-grid" style="margin-top:12px;">
+                <div class="field"><label for="shipCalcFabricPrice">Цена ткани, сум</label><input id="shipCalcFabricPrice" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcFabricConsumption">Расход ткани</label><input id="shipCalcFabricConsumption" class="input" type="number" min="0" step="0.001" /></div>
+                <div class="field"><label for="shipCalcFabricVatIncluded">Ткань с НДС?</label><select id="shipCalcFabricVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcFabricVatRate">Ставка НДС ткани, %</label><input id="shipCalcFabricVatRate" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcSewingCost">Пошив, сум</label><input id="shipCalcSewingCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcSewingVatIncluded">Пошив с НДС?</label><select id="shipCalcSewingVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcPackageCost">Пакет, сум</label><input id="shipCalcPackageCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcPackageVatIncluded">Пакет с НДС?</label><select id="shipCalcPackageVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcZipperCost">Замок, сум</label><input id="shipCalcZipperCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcZipperVatIncluded">Замок с НДС?</label><select id="shipCalcZipperVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcElasticCost">Резинка, сум</label><input id="shipCalcElasticCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcElasticVatIncluded">Резинка с НДС?</label><select id="shipCalcElasticVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcPolygraphyCost">Полиграфия, сум</label><input id="shipCalcPolygraphyCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcPolygraphyVatIncluded">Полиграфия с НДС?</label><select id="shipCalcPolygraphyVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcStickersCost">Стикеры, сум</label><input id="shipCalcStickersCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcStickersVatIncluded">Стикеры с НДС?</label><select id="shipCalcStickersVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcPromoPolygraphyCost">Рекламная полиграфия, сум</label><input id="shipCalcPromoPolygraphyCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcPromoPolygraphyVatIncluded">Рекламная полиграфия с НДС?</label><select id="shipCalcPromoPolygraphyVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcInboundLogisticsCost">Логистика до склада, сум</label><input id="shipCalcInboundLogisticsCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcInboundLogisticsVatIncluded">Логистика до склада с НДС?</label><select id="shipCalcInboundLogisticsVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcTransportBoxCost">Коробка транспортная, сум</label><input id="shipCalcTransportBoxCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcTransportBoxVatIncluded">Коробка транспортная с НДС?</label><select id="shipCalcTransportBoxVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcOtherProductCost">Прочие расходы, сум</label><input id="shipCalcOtherProductCost" class="input" type="number" min="0" step="0.01" /></div>
+                <div class="field"><label for="shipCalcOtherProductVatIncluded">Прочие расходы с НДС?</label><select id="shipCalcOtherProductVatIncluded" class="select"><option value="with">да, с НДС</option><option value="without">нет, без НДС</option></select></div>
+                <div class="field"><label for="shipCalcProductOnWarehouse">Товар уже на складе?</label><select id="shipCalcProductOnWarehouse" class="select"><option value="no">нет</option><option value="yes">да</option></select></div>
+                <div class="field"><label for="shipCalcProductStorageDays">Дней хранения в себестоимости</label><input id="shipCalcProductStorageDays" class="input" type="number" min="0" step="1" /></div>
+                <div class="field"><label for="shipCalcProductTurnover">Оборачиваемость, дней</label><input id="shipCalcProductTurnover" class="input" type="number" min="0" step="1" /></div>
+                <div class="field"><label for="shipCalcProductStockStatus">Статус SKU</label><select id="shipCalcProductStockStatus" class="select"><option value="existing">уже на складе</option><option value="new">только выйдет / новый SKU</option></select></div>
+                <div class="field"><label for="shipCalcProductLength">Длина упаковки, мм</label><input id="shipCalcProductLength" class="input" type="number" min="0" step="1" /></div>
+                <div class="field"><label for="shipCalcProductWidth">Ширина упаковки, мм</label><input id="shipCalcProductWidth" class="input" type="number" min="0" step="1" /></div>
+                <div class="field"><label for="shipCalcProductHeight">Высота упаковки, мм</label><input id="shipCalcProductHeight" class="input" type="number" min="0" step="1" /></div>
+                <div class="field"><label for="shipCalcProductNewSkuDays">Дней с первой поставки</label><input id="shipCalcProductNewSkuDays" class="input" type="number" min="0" step="1" /></div>
+              </div>
+
+              <div class="note" style="margin-top:12px;">Здесь редактируется только снимок товара внутри этой поставки. База товаров не изменится.</div>
+              <div class="editor-actions">
+                <button id="applyShipmentEditBtn" class="btn-primary">Сохранить изменения строки</button>
+                <button id="cancelShipmentEditBtn" class="btn-secondary">Закрыть редактор</button>
+              </div>
+            </div>
+          </div>
+            <div class="toolbar" style="margin-top:12px;">
+              <button id="applyShipmentEditBtn" class="btn-primary">Сохранить изменения строки</button>
+              <button id="loadShipmentCalcBtn" class="btn-secondary">Открыть калькуляцию товара</button>
+            </div>
+            <div class="note">Кнопка «Открыть калькуляцию товара» загружает снимок товара в калькуляцию себестоимости. После правок ты можешь снова сохранить изменения именно в строку поставки.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page-panel" id="analytics-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Динамика себестоимости товара</h2>
+            <div class="grid">
+              <div class="field">
+                <label for="analyticsSkuSelect">SKU товара</label>
+                <select id="analyticsSkuSelect" class="select"></select>
+              </div>
+              <div class="field">
+                <label for="analyticsDateFrom">Период с</label>
+                <input id="analyticsDateFrom" class="input" type="date" />
+              </div>
+              <div class="field">
+                <label for="analyticsDateTo">Период по</label>
+                <input id="analyticsDateTo" class="input" type="date" />
+              </div>
+            </div>
+            <div class="canvas-box" style="margin-top:12px;">
+              <h3 class="chart-title">График изменения себестоимости</h3>
+              <svg id="costTrendChart" class="svg-chart" viewBox="0 0 760 280" preserveAspectRatio="none"></svg>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Отчёт по поставкам за период</h2>
+            <div class="grid">
+              <div class="field">
+                <label for="shipmentReportFrom">Период с</label>
+                <input id="shipmentReportFrom" class="input" type="date" />
+              </div>
+              <div class="field">
+                <label for="shipmentReportTo">Период по</label>
+                <input id="shipmentReportTo" class="input" type="date" />
+              </div>
+            </div>
+            <div class="canvas-box" style="margin-top:12px;">
+              <h3 class="chart-title">Поставки по месяцам</h3>
+              <svg id="shipmentMonthChart" class="svg-chart" viewBox="0 0 760 280" preserveAspectRatio="none"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <h2>Итоги по поставкам</h2>
+            <div class="list">
+              <div class="row"><div class="key">Всего поставок за период</div><div class="val" id="reportShipmentCountVal">0</div></div>
+              <div class="row"><div class="key">Всего товаров, шт</div><div class="val" id="reportShipmentQtyVal">0</div></div>
+              <div class="row"><div class="key">Сумма поставок</div><div class="val" id="reportShipmentTotalVal">0 сум</div></div>
+              <div class="row"><div class="key">Средняя себестоимость по тренду SKU</div><div class="val" id="reportAvgSkuCostVal">0 сум</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Пояснение</h2>
+            <div class="note">
+              Аналитика по товарам строится не только по базе, а по истории поставок. Поэтому если один и тот же SKU пять раз ушёл по разной цене, график покажет эти изменения по датам. Аналитика по поставкам считает число поставок, общее количество товаров и общую сумму за выбранный период.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    const moneyFmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+    const pctFmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+
+    function n(v) {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? x : 0;
+    }
+    function fmtMoney(v) {
+      return `${moneyFmt.format(v)} сум`;
+    }
+    function fmtPct(v) {
+      return `${pctFmt.format(v)}%`;
+    }
+    function vatFromAmount(amount, rate, mode) {
+      if (rate <= 0 || amount <= 0) return 0;
+      return mode === 'with'
+        ? amount * rate / (100 + rate)
+        : amount * rate / 100;
+    }
+    function purchaseInputVat(amount, rate, mode) {
+      if (rate <= 0 || amount <= 0) return 0;
+      return mode === 'with' ? amount * rate / (100 + rate) : 0;
+    }
+    function calcLogistics(roundedLiters) {
+      if (roundedLiters <= 0) return 0;
+      const value = 5250 + Math.max(0, roundedLiters - 1) * 250;
+      return Math.min(value, 50000);
+    }
+    function calcStoragePerDay(roundedLiters, turnover, stockStatus, newSkuDays) {
+      let rate = 0;
+      let reason = '';
+
+      if (stockStatus === 'new' && newSkuDays <= 30) {
+        reason = 'Новый SKU: первые 30 дней хранения бесплатные.';
+        return { amount: 0, rate: 0, reason };
+      }
+      if (turnover <= 60) {
+        reason = 'Оборачиваемость до 60 дней включительно: хранение бесплатное.';
+        return { amount: 0, rate: 0, reason };
+      }
+      if (turnover <= 180) {
+        rate = 12;
+        reason = 'Оборачиваемость 61–180 дней: 12 сум за литр в день.';
+      } else if (turnover <= 360) {
+        rate = 18;
+        reason = 'Оборачиваемость 181–360 дней: 18 сум за литр в день.';
+      } else {
+        rate = 24;
+        reason = 'Оборачиваемость 361+ дней: 24 сум за литр в день.';
+      }
+      const amount = Math.min(roundedLiters * rate, 5000);
+      return { amount, rate, reason };
+    }
+
+    const state = {
+      linkedProduct: {
+        active: false,
+        sku: '',
+        costGross: 0,
+        costNet: 0,
+        inputVat: 0,
+        hasVat: false,
+        storageLinked: false,
+        stockStatus: 'existing',
+        turnover: 0,
+        newSkuDays: 0,
+        length: 0,
+        width: 0,
+        height: 0
+      }
+    };
+
+
+
+    function getCurrentStoragePerDay() {
+      const length = n(document.getElementById('length').value);
+      const width = n(document.getElementById('width').value);
+      const height = n(document.getElementById('height').value);
+      const turnover = n(document.getElementById('turnover').value);
+      const stockStatus = document.getElementById('stockStatus').value;
+      const newSkuDays = n(document.getElementById('newSkuDays').value);
+      const liters = (length * width * height) / 1000000;
+      const roundedLiters = liters > 0 ? Math.ceil(liters) : 0;
+      return calcStoragePerDay(roundedLiters, turnover, stockStatus, newSkuDays).amount;
+    }
+
+    function getProductStorageData() {
+      const productOnWarehouse = document.getElementById('productOnWarehouse').value;
+      const productStorageDays = n(document.getElementById('productStorageDays').value);
+      const productTurnover = n(document.getElementById('productTurnover').value);
+      const productStockStatus = document.getElementById('productStockStatus').value;
+      const productNewSkuDays = n(document.getElementById('productNewSkuDays').value);
+      const productLength = n(document.getElementById('productLength').value);
+      const productWidth = n(document.getElementById('productWidth').value);
+      const productHeight = n(document.getElementById('productHeight').value);
+
+      const liters = (productLength * productWidth * productHeight) / 1000000;
+      const roundedLiters = liters > 0 ? Math.ceil(liters) : 0;
+      const storage = calcStoragePerDay(roundedLiters, productTurnover, productStockStatus, productNewSkuDays);
+
+      const enabled = productOnWarehouse === 'yes';
+      const storageReserve = enabled ? storage.amount * productStorageDays : 0;
+
+      return {
+        enabled,
+        liters,
+        roundedLiters,
+        perDay: storage.amount,
+        rate: storage.rate,
+        reason: storage.reason,
+        storageReserve,
+        productStorageDays,
+        productStockStatus,
+        productTurnover,
+        productNewSkuDays
+      };
+    }
+
+    function purchaseLine(amountId, modeId, rate) {
+      const gross = n(document.getElementById(amountId).value);
+      const inputVat = purchaseInputVat(gross, rate, document.getElementById(modeId).value);
+      const net = gross - inputVat;
+      return { gross, inputVat, net };
+    }
+
+    function getProductCost() {
+      const defaultVatRate = n(document.getElementById('vatRate').value) || 12;
+      const fabricVatRate = n(document.getElementById('fabricVatRate').value) || defaultVatRate;
+
+      const fabricPrice = n(document.getElementById('fabricPrice').value);
+      const fabricConsumption = n(document.getElementById('fabricConsumption').value);
+      const fabricGross = fabricPrice * fabricConsumption;
+      const fabricMode = document.getElementById('fabricVatIncluded').value;
+      const fabricInputVat = purchaseInputVat(fabricGross, fabricVatRate, fabricMode);
+
+      const sewing = purchaseLine('sewingCost', 'sewingCostVatIncluded', defaultVatRate);
+      const packageCost = purchaseLine('packageCost', 'packageCostVatIncluded', defaultVatRate);
+      const zipperCost = purchaseLine('zipperCost', 'zipperCostVatIncluded', defaultVatRate);
+      const elasticCost = purchaseLine('elasticCost', 'elasticCostVatIncluded', defaultVatRate);
+      const polygraphyCost = purchaseLine('polygraphyCost', 'polygraphyCostVatIncluded', defaultVatRate);
+      const stickersCost = purchaseLine('stickersCost', 'stickersCostVatIncluded', defaultVatRate);
+      const promoPolygraphyCost = purchaseLine('promoPolygraphyCost', 'promoPolygraphyCostVatIncluded', defaultVatRate);
+      const inboundLogisticsCost = purchaseLine('inboundLogisticsCost', 'inboundLogisticsCostVatIncluded', defaultVatRate);
+      const transportBoxCost = purchaseLine('transportBoxCost', 'transportBoxCostVatIncluded', defaultVatRate);
+      const otherProductCost = purchaseLine('otherProductCost', 'otherProductCostVatIncluded', defaultVatRate);
+
+      const productStorage = getProductStorageData();
+      const storageReserve = productStorage.storageReserve;
+
+      const totalGross = fabricGross + sewing.gross + packageCost.gross + zipperCost.gross + elasticCost.gross + polygraphyCost.gross + stickersCost.gross + promoPolygraphyCost.gross + inboundLogisticsCost.gross + transportBoxCost.gross + storageReserve + otherProductCost.gross;
+      const totalInputVat = fabricInputVat + sewing.inputVat + packageCost.inputVat + zipperCost.inputVat + elasticCost.inputVat + polygraphyCost.inputVat + stickersCost.inputVat + promoPolygraphyCost.inputVat + inboundLogisticsCost.inputVat + transportBoxCost.inputVat + otherProductCost.inputVat;
+      const totalNet = totalGross - totalInputVat;
+
+      return {
+        total: totalGross,
+        totalInputVat,
+        totalNet,
+        fabricCost: fabricGross,
+        fabricInputVat,
+        sewingCost: sewing.gross,
+        packageCost: packageCost.gross,
+        zipperCost: zipperCost.gross,
+        elasticCost: elasticCost.gross,
+        polygraphyCost: polygraphyCost.gross,
+        stickersCost: stickersCost.gross,
+        promoPolygraphyCost: promoPolygraphyCost.gross,
+        inboundLogisticsCost: inboundLogisticsCost.gross,
+        transportBoxCost: transportBoxCost.gross,
+        storageReserve,
+        otherProductCost: otherProductCost.gross,
+        productStorage
+      };
+    }
+    function getProfitByPrice(testPrice, base) {
+      const commissionAmount = testPrice * base.commissionPct / 100;
+      const outputVat = vatFromAmount(testPrice, base.vatRate, base.saleVatMode);
+      const vatPayable = outputVat - base.inputVat;
+      const totalCosts = base.cost + commissionAmount + base.logistics + base.storage + vatPayable;
+      return testPrice - totalCosts;
+    }
+
+    function calcBreakEven(base) {
+      if (base.commissionPct >= 100) return Infinity;
+      let low = 0;
+      let high = Math.max(base.cost + base.logistics + base.storage + 10000, 1);
+      while (getProfitByPrice(high, base) < 0 && high < 1e9) {
+        high *= 2;
+      }
+      for (let i = 0; i < 60; i++) {
+        const mid = (low + high) / 2;
+        if (getProfitByPrice(mid, base) >= 0) high = mid;
+        else low = mid;
+      }
+      return high;
+    }
+
+    function renderProductCost() {
+      const sku = document.getElementById('sku').value.trim();
+      const productName = document.getElementById('productName').value.trim();
+      const productArticle1c = document.getElementById('productArticle1c').value.trim();
+      const productCode1c = document.getElementById('productCode1c').value.trim();
+      const productStockQty = Math.max(0, Math.floor(n(document.getElementById('productStockQty').value) || 0));
+      const productLink = document.getElementById('productLink').value.trim();
+      const vals = getProductCost();
+      const storageMeta = vals.productStorage;
+
+      document.getElementById('productWarehouseDetails').classList.toggle('hidden', !storageMeta.enabled);
+      document.getElementById('productNewSkuBlock').classList.toggle('hidden', document.getElementById('productStockStatus').value !== 'new');
+
+      let productStorageText = 'Товар не отмечен как уже находящийся на складе. Параметры хранения в юнит-экономику не переносятся.';
+      if (storageMeta.enabled) {
+        const statusText = storageMeta.productStockStatus === 'new'
+          ? `Статус: новый SKU, дней с первой поставки: ${storageMeta.productNewSkuDays}.`
+          : 'Статус: уже на складе.';
+        const rateText = storageMeta.rate > 0 ? ` Ставка: ${storageMeta.rate} сум/л в день.` : '';
+        productStorageText = `Литраж: ${storageMeta.liters.toFixed(2).replace('.', ',')} л → ${storageMeta.roundedLiters} л. ${statusText} ${storageMeta.reason}${rateText} В себестоимость включено хранение за ${storageMeta.productStorageDays} дн. = ${moneyFmt.format(storageMeta.storageReserve)} сум.`;
+      }
+      document.getElementById('productStorageRuleText').textContent = productStorageText;
+
+      document.getElementById('skuVal').textContent = sku || '—';
+      document.getElementById('productNameVal').textContent = productName || '—';
+      document.getElementById('productLinkVal').innerHTML = productLink ? `<a href="${productLink}" target="_blank">открыть</a>` : '—';
+      document.getElementById('fabricCostVal').textContent = fmtMoney(vals.fabricCost);
+      document.getElementById('productCostMain').textContent = fmtMoney(vals.total);
+      document.getElementById('productInputVatVal').textContent = fmtMoney(vals.totalInputVat);
+      document.getElementById('productCostNetVatVal').textContent = fmtMoney(vals.totalNet);
+
+      document.getElementById('fabricCostDetail').textContent = fmtMoney(vals.fabricCost);
+      document.getElementById('fabricInputVatDetail').textContent = fmtMoney(vals.fabricInputVat);
+      document.getElementById('sewingCostVal').textContent = fmtMoney(vals.sewingCost);
+      document.getElementById('packageCostVal').textContent = fmtMoney(vals.packageCost);
+      document.getElementById('zipperCostVal').textContent = fmtMoney(vals.zipperCost);
+      document.getElementById('elasticCostVal').textContent = fmtMoney(vals.elasticCost);
+      document.getElementById('polygraphyCostVal').textContent = fmtMoney(vals.polygraphyCost);
+      document.getElementById('stickersCostVal').textContent = fmtMoney(vals.stickersCost);
+      document.getElementById('promoPolygraphyCostVal').textContent = fmtMoney(vals.promoPolygraphyCost);
+      document.getElementById('inboundLogisticsCostVal').textContent = fmtMoney(vals.inboundLogisticsCost);
+      document.getElementById('transportBoxCostVal').textContent = fmtMoney(vals.transportBoxCost);
+      document.getElementById('storageReserveVal').textContent = fmtMoney(vals.storageReserve);
+      document.getElementById('otherProductCostVal').textContent = fmtMoney(vals.otherProductCost);
+      document.getElementById('productAllInputVatVal').textContent = fmtMoney(vals.totalInputVat);
+      document.getElementById('productTotalNoVatVal').textContent = fmtMoney(vals.totalNet);
+      document.getElementById('productTotalCostVal').textContent = fmtMoney(vals.total);
+
+      if (document.getElementById('useProductCost').checked) {
+        state.linkedProduct.active = true;
+        state.linkedProduct.sku = sku || '—';
+        state.linkedProduct.costGross = vals.total;
+        state.linkedProduct.costNet = vals.totalNet;
+        state.linkedProduct.inputVat = vals.totalInputVat;
+        state.linkedProduct.hasVat = vals.totalInputVat > 0.0001;
+        state.linkedProduct.storageLinked = vals.productStorage.enabled;
+        state.linkedProduct.stockStatus = vals.productStorage.productStockStatus;
+        state.linkedProduct.turnover = vals.productStorage.productTurnover;
+        state.linkedProduct.newSkuDays = vals.productStorage.productNewSkuDays;
+        state.linkedProduct.length = n(document.getElementById('productLength').value);
+        state.linkedProduct.width = n(document.getElementById('productWidth').value);
+        state.linkedProduct.height = n(document.getElementById('productHeight').value);
+        document.getElementById('costVatMode').value = state.linkedProduct.hasVat ? 'with' : 'without';
+        const mode = document.getElementById('costVatMode').value;
+        document.getElementById('cost').value = (mode === 'with' ? vals.total : vals.totalNet).toFixed(2);
+      }
+      renderUnit();
+    }
+
+    function renderUnit() {
+      const useProductCost = document.getElementById('useProductCost').checked;
+      if (useProductCost) {
+        const productVals = getProductCost();
+        state.linkedProduct.active = true;
+        state.linkedProduct.sku = document.getElementById('sku').value.trim() || '—';
+        state.linkedProduct.costGross = productVals.total;
+        state.linkedProduct.costNet = productVals.totalNet;
+        state.linkedProduct.inputVat = productVals.totalInputVat;
+        state.linkedProduct.hasVat = productVals.totalInputVat > 0.0001;
+        state.linkedProduct.storageLinked = productVals.productStorage.enabled;
+        state.linkedProduct.stockStatus = productVals.productStorage.productStockStatus;
+        state.linkedProduct.turnover = productVals.productStorage.productTurnover;
+        state.linkedProduct.newSkuDays = productVals.productStorage.productNewSkuDays;
+        state.linkedProduct.length = n(document.getElementById('productLength').value);
+        state.linkedProduct.width = n(document.getElementById('productWidth').value);
+        state.linkedProduct.height = n(document.getElementById('productHeight').value);
+        document.getElementById('costVatMode').value = state.linkedProduct.hasVat ? 'with' : 'without';
+        const mode = document.getElementById('costVatMode').value;
+        document.getElementById('cost').value = (mode === 'with' ? productVals.total : productVals.totalNet).toFixed(2);
+      }
+
+      const price = n(document.getElementById('price').value);
+      const commissionPct = n(document.getElementById('commission').value);
+      const cost = n(document.getElementById('cost').value);
+      let length = n(document.getElementById('length').value);
+      let width = n(document.getElementById('width').value);
+      let height = n(document.getElementById('height').value);
+      let turnover = n(document.getElementById('turnover').value);
+      const vatRate = n(document.getElementById('vatRate').value);
+      const saleVatMode = document.getElementById('saleVatMode').value;
+      const costVatMode = document.getElementById('costVatMode').value;
+      let stockStatus = document.getElementById('stockStatus').value;
+      let newSkuDays = n(document.getElementById('newSkuDays').value);
+
+      if (useProductCost && state.linkedProduct.active && state.linkedProduct.storageLinked) {
+        length = state.linkedProduct.length;
+        width = state.linkedProduct.width;
+        height = state.linkedProduct.height;
+        turnover = state.linkedProduct.turnover;
+        stockStatus = state.linkedProduct.stockStatus;
+        newSkuDays = state.linkedProduct.newSkuDays;
+
+        document.getElementById('length').value = length || 0;
+        document.getElementById('width').value = width || 0;
+        document.getElementById('height').value = height || 0;
+        document.getElementById('turnover').value = turnover || 0;
+        document.getElementById('stockStatus').value = stockStatus || 'existing';
+        document.getElementById('newSkuDays').value = newSkuDays || 0;
+      }
+
+      if (!(useProductCost && state.linkedProduct.active && state.linkedProduct.storageLinked) && useProductCost && state.linkedProduct.active && !state.linkedProduct.storageLinked) {
+        document.getElementById('length').value = 0;
+        document.getElementById('width').value = 0;
+        document.getElementById('height').value = 0;
+        document.getElementById('turnover').value = 0;
+        document.getElementById('stockStatus').value = 'existing';
+        document.getElementById('newSkuDays').value = 0;
+        length = 0; width = 0; height = 0; turnover = 0; stockStatus = 'existing'; newSkuDays = 0;
+      }
+
+      document.getElementById('newSkuBlock').classList.toggle('hidden', stockStatus !== 'new');
+
+      const liters = (length * width * height) / 1000000;
+      const roundedLiters = liters > 0 ? Math.ceil(liters) : 0;
+      const logistics = calcLogistics(roundedLiters);
+      const storage = calcStoragePerDay(roundedLiters, turnover, stockStatus, newSkuDays);
+      const commissionAmount = price * commissionPct / 100;
+      const outputVat = vatFromAmount(price, vatRate, saleVatMode);
+      const linkedMode = useProductCost && state.linkedProduct.active;
+      const inputVat = linkedMode
+        ? state.linkedProduct.inputVat
+        : vatFromAmount(cost, vatRate, costVatMode);
+      const vatPayable = outputVat - inputVat;
+      const totalCosts = cost + commissionAmount + logistics + storage.amount + vatPayable;
+      const profit = price - totalCosts;
+      const margin = price > 0 ? (profit / price) * 100 : 0;
+      const markup = cost > 0 ? (profit / cost) * 100 : 0;
+      const roi = cost > 0 ? (profit / cost) * 100 : 0;
+      const bep = calcBreakEven({ cost, commissionPct, logistics, storage: storage.amount, vatRate, saleVatMode, inputVat });
+
+      const profitEl = document.getElementById('profitMain');
+      profitEl.textContent = fmtMoney(profit);
+      profitEl.className = `value ${profit >= 0 ? 'positive' : 'negative'}`;
+      document.getElementById('marginVal').textContent = fmtPct(margin);
+      document.getElementById('markupVal').textContent = fmtPct(markup);
+      document.getElementById('roiVal').textContent = fmtPct(roi);
+      document.getElementById('bepVal').textContent = Number.isFinite(bep) ? fmtMoney(bep) : 'н/д';
+
+      document.getElementById('litersVal').textContent = liters.toFixed(2).replace('.', ',');
+      document.getElementById('roundedLitersVal').textContent = roundedLiters.toLocaleString('ru-RU');
+      document.getElementById('commissionVal').textContent = fmtMoney(commissionAmount);
+      document.getElementById('logisticsVal').textContent = fmtMoney(logistics);
+      document.getElementById('storageVal').textContent = fmtMoney(storage.amount);
+      document.getElementById('outputVatVal').textContent = fmtMoney(outputVat);
+      document.getElementById('inputVatVal').textContent = fmtMoney(inputVat);
+      document.getElementById('vatPayableVal').textContent = fmtMoney(vatPayable);
+      document.getElementById('totalCostsVal').innerHTML = `<strong>${fmtMoney(totalCosts)}</strong>`;
+
+      const syncText = useProductCost && state.linkedProduct.active
+        ? `Юнит-экономика сейчас считает товар SKU: ${state.linkedProduct.sku}. Себестоимость и входящий НДС автоматически подтягиваются из вкладки себестоимости.`
+        : 'Сейчас можно считать юнит отдельно, без привязки к вкладке себестоимости.';
+      document.getElementById('productCostSyncText').textContent = syncText;
+      document.getElementById('inputVatSourceVal').textContent = useProductCost && state.linkedProduct.active
+        ? `из себестоимости товара (${state.linkedProduct.sku}) = ${fmtMoney(inputVat)}`
+        : 'ручной режим';
+      document.getElementById('linkedProductVal').textContent = useProductCost && state.linkedProduct.active
+        ? `связано с SKU ${state.linkedProduct.sku}`
+        : 'нет связи';
+
+      const storageSyncText = useProductCost && state.linkedProduct.active && state.linkedProduct.storageLinked
+        ? `Параметры ВГХ, оборачиваемости и статуса товара автоматически перенесены из себестоимости товара (${state.linkedProduct.sku}).`
+        : (useProductCost && state.linkedProduct.active
+            ? 'У товара в себестоимости не отмечено, что он уже на складе. В юнит-экономике параметры хранения и ВГХ сброшены в ноль.'
+            : 'Пока расчёт юнит-экономики использует свои параметры ВГХ и хранения.');
+      document.getElementById('storageSyncText').textContent = storageSyncText;
+
+      const stockText = stockStatus === 'new'
+        ? `Статус: новый SKU. Дней с первой поставки: ${newSkuDays}.`
+        : 'Статус: уже на складе.';
+      const extra = storage.rate > 0 ? ` Текущая ставка: ${storage.rate} сум/л в день.` : '';
+      document.getElementById('storageRuleText').textContent = `${stockText} ${storage.reason}${extra}`.trim();
+    }
+
+    
+    function openPage(pageId) {
+      document.querySelectorAll('.nav-btn').forEach(x => x.classList.toggle('active', x.dataset.page === pageId));
+      document.querySelectorAll('.page-panel').forEach(x => x.classList.remove('active'));
+      const page = document.getElementById(pageId);
+      if (page) page.classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => openPage(btn.dataset.page));
+    });
+
+    document.querySelectorAll('[data-open-page]').forEach(card => {
+      card.addEventListener('click', () => openPage(card.dataset.openPage));
+    });
+
+
+    [
+      'price','commission','cost','costVatMode','length','width','height','stockStatus',
+      'turnover','newSkuDays','vatRate','saleVatMode','useProductCost'
+    ].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => { renderProductCost(); renderUnit(); });
+      document.getElementById(id).addEventListener('change', () => { renderProductCost(); renderUnit(); });
+    });
+
+    [
+      'sku','productName','productLink','fabricPrice','fabricConsumption','fabricUnit','fabricVatIncluded','fabricVatRate','sewingCost','packageCost',
+      'zipperCost','elasticCost','polygraphyCost','stickersCost','promoPolygraphyCost','inboundLogisticsCost',
+      'transportBoxCost','otherProductCost','productOnWarehouse','productStorageDays','productTurnover',
+      'productStockStatus','productLength','productWidth','productHeight','productNewSkuDays',
+      'sewingCostVatIncluded','packageCostVatIncluded','zipperCostVatIncluded','elasticCostVatIncluded',
+      'polygraphyCostVatIncluded','stickersCostVatIncluded','promoPolygraphyCostVatIncluded',
+      'inboundLogisticsCostVatIncluded','transportBoxCostVatIncluded','otherProductCostVatIncluded'
+    ].forEach(id => {
+      document.getElementById(id).addEventListener('input', renderProductCost);
+      document.getElementById(id).addEventListener('change', renderProductCost);
+    });
+
+    document.getElementById('sendToUnitBtn').addEventListener('click', () => {
+      document.getElementById('useProductCost').checked = true;
+      const vals = getProductCost();
+      const sku = document.getElementById('sku').value.trim() || '—';
+      state.linkedProduct.active = true;
+      state.linkedProduct.sku = sku;
+      state.linkedProduct.costGross = vals.total;
+      state.linkedProduct.costNet = vals.totalNet;
+      state.linkedProduct.inputVat = vals.totalInputVat;
+      state.linkedProduct.hasVat = vals.totalInputVat > 0.0001;
+      state.linkedProduct.storageLinked = vals.productStorage.enabled;
+      state.linkedProduct.stockStatus = vals.productStorage.productStockStatus;
+      state.linkedProduct.turnover = vals.productStorage.productTurnover;
+      state.linkedProduct.newSkuDays = vals.productStorage.productNewSkuDays;
+      state.linkedProduct.length = n(document.getElementById('productLength').value);
+      state.linkedProduct.width = n(document.getElementById('productWidth').value);
+      state.linkedProduct.height = n(document.getElementById('productHeight').value);
+      document.getElementById('costVatMode').value = state.linkedProduct.hasVat ? 'with' : 'without';
+      const mode = document.getElementById('costVatMode').value;
+      document.getElementById('cost').value = (mode === 'with' ? vals.total : vals.totalNet).toFixed(2);
+
+      if (state.linkedProduct.storageLinked) {
+        document.getElementById('length').value = state.linkedProduct.length || 0;
+        document.getElementById('width').value = state.linkedProduct.width || 0;
+        document.getElementById('height').value = state.linkedProduct.height || 0;
+        document.getElementById('turnover').value = state.linkedProduct.turnover || 0;
+        document.getElementById('stockStatus').value = state.linkedProduct.stockStatus || 'existing';
+        document.getElementById('newSkuDays').value = state.linkedProduct.newSkuDays || 0;
+      } else {
+        document.getElementById('length').value = 0;
+        document.getElementById('width').value = 0;
+        document.getElementById('height').value = 0;
+        document.getElementById('turnover').value = 0;
+        document.getElementById('stockStatus').value = 'existing';
+        document.getElementById('newSkuDays').value = 0;
+      }
+
+      openPage('unit-tab');
+      renderUnit();
+    });
+
+    document.getElementById('useProductCost').addEventListener('change', () => {
+      if (!document.getElementById('useProductCost').checked) {
+        state.linkedProduct.active = false;
+      }
+      renderProductCost();
+      renderUnit();
+    });
+
+
+    const STORAGE_KEYS = {
+      products: 'uzum_products_db_v1',
+      shipments: 'uzum_shipments_db_v1'
+    };
+
+    function readStore(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (e) {
+        return fallback;
+      }
+    }
+    function writeStore(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+    function fmtDateTime(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts);
+      return d.toLocaleString('ru-RU');
+    }
+    function fmtDate(d) {
+      if (!d) return '—';
+      return new Date(d + 'T00:00:00').toLocaleDateString('ru-RU');
+    }
+    function todayIso() {
+      return new Date().toISOString().slice(0,10);
+    }
+
+    function getReservedQtyInDraft(sku) {
+      return shipmentDraft.items
+        .filter(item => item.sku === sku)
+        .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    }
+
+    function getAvailableStockForProduct(product) {
+      const baseStock = Math.max(0, Math.floor(Number(product?.stockQty || 0)));
+      return Math.max(0, baseStock - getReservedQtyInDraft(product?.sku || ''));
+    }
+
+    function roundLitersFromDimensions(length, width, height) {
+      const liters = (Number(length || 0) * Number(width || 0) * Number(height || 0)) / 1000000;
+      return { liters, rounded: Math.ceil(liters) };
+    }
+
+    function getSelectedStockAdjustProduct() {
+      return null;
+    }
+
+    function renderStockAdjustSelector() {}
+
+    function setModalOpen(modalId, open) {
+      const el = document.getElementById(modalId);
+      if (!el) return;
+      el.classList.toggle('open', !!open);
+    }
+
+    function applyStockAdjustment() {
+      return;
+    }
+
+    function snapshotCurrentProduct() {
+      const vals = getProductCost();
+      const sku = document.getElementById('sku').value.trim();
+      const productName = document.getElementById('productName').value.trim();
+      const productArticle1c = document.getElementById('productArticle1c').value.trim();
+      const productCode1c = document.getElementById('productCode1c').value.trim();
+      const productStockQty = Math.max(0, Math.floor(n(document.getElementById('productStockQty').value) || 0));
+      const productLink = document.getElementById('productLink').value.trim();
+      if (!sku) {
+        alert('Для сохранения в базу товаров нужен SKU.');
+        return null;
+      }
+      return {
+        id: sku,
+        sku,
+        name: productName,
+        article1c: productArticle1c,
+        code1c: productCode1c,
+        stockQty: productStockQty,
+        link: productLink,
+        updatedAt: new Date().toISOString(),
+        costGross: vals.total,
+        costNet: vals.totalNet,
+        inputVat: vals.totalInputVat,
+        length: n(document.getElementById('productLength').value),
+        width: n(document.getElementById('productWidth').value),
+        height: n(document.getElementById('productHeight').value),
+        volumeLiters: Number((((n(document.getElementById('productLength').value) * n(document.getElementById('productWidth').value) * n(document.getElementById('productHeight').value)) / 1000000) || 0).toFixed(2)),
+        calc: {
+          productName, productLink, productArticle1c, productCode1c, productStockQty,
+          fabricPrice: n(document.getElementById('fabricPrice').value),
+          fabricConsumption: n(document.getElementById('fabricConsumption').value),
+          fabricUnit: document.getElementById('fabricUnit').value,
+          fabricVatIncluded: document.getElementById('fabricVatIncluded').value,
+          fabricVatRate: n(document.getElementById('fabricVatRate').value),
+          sewingCost: n(document.getElementById('sewingCost').value),
+          packageCost: n(document.getElementById('packageCost').value),
+          zipperCost: n(document.getElementById('zipperCost').value),
+          elasticCost: n(document.getElementById('elasticCost').value),
+          polygraphyCost: n(document.getElementById('polygraphyCost').value),
+          stickersCost: n(document.getElementById('stickersCost').value),
+          promoPolygraphyCost: n(document.getElementById('promoPolygraphyCost').value),
+          inboundLogisticsCost: n(document.getElementById('inboundLogisticsCost').value),
+          transportBoxCost: n(document.getElementById('transportBoxCost').value),
+          otherProductCost: n(document.getElementById('otherProductCost').value),
+          sewingCostVatIncluded: document.getElementById('sewingCostVatIncluded').value,
+          packageCostVatIncluded: document.getElementById('packageCostVatIncluded').value,
+          zipperCostVatIncluded: document.getElementById('zipperCostVatIncluded').value,
+          elasticCostVatIncluded: document.getElementById('elasticCostVatIncluded').value,
+          polygraphyCostVatIncluded: document.getElementById('polygraphyCostVatIncluded').value,
+          stickersCostVatIncluded: document.getElementById('stickersCostVatIncluded').value,
+          promoPolygraphyCostVatIncluded: document.getElementById('promoPolygraphyCostVatIncluded').value,
+          inboundLogisticsCostVatIncluded: document.getElementById('inboundLogisticsCostVatIncluded').value,
+          transportBoxCostVatIncluded: document.getElementById('transportBoxCostVatIncluded').value,
+          otherProductCostVatIncluded: document.getElementById('otherProductCostVatIncluded').value,
+          productOnWarehouse: document.getElementById('productOnWarehouse').value,
+          productStorageDays: n(document.getElementById('productStorageDays').value),
+          productTurnover: n(document.getElementById('productTurnover').value),
+          productStockStatus: document.getElementById('productStockStatus').value,
+          productLength: n(document.getElementById('productLength').value),
+          productWidth: n(document.getElementById('productWidth').value),
+          productHeight: n(document.getElementById('productHeight').value),
+          productNewSkuDays: n(document.getElementById('productNewSkuDays').value)
+        }
+      };
+    }
+
+    function saveCurrentProductToDb() {
+      const snap = snapshotCurrentProduct();
+      if (!snap) return;
+      const products = readStore(STORAGE_KEYS.products, []);
+      const idx = products.findIndex(p => p.sku === snap.sku);
+      if (idx >= 0) {
+        const existing = products[idx];
+        products[idx] = {
+          ...existing,
+          ...snap,
+          stockQty: Math.max(0, Math.floor(Number(snap.stockQty ?? existing.stockQty ?? 0))),
+          updatedAt: new Date().toISOString()
+        };
+      } else products.push(snap);
+      writeStore(STORAGE_KEYS.products, products);
+      renderProductsDb();
+      renderShipmentSelectors();
+      renderAnalyticsSelectors();
+      renderStockAdjustSelector();
+      alert('Товар сохранён в базу.');
+    }
+
+    function loadProductIntoCalculator(product, preserveTab=false) {
+      document.getElementById('sku').value = product.sku || '';
+      document.getElementById('productName').value = product.name || '';
+      document.getElementById('productArticle1c').value = product.article1c || '';
+      document.getElementById('productCode1c').value = product.code1c || '';
+      document.getElementById('productStockQty').value = Math.max(0, Math.floor(Number(product.stockQty || 0)));
+      document.getElementById('productLink').value = product.link || '';
+      const c = product.calc || {};
+      const ids = [
+        'productArticle1c','productCode1c','productStockQty',
+        'fabricPrice','fabricConsumption','fabricUnit','fabricVatIncluded','fabricVatRate',
+        'sewingCost','packageCost','zipperCost','elasticCost','polygraphyCost','stickersCost',
+        'promoPolygraphyCost','inboundLogisticsCost','transportBoxCost','otherProductCost',
+        'sewingCostVatIncluded','packageCostVatIncluded','zipperCostVatIncluded','elasticCostVatIncluded',
+        'polygraphyCostVatIncluded','stickersCostVatIncluded','promoPolygraphyCostVatIncluded',
+        'inboundLogisticsCostVatIncluded','transportBoxCostVatIncluded','otherProductCostVatIncluded',
+        'productOnWarehouse','productStorageDays','productTurnover','productStockStatus',
+        'productLength','productWidth','productHeight','productNewSkuDays'
+      ];
+      ids.forEach(id => {
+        if (c[id] !== undefined && document.getElementById(id)) {
+          document.getElementById(id).value = c[id];
+        }
+      });
+      renderProductCost();
+      if (!preserveTab) {
+        openPage('cost-tab');
+      }
+    }
+
+    function deleteProductFromDb(sku) {
+      const products = readStore(STORAGE_KEYS.products, []).filter(p => p.sku !== sku);
+      writeStore(STORAGE_KEYS.products, products);
+      renderProductsDb();
+      renderShipmentSelectors();
+      renderAnalyticsSelectors();
+      renderStockAdjustSelector();
+    }
+
+    function renderProductsDb() {
+      const products = readStore(STORAGE_KEYS.products, []);
+      const body = document.getElementById('productsTableBody');
+      body.innerHTML = '';
+      document.getElementById('productsEmpty').classList.toggle('hidden', products.length !== 0);
+      document.getElementById('productsCountVal').textContent = products.length.toLocaleString('ru-RU');
+      const totalStock = products.reduce((s, p) => s + Math.max(0, Math.floor(Number(p.stockQty || 0))), 0);
+      document.getElementById('productsStockTotalVal').textContent = totalStock.toLocaleString('ru-RU');
+      document.getElementById('productsZeroStockVal').textContent = products.filter(p => Math.max(0, Math.floor(Number(p.stockQty || 0))) === 0).length.toLocaleString('ru-RU');
+      const avgCost = products.length ? products.reduce((s,p)=>s+Number(p.costGross || 0),0) / products.length : 0;
+      document.getElementById('productsAvgCostVal').textContent = fmtMoney(avgCost);
+      const sorted = [...products].sort((a,b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+      document.getElementById('productsLastUpdatedVal').textContent = sorted[0] ? fmtDateTime(sorted[0].updatedAt) : '—';
+
+      sorted.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="product-name-cell">${p.name || '<span class="muted">без названия</span>'}</td>
+          <td>${p.code1c ? p.code1c : '<span class="muted">—</span>'}</td>
+          <td class="sku-cell">${p.sku || '—'}</td>
+          <td><span class="chip ${Number(p.stockQty || 0) > 0 ? 'pill-good' : 'pill-bad'}">${Math.max(0, Math.floor(Number(p.stockQty || 0))).toLocaleString('ru-RU')} шт</span></td>
+          <td>${fmtMoney(p.costGross || 0)}</td>
+          <td>
+            <div class="list-actions">
+              <button class="btn-secondary" data-load-product="${p.sku}">Открыть</button>
+              <button class="btn-danger" data-delete-product="${p.sku}">Удалить</button>
+            </div>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+
+      body.querySelectorAll('[data-load-product]').forEach(btn => btn.addEventListener('click', () => {
+        const sku = btn.getAttribute('data-load-product');
+        const product = readStore(STORAGE_KEYS.products, []).find(p => p.sku === sku);
+        if (product) loadProductIntoCalculator(product);
+      }));
+      body.querySelectorAll('[data-delete-product]').forEach(btn => btn.addEventListener('click', () => {
+        const sku = btn.getAttribute('data-delete-product');
+        if (confirm(`Удалить товар ${sku} из базы?`)) deleteProductFromDb(sku);
+      }));
+    }
+
+    function renderShipmentSelectors() {
+      const products = readStore(STORAGE_KEYS.products, []);
+      const hiddenSel = document.getElementById('shipmentSkuSelect');
+      const analyticsSel = document.getElementById('analyticsSkuSelect');
+      const searchInput = document.getElementById('shipmentSkuSearch');
+      const dropdown = document.getElementById('shipmentSkuDropdown');
+      const selectedText = document.getElementById('shipmentSkuSelectedText');
+
+      analyticsSel.innerHTML = products.length
+        ? '<option value="">Выбери SKU</option>' + products.map(p => `<option value="${p.sku}">${p.sku}${p.name ? ' — ' + p.name : ''}</option>`).join('')
+        : '<option value="">Нет товаров в базе</option>';
+
+      function renderDropdown(filterText='') {
+        const q = (filterText || '').trim().toLowerCase();
+        const filtered = !q ? products.slice(0, 8) : products.filter(p =>
+          (p.sku || '').toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q)
+        ).slice(0, 12);
+
+        dropdown.innerHTML = filtered.length
+          ? filtered.map((p, idx) => `<div class="search-option${idx===0?' active':''}" data-sku="${p.sku}">
+                <div><strong>${p.sku}</strong>${p.name ? ' — ' + p.name : ''}</div>
+                <div class="meta">${fmtMoney(p.costGross || 0)}</div>
+              </div>`).join('')
+          : '<div class="search-option"><div>Ничего не найдено</div></div>';
+        dropdown.classList.add('open');
+
+        dropdown.querySelectorAll('[data-sku]').forEach(opt => opt.addEventListener('click', () => {
+          const sku = opt.getAttribute('data-sku');
+          const product = products.find(p => p.sku === sku);
+          if (!product) return;
+          hiddenSel.value = sku;
+          searchInput.value = `${product.sku}${product.name ? ' — ' + product.name : ''}`;
+          selectedText.textContent = `Выбран товар: ${product.sku}${product.name ? ' — ' + product.name : ''} · остаток ${Math.max(0, Math.floor(Number(product.stockQty || 0)))} шт`;
+          dropdown.classList.remove('open');
+        }));
+      }
+
+      searchInput.onfocus = () => renderDropdown(searchInput.value);
+      searchInput.oninput = () => renderDropdown(searchInput.value);
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-select-wrap')) dropdown.classList.remove('open');
+      });
+
+      if (!products.length) {
+        hiddenSel.value = '';
+        searchInput.value = '';
+        searchInput.placeholder = 'Сначала сохрани товары в базу';
+        selectedText.textContent = 'Товар пока не выбран.';
+      } else if (!hiddenSel.value || !products.find(p => p.sku === hiddenSel.value)) {
+        hiddenSel.value = products[0].sku;
+        searchInput.value = `${products[0].sku}${products[0].name ? ' — ' + products[0].name : ''}`;
+        selectedText.textContent = `Выбран товар: ${products[0].sku}${products[0].name ? ' — ' + products[0].name : ''} · остаток ${Math.max(0, Math.floor(Number(products[0].stockQty || 0)))} шт`;
+      }
+    }
+
+    
+    const shipmentDraft = { editIndex: -1, items: [] };
+
+    function shipmentEditorLine(amount, vatMode, vatRate) {
+      const gross = Number(amount || 0);
+      const inputVat = purchaseInputVat(gross, Number(vatRate || 0), vatMode || 'with');
+      return { gross, inputVat, net: gross - inputVat };
+    }
+
+    function computeShipmentEditorCost(calc) {
+      const defaultVatRate = n(document.getElementById('vatRate').value) || 12;
+      const fabricGross = Number(calc.fabricPrice || 0) * Number(calc.fabricConsumption || 0);
+      const fabricInputVat = purchaseInputVat(fabricGross, Number(calc.fabricVatRate || defaultVatRate), calc.fabricVatIncluded || 'with');
+      const sewing = shipmentEditorLine(calc.sewingCost, calc.sewingCostVatIncluded, defaultVatRate);
+      const packageCost = shipmentEditorLine(calc.packageCost, calc.packageCostVatIncluded, defaultVatRate);
+      const zipperCost = shipmentEditorLine(calc.zipperCost, calc.zipperCostVatIncluded, defaultVatRate);
+      const elasticCost = shipmentEditorLine(calc.elasticCost, calc.elasticCostVatIncluded, defaultVatRate);
+      const polygraphyCost = shipmentEditorLine(calc.polygraphyCost, calc.polygraphyCostVatIncluded, defaultVatRate);
+      const stickersCost = shipmentEditorLine(calc.stickersCost, calc.stickersCostVatIncluded, defaultVatRate);
+      const promoPolygraphyCost = shipmentEditorLine(calc.promoPolygraphyCost, calc.promoPolygraphyCostVatIncluded, defaultVatRate);
+      const inboundLogisticsCost = shipmentEditorLine(calc.inboundLogisticsCost, calc.inboundLogisticsCostVatIncluded, defaultVatRate);
+      const transportBoxCost = shipmentEditorLine(calc.transportBoxCost, calc.transportBoxCostVatIncluded, defaultVatRate);
+      const otherProductCost = shipmentEditorLine(calc.otherProductCost, calc.otherProductCostVatIncluded, defaultVatRate);
+
+      let storageReserve = 0;
+      if ((calc.productOnWarehouse || 'no') === 'yes') {
+        const liters = (Number(calc.productLength || 0) * Number(calc.productWidth || 0) * Number(calc.productHeight || 0)) / 1000000;
+        const roundedLiters = liters > 0 ? Math.ceil(liters) : 0;
+        const storage = calcStoragePerDay(roundedLiters, Number(calc.productTurnover || 0), calc.productStockStatus || 'existing', Number(calc.productNewSkuDays || 0));
+        storageReserve = storage.amount * Number(calc.productStorageDays || 0);
+      }
+
+      const totalGross = fabricGross + sewing.gross + packageCost.gross + zipperCost.gross + elasticCost.gross + polygraphyCost.gross + stickersCost.gross + promoPolygraphyCost.gross + inboundLogisticsCost.gross + transportBoxCost.gross + otherProductCost.gross + storageReserve;
+      const totalInputVat = fabricInputVat + sewing.inputVat + packageCost.inputVat + zipperCost.inputVat + elasticCost.inputVat + polygraphyCost.inputVat + stickersCost.inputVat + promoPolygraphyCost.inputVat + inboundLogisticsCost.inputVat + transportBoxCost.inputVat + otherProductCost.inputVat;
+      return { totalGross, totalInputVat, totalNet: totalGross - totalInputVat };
+    }
+
+    function collectShipmentEditorCalc() {
+      return {
+        fabricPrice: n(document.getElementById('shipCalcFabricPrice').value),
+        fabricConsumption: n(document.getElementById('shipCalcFabricConsumption').value),
+        fabricVatIncluded: document.getElementById('shipCalcFabricVatIncluded').value,
+        fabricVatRate: n(document.getElementById('shipCalcFabricVatRate').value),
+        sewingCost: n(document.getElementById('shipCalcSewingCost').value),
+        sewingCostVatIncluded: document.getElementById('shipCalcSewingVatIncluded').value,
+        packageCost: n(document.getElementById('shipCalcPackageCost').value),
+        packageCostVatIncluded: document.getElementById('shipCalcPackageVatIncluded').value,
+        zipperCost: n(document.getElementById('shipCalcZipperCost').value),
+        zipperCostVatIncluded: document.getElementById('shipCalcZipperVatIncluded').value,
+        elasticCost: n(document.getElementById('shipCalcElasticCost').value),
+        elasticCostVatIncluded: document.getElementById('shipCalcElasticVatIncluded').value,
+        polygraphyCost: n(document.getElementById('shipCalcPolygraphyCost').value),
+        polygraphyCostVatIncluded: document.getElementById('shipCalcPolygraphyVatIncluded').value,
+        stickersCost: n(document.getElementById('shipCalcStickersCost').value),
+        stickersCostVatIncluded: document.getElementById('shipCalcStickersVatIncluded').value,
+        promoPolygraphyCost: n(document.getElementById('shipCalcPromoPolygraphyCost').value),
+        promoPolygraphyCostVatIncluded: document.getElementById('shipCalcPromoPolygraphyVatIncluded').value,
+        inboundLogisticsCost: n(document.getElementById('shipCalcInboundLogisticsCost').value),
+        inboundLogisticsCostVatIncluded: document.getElementById('shipCalcInboundLogisticsVatIncluded').value,
+        transportBoxCost: n(document.getElementById('shipCalcTransportBoxCost').value),
+        transportBoxCostVatIncluded: document.getElementById('shipCalcTransportBoxVatIncluded').value,
+        otherProductCost: n(document.getElementById('shipCalcOtherProductCost').value),
+        otherProductCostVatIncluded: document.getElementById('shipCalcOtherProductVatIncluded').value,
+        productOnWarehouse: document.getElementById('shipCalcProductOnWarehouse').value,
+        productStorageDays: n(document.getElementById('shipCalcProductStorageDays').value),
+        productTurnover: n(document.getElementById('shipCalcProductTurnover').value),
+        productStockStatus: document.getElementById('shipCalcProductStockStatus').value,
+        productLength: n(document.getElementById('shipCalcProductLength').value),
+        productWidth: n(document.getElementById('shipCalcProductWidth').value),
+        productHeight: n(document.getElementById('shipCalcProductHeight').value),
+        productNewSkuDays: n(document.getElementById('shipCalcProductNewSkuDays').value)
+      };
+    }
+
+    function recalcShipmentEditor() {
+      const totals = computeShipmentEditorCost(collectShipmentEditorCalc());
+      document.getElementById('editShipmentUnitCost').value = totals.totalGross.toFixed(2);
+      return totals;
+    }
+
+    function openShipmentEditor(idx) {
+      const item = shipmentDraft.items[idx];
+      if (!item) return;
+      shipmentDraft.editIndex = idx;
+      const calc = (item.snapshot && item.snapshot.calc) || {};
+      document.getElementById('shipmentEditorEmpty').style.display = 'none';
+      document.getElementById('shipmentEditorPanel').classList.add('open');
+      document.getElementById('editShipmentSku').value = item.sku || '';
+      document.getElementById('editShipmentName').value = item.name || '';
+      document.getElementById('editShipmentQty').value = item.qty || 1;
+
+      const values = {
+        shipCalcFabricPrice: calc.fabricPrice ?? 0,
+        shipCalcFabricConsumption: calc.fabricConsumption ?? 0,
+        shipCalcFabricVatIncluded: calc.fabricVatIncluded ?? 'with',
+        shipCalcFabricVatRate: calc.fabricVatRate ?? 12,
+        shipCalcSewingCost: calc.sewingCost ?? 0,
+        shipCalcSewingVatIncluded: calc.sewingCostVatIncluded ?? 'with',
+        shipCalcPackageCost: calc.packageCost ?? 0,
+        shipCalcPackageVatIncluded: calc.packageCostVatIncluded ?? 'with',
+        shipCalcZipperCost: calc.zipperCost ?? 0,
+        shipCalcZipperVatIncluded: calc.zipperCostVatIncluded ?? 'with',
+        shipCalcElasticCost: calc.elasticCost ?? 0,
+        shipCalcElasticVatIncluded: calc.elasticCostVatIncluded ?? 'with',
+        shipCalcPolygraphyCost: calc.polygraphyCost ?? 0,
+        shipCalcPolygraphyVatIncluded: calc.polygraphyCostVatIncluded ?? 'with',
+        shipCalcStickersCost: calc.stickersCost ?? 0,
+        shipCalcStickersVatIncluded: calc.stickersCostVatIncluded ?? 'with',
+        shipCalcPromoPolygraphyCost: calc.promoPolygraphyCost ?? 0,
+        shipCalcPromoPolygraphyVatIncluded: calc.promoPolygraphyCostVatIncluded ?? 'with',
+        shipCalcInboundLogisticsCost: calc.inboundLogisticsCost ?? 0,
+        shipCalcInboundLogisticsVatIncluded: calc.inboundLogisticsCostVatIncluded ?? 'with',
+        shipCalcTransportBoxCost: calc.transportBoxCost ?? 0,
+        shipCalcTransportBoxVatIncluded: calc.transportBoxCostVatIncluded ?? 'with',
+        shipCalcOtherProductCost: calc.otherProductCost ?? 0,
+        shipCalcOtherProductVatIncluded: calc.otherProductCostVatIncluded ?? 'with',
+        shipCalcProductOnWarehouse: calc.productOnWarehouse ?? 'no',
+        shipCalcProductStorageDays: calc.productStorageDays ?? 0,
+        shipCalcProductTurnover: calc.productTurnover ?? 0,
+        shipCalcProductStockStatus: calc.productStockStatus ?? 'existing',
+        shipCalcProductLength: calc.productLength ?? 0,
+        shipCalcProductWidth: calc.productWidth ?? 0,
+        shipCalcProductHeight: calc.productHeight ?? 0,
+        shipCalcProductNewSkuDays: calc.productNewSkuDays ?? 0
+      };
+      Object.entries(values).forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+      });
+      recalcShipmentEditor();
+    }
+
+    function closeShipmentEditor() {
+      shipmentDraft.editIndex = -1;
+      document.getElementById('shipmentEditorPanel').classList.remove('open');
+      document.getElementById('shipmentEditorEmpty').style.display = 'block';
+      ['editShipmentSku','editShipmentName','editShipmentQty','editShipmentUnitCost'].forEach(id => document.getElementById(id).value = '');
+    }
+
+function currentShipmentItemFromProduct(product, qty) {
+      return {
+        sku: product.sku,
+        name: product.name || '',
+        article1c: product.article1c || '',
+        code1c: product.code1c || '',
+        qty,
+        unitCost: product.costGross || 0,
+        lineTotal: (product.costGross || 0) * qty,
+        snapshot: JSON.parse(JSON.stringify(product))
+      };
+    }
+
+    function renderShipmentDraft() {
+      const body = document.getElementById('shipmentItemsBody');
+      body.innerHTML = '';
+      document.getElementById('shipmentItemsEmpty').style.display = shipmentDraft.items.length ? 'none' : 'block';
+
+      let totalQty = 0, totalCost = 0;
+      shipmentDraft.items.forEach((item, idx) => {
+        totalQty += item.qty;
+        totalCost += item.lineTotal;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${item.sku}</strong></td>
+          <td>${item.name || '<span class="muted">без названия</span>'}</td>
+          <td>${fmtMoney(item.unitCost)}</td>
+          <td>${item.qty}</td>
+          <td>${fmtMoney(item.lineTotal)}</td>
+          <td>
+            <div class="toolbar">
+              <button class="btn-secondary" data-edit-line="${idx}">Изменить</button>
+              <button class="btn-secondary" data-view-line="${idx}">Калькуляция</button>
+              <button class="btn-danger" data-delete-line="${idx}">Убрать</button>
+            </div>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+
+      document.getElementById('shipmentTotalQtyVal').textContent = totalQty.toLocaleString('ru-RU');
+      document.getElementById('shipmentTotalSkuVal').textContent = shipmentDraft.items.length.toLocaleString('ru-RU');
+      document.getElementById('shipmentTotalCostVal').textContent = fmtMoney(totalCost);
+
+      body.querySelectorAll('[data-edit-line]').forEach(btn => btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-edit-line'));
+        openShipmentEditor(idx);
+      }));
+      body.querySelectorAll('[data-view-line]').forEach(btn => btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-view-line'));
+        const item = shipmentDraft.items[idx];
+        loadProductIntoCalculator(item.snapshot);
+        shipmentDraft.editIndex = idx;
+      }));
+      body.querySelectorAll('[data-delete-line]').forEach(btn => btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-delete-line'));
+        shipmentDraft.items.splice(idx, 1);
+        renderShipmentDraft();
+      }));
+    }
+
+    function addProductToShipment() {
+      const sku = document.getElementById('shipmentSkuSelect').value;
+      const qty = Math.max(1, Math.floor(n(document.getElementById('shipmentQty').value) || 1));
+      const product = readStore(STORAGE_KEYS.products, []).find(p => p.sku === sku);
+      if (!product) {
+        alert('Сначала создай товар в базе.');
+        return;
+      }
+      const availableQty = getAvailableStockForProduct(product);
+      if (qty > availableQty) {
+        alert(`Недостаточно остатка. В базе доступно только ${availableQty} шт.`);
+        return;
+      }
+      shipmentDraft.items.push(currentShipmentItemFromProduct(product, qty));
+      renderShipmentDraft();
+      renderShipmentSelectors();
+    }
+
+    function resetShipmentDraft() {
+      shipmentDraft.editIndex = -1;
+      shipmentDraft.items = [];
+      document.getElementById('shipmentName').value = '';
+      document.getElementById('shipmentDate').value = todayIso();
+      document.getElementById('editShipmentSku').value = '';
+      document.getElementById('editShipmentName').value = '';
+      document.getElementById('editShipmentUnitCost').value = '';
+      document.getElementById('editShipmentQty').value = '';
+      renderShipmentDraft();
+      renderShipmentSelectors();
+    }
+
+    function applyShipmentLineEdit() {
+      const idx = shipmentDraft.editIndex;
+      if (idx < 0 || !shipmentDraft.items[idx]) {
+        alert('Сначала выбери строку поставки.');
+        return;
+      }
+      const item = shipmentDraft.items[idx];
+      const calc = collectShipmentEditorCalc();
+      const totals = computeShipmentEditorCost(calc);
+
+      item.sku = document.getElementById('editShipmentSku').value.trim();
+      item.name = document.getElementById('editShipmentName').value.trim();
+      item.qty = Math.max(1, Math.floor(n(document.getElementById('editShipmentQty').value) || 1));
+      item.article1c = item.article1c || item.snapshot?.article1c || '';
+      item.code1c = item.code1c || item.snapshot?.code1c || '';
+      item.unitCost = totals.totalGross;
+      item.lineTotal = item.unitCost * item.qty;
+      item.snapshot = item.snapshot || {};
+      item.snapshot.sku = item.sku;
+      item.snapshot.name = item.name;
+      item.snapshot.article1c = item.article1c || '';
+      item.snapshot.code1c = item.code1c || '';
+      item.snapshot.costGross = totals.totalGross;
+      item.snapshot.costNet = totals.totalNet;
+      item.snapshot.inputVat = totals.totalInputVat;
+      item.snapshot.updatedAt = new Date().toISOString();
+      item.snapshot.calc = calc;
+
+      renderShipmentDraft();
+      closeShipmentEditor();
+    }
+
+    function saveShipment() {
+      const name = document.getElementById('shipmentName').value.trim();
+      const date = document.getElementById('shipmentDate').value;
+      if (!name) {
+        alert('Укажи название поставки.');
+        return;
+      }
+      if (!date) {
+        alert('Укажи дату поставки.');
+        return;
+      }
+      if (!shipmentDraft.items.length) {
+        alert('Добавь хотя бы один товар в поставку.');
+        return;
+      }
+      const products = readStore(STORAGE_KEYS.products, []);
+      for (const item of shipmentDraft.items) {
+        const product = products.find(p => p.sku === item.sku);
+        const currentStock = Math.max(0, Math.floor(Number(product?.stockQty || 0)));
+        if (!product) {
+          alert(`Товар ${item.sku} не найден в базе.`);
+          return;
+        }
+        if (Number(item.qty || 0) > currentStock) {
+          alert(`Недостаточно остатка по SKU ${item.sku}. В базе ${currentStock} шт, в поставке ${item.qty} шт.`);
+          return;
+        }
+      }
+
+      const shipments = readStore(STORAGE_KEYS.shipments, []);
+      const shipment = {
+        id: `${date}_${Date.now()}`,
+        name,
+        date,
+        createdAt: new Date().toISOString(),
+        items: JSON.parse(JSON.stringify(shipmentDraft.items)),
+        totals: {
+          totalQty: shipmentDraft.items.reduce((s,i)=>s+i.qty,0),
+          totalCost: shipmentDraft.items.reduce((s,i)=>s+i.lineTotal,0),
+          skuCount: shipmentDraft.items.length
+        }
+      };
+      shipment.items.forEach(item => {
+        const product = products.find(p => p.sku === item.sku);
+        product.stockQty = Math.max(0, Math.floor(Number(product.stockQty || 0)) - Math.floor(Number(item.qty || 0)));
+        product.updatedAt = new Date().toISOString();
+      });
+
+      shipments.push(shipment);
+      writeStore(STORAGE_KEYS.products, products);
+      writeStore(STORAGE_KEYS.shipments, shipments);
+      renderProductsDb();
+      renderShipmentSelectors();
+      renderAnalyticsSelectors();
+      renderShipmentsHistory();
+      renderAnalytics();
+      alert('Поставка сохранена в системе. Остатки в базе уменьшены.');
+      resetShipmentDraft();
+    }
+
+    function renderShipmentsHistory() {
+      const shipments = readStore(STORAGE_KEYS.shipments, []);
+      const body = document.getElementById('shipmentsHistoryBody');
+      body.innerHTML = '';
+      document.getElementById('shipmentsEmpty').classList.toggle('hidden', shipments.length !== 0);
+      const sorted = [...shipments].sort((a,b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt||'').localeCompare(a.createdAt||''));
+
+      sorted.forEach(sh => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${fmtDate(sh.date)}</td>
+          <td><strong>${sh.name}</strong><br><span class="muted">${sh.totals.skuCount} SKU</span></td>
+          <td>${sh.totals.skuCount}</td>
+          <td>${sh.totals.totalQty}</td>
+          <td>${fmtMoney(sh.totals.totalCost)}</td>
+          <td>
+            <div class="toolbar">
+              <button class="btn-secondary" data-open-shipment="${sh.id}">Открыть</button>
+              <button class="btn-secondary" data-export-shipment="${sh.id}">Excel</button>
+            </div>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+
+      body.querySelectorAll('[data-open-shipment]').forEach(btn => btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-open-shipment');
+        const sh = readStore(STORAGE_KEYS.shipments, []).find(x => x.id === id);
+        if (!sh) return;
+        document.getElementById('shipmentName').value = sh.name;
+        document.getElementById('shipmentDate').value = sh.date;
+        shipmentDraft.items = JSON.parse(JSON.stringify(sh.items));
+        renderShipmentDraft();
+
+        openPage('shipments-tab');
+      }));
+
+      body.querySelectorAll('[data-export-shipment]').forEach(btn => btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-export-shipment');
+        const sh = readStore(STORAGE_KEYS.shipments, []).find(x => x.id === id);
+        if (!sh) return;
+        exportShipmentCsv(sh);
+      }));
+    }
+
+    function exportShipmentCsv(shipment) {
+      const escapeXml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+
+      const rows = shipment.items.map(item => `
+        <Row>
+          <Cell><Data ss:Type="String">${escapeXml(item.sku)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(item.article1c || item.snapshot?.article1c || '')}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(item.code1c || item.snapshot?.code1c || '')}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(item.name || '')}</Data></Cell>
+          <Cell><Data ss:Type="Number">${Number(item.qty || 0)}</Data></Cell>
+          <Cell><Data ss:Type="Number">${Number(item.unitCost || 0)}</Data></Cell>
+          <Cell><Data ss:Type="Number">${Number(item.lineTotal || 0)}</Data></Cell>
+        </Row>
+      `).join('');
+
+      const xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Worksheet ss:Name="Поставка">
+  <Table>
+   <Row><Cell><Data ss:Type="String">Поставка</Data></Cell><Cell><Data ss:Type="String">${escapeXml(shipment.name)}</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">Дата</Data></Cell><Cell><Data ss:Type="String">${escapeXml(shipment.date)}</Data></Cell></Row>
+   <Row></Row>
+   <Row>
+    <Cell><Data ss:Type="String">SKU</Data></Cell>
+    <Cell><Data ss:Type="String">Артикул 1С</Data></Cell>
+    <Cell><Data ss:Type="String">Код 1С</Data></Cell>
+    <Cell><Data ss:Type="String">Название товара</Data></Cell>
+    <Cell><Data ss:Type="String">Количество</Data></Cell>
+    <Cell><Data ss:Type="String">Себестоимость 1 шт</Data></Cell>
+    <Cell><Data ss:Type="String">Общая сумма</Data></Cell>
+   </Row>
+   ${rows}
+   <Row></Row>
+   <Row>
+    <Cell><Data ss:Type="String">Итого</Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="Number">${Number(shipment.totals.totalQty || 0)}</Data></Cell>
+    <Cell><Data ss:Type="String"></Data></Cell>
+    <Cell><Data ss:Type="Number">${Number(shipment.totals.totalCost || 0)}</Data></Cell>
+   </Row>
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+      const blob = new Blob(['\ufeff' + xml], { type: 'application/vnd.ms-excel' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${shipment.name.replace(/[^\w\-а-яА-Я]+/g, '_') || 'shipment'}_1C.xls`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function svgLineChart(svgId, points, yLabelFmt) {
+      const svg = document.getElementById(svgId);
+      if (!svg) return;
+      const width = 760, height = 280, padL = 54, padR = 18, padT = 18, padB = 38;
+      if (!points.length) {
+        svg.innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-size="14">Недостаточно данных для графика</text>`;
+        return;
+      }
+      const ys = points.map(p => p.value);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      const spread = Math.max(1, maxY - minY);
+      const xStep = points.length > 1 ? (width - padL - padR) / (points.length - 1) : 0;
+      const yPos = v => height - padB - ((v - minY) / spread) * (height - padT - padB);
+      const xPos = i => padL + i * xStep;
+
+      const grid = [];
+      for (let i=0; i<5; i++) {
+        const val = minY + (spread/4)*i;
+        const y = yPos(val);
+        grid.push(`<line x1="${padL}" y1="${y}" x2="${width-padR}" y2="${y}" stroke="#e5e7eb" />`);
+        grid.push(`<text x="${padL-8}" y="${y+4}" text-anchor="end" fill="#6b7280" font-size="11">${yLabelFmt(val)}</text>`);
+      }
+
+      const path = points.map((p,i) => `${i===0?'M':'L'} ${xPos(i)} ${yPos(p.value)}`).join(' ');
+      const dots = points.map((p,i) => `<circle cx="${xPos(i)}" cy="${yPos(p.value)}" r="4" fill="#6d28d9"><title>${p.label}: ${yLabelFmt(p.value)}</title></circle>`).join('');
+      const labels = points.map((p,i) => `<text x="${xPos(i)}" y="${height-14}" text-anchor="middle" fill="#6b7280" font-size="11">${p.label}</text>`).join('');
+
+      svg.innerHTML = `
+        <rect x="0" y="0" width="${width}" height="${height}" fill="#fff" rx="14"></rect>
+        ${grid.join('')}
+        <path d="${path}" fill="none" stroke="#6d28d9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+        ${dots}
+        ${labels}
+      `;
+    }
+
+    function svgBarChart(svgId, points, yLabelFmt) {
+      const svg = document.getElementById(svgId);
+      if (!svg) return;
+      const width = 760, height = 280, padL = 54, padR = 18, padT = 18, padB = 38;
+      if (!points.length) {
+        svg.innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-size="14">Недостаточно данных для графика</text>`;
+        return;
+      }
+      const ys = points.map(p => p.value);
+      const maxY = Math.max(...ys, 1);
+      const barW = Math.max(24, (width - padL - padR) / points.length - 20);
+      const step = (width - padL - padR) / points.length;
+      const yPos = v => height - padB - (v / maxY) * (height - padT - padB);
+
+      const grid = [];
+      for (let i=0; i<5; i++) {
+        const val = (maxY/4)*i;
+        const y = yPos(val);
+        grid.push(`<line x1="${padL}" y1="${y}" x2="${width-padR}" y2="${y}" stroke="#e5e7eb" />`);
+        grid.push(`<text x="${padL-8}" y="${y+4}" text-anchor="end" fill="#6b7280" font-size="11">${yLabelFmt(val)}</text>`);
+      }
+
+      const bars = points.map((p,i) => {
+        const x = padL + i*step + (step-barW)/2;
+        const y = yPos(p.value);
+        const h = height - padB - y;
+        return `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="10" fill="#8b5cf6"><title>${p.label}: ${yLabelFmt(p.value)}</title></rect>
+                <text x="${x+barW/2}" y="${height-14}" text-anchor="middle" fill="#6b7280" font-size="11">${p.label}</text>`;
+      }).join('');
+
+      svg.innerHTML = `<rect x="0" y="0" width="${width}" height="${height}" fill="#fff" rx="14"></rect>${grid.join('')}${bars}`;
+    }
+
+    function renderAnalytics() {
+      const shipments = readStore(STORAGE_KEYS.shipments, []);
+      const sku = document.getElementById('analyticsSkuSelect').value;
+      const df = document.getElementById('analyticsDateFrom').value;
+      const dt = document.getElementById('analyticsDateTo').value;
+      const rf = document.getElementById('shipmentReportFrom').value;
+      const rt = document.getElementById('shipmentReportTo').value;
+
+      let skuPoints = [];
+      if (sku) {
+        shipments
+          .filter(sh => (!df || sh.date >= df) && (!dt || sh.date <= dt))
+          .sort((a,b) => a.date.localeCompare(b.date))
+          .forEach(sh => {
+            sh.items.filter(i => i.sku === sku).forEach(i => {
+              skuPoints.push({ label: sh.date.slice(5), value: i.unitCost });
+            });
+          });
+      }
+      svgLineChart('costTrendChart', skuPoints, v => moneyFmt.format(v));
+
+      const monthlyMap = {};
+      let reportShipmentCount = 0, reportQty = 0, reportTotal = 0;
+      shipments
+        .filter(sh => (!rf || sh.date >= rf) && (!rt || sh.date <= rt))
+        .forEach(sh => {
+          reportShipmentCount += 1;
+          reportQty += sh.totals.totalQty || 0;
+          reportTotal += sh.totals.totalCost || 0;
+          const month = (sh.date || '').slice(0,7);
+          monthlyMap[month] = (monthlyMap[month] || 0) + (sh.totals.totalCost || 0);
+        });
+      const monthPoints = Object.keys(monthlyMap).sort().map(m => ({ label: m.slice(5), value: monthlyMap[m] }));
+      svgBarChart('shipmentMonthChart', monthPoints, v => moneyFmt.format(v));
+
+      const avgSkuCost = skuPoints.length ? skuPoints.reduce((s,p)=>s+p.value,0)/skuPoints.length : 0;
+      document.getElementById('reportShipmentCountVal').textContent = reportShipmentCount.toLocaleString('ru-RU');
+      document.getElementById('reportShipmentQtyVal').textContent = reportQty.toLocaleString('ru-RU');
+      document.getElementById('reportShipmentTotalVal').textContent = fmtMoney(reportTotal);
+      document.getElementById('reportAvgSkuCostVal').textContent = fmtMoney(avgSkuCost);
+    }
+
+
+    document.getElementById('refreshProductsBtn').addEventListener('click', renderProductsDb);
+    document.getElementById('addShipmentItemBtn').addEventListener('click', addProductToShipment);
+    document.getElementById('saveShipmentBtn').addEventListener('click', saveShipment);
+    document.getElementById('resetShipmentBtn').addEventListener('click', resetShipmentDraft);
+    document.getElementById('applyShipmentEditBtn').addEventListener('click', applyShipmentLineEdit);
+    document.getElementById('cancelShipmentEditBtn').addEventListener('click', closeShipmentEditor);
+    ['shipCalcFabricPrice','shipCalcFabricConsumption','shipCalcFabricVatIncluded','shipCalcFabricVatRate','shipCalcSewingCost','shipCalcSewingVatIncluded','shipCalcPackageCost','shipCalcPackageVatIncluded','shipCalcZipperCost','shipCalcZipperVatIncluded','shipCalcElasticCost','shipCalcElasticVatIncluded','shipCalcPolygraphyCost','shipCalcPolygraphyVatIncluded','shipCalcStickersCost','shipCalcStickersVatIncluded','shipCalcPromoPolygraphyCost','shipCalcPromoPolygraphyVatIncluded','shipCalcInboundLogisticsCost','shipCalcInboundLogisticsVatIncluded','shipCalcTransportBoxCost','shipCalcTransportBoxVatIncluded','shipCalcOtherProductCost','shipCalcOtherProductVatIncluded','shipCalcProductOnWarehouse','shipCalcProductStorageDays','shipCalcProductTurnover','shipCalcProductStockStatus','shipCalcProductLength','shipCalcProductWidth','shipCalcProductHeight','shipCalcProductNewSkuDays']
+      .forEach(id => {
+        document.getElementById(id).addEventListener('input', recalcShipmentEditor);
+        document.getElementById(id).addEventListener('change', recalcShipmentEditor);
+      });
+    ['analyticsSkuSelect','analyticsDateFrom','analyticsDateTo','shipmentReportFrom','shipmentReportTo'].forEach(id => {
+      document.getElementById(id).addEventListener('input', renderAnalytics);
+      document.getElementById(id).addEventListener('change', renderAnalytics);
+    });
+
+    document.getElementById('shipmentDate').value = todayIso();
+    document.getElementById('analyticsDateFrom').value = '';
+    document.getElementById('analyticsDateTo').value = '';
+    document.getElementById('shipmentReportFrom').value = '';
+    document.getElementById('shipmentReportTo').value = '';
+
+    renderProductsDb();
+    renderShipmentSelectors();
+    renderShipmentDraft();
+    renderShipmentsHistory();
+    renderAnalytics();
+
+    renderProductCost();
+    renderUnit();
+  </script>
+</body>
+</html>

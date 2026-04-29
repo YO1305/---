@@ -1,0 +1,1478 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" /> 
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-box">
+          <div class="brand-logo">YO</div>
+          <div class="brand-meta">
+            <h1 id="appBrandTitle">YO</h1>
+            <p id="appBrandSub">Marketplace operating system</p>
+          </div>
+        </div>
+
+        <div class="sidebar-mp-tools">
+          <div class="marketplace-switcher" id="mpSwitcher" role="tablist" aria-label="Маркетплейс">
+            <button type="button" class="mp-btn active" data-mp="uzum" role="tab">Uzum</button>
+            <button type="button" class="mp-btn" data-mp="wb" role="tab">WB</button>
+            <button type="button" class="mp-btn" data-mp="yandex" role="tab">Yandex</button>
+          </div>
+          <p class="mp-context-hint" id="mpContextHint">Выберите маркетплейс: для <strong>Uzum</strong> доступны все разделы; для <strong>WB</strong> и <strong>Yandex</strong> часть разделов пока в разработке.</p>
+        </div>
+
+        <nav class="nav-menu">
+          <button class="nav-btn active" data-page="dashboard-page">
+            <span class="nav-icon">🏠</span>
+            <span>Главная</span>
+          </button>
+          <button class="nav-btn" data-page="unit-tab">
+            <span class="nav-icon">📊</span>
+            <span>Юнит-экономика</span>
+          </button>
+          <button class="nav-btn" data-page="cost-tab">
+            <span class="nav-icon">🧵</span>
+            <span>Себестоимость</span>
+          </button>
+          <button class="nav-btn" data-page="products-tab">
+            <span class="nav-icon">📦</span>
+            <span>База товаров</span>
+          </button>
+          <button class="nav-btn" data-page="components-tab">
+            <span class="nav-icon">📐</span>
+            <span>Комплектующие</span>
+          </button>
+          <button class="nav-btn" data-page="shipments-tab">
+            <span class="nav-icon">🚚</span>
+            <span>Поставки</span>
+          </button>
+          <button class="nav-btn" data-page="stock-analytics-tab">
+            <span class="nav-icon">📉</span>
+            <span>Склад</span>
+          </button>
+          <button class="nav-btn" data-page="analytics-tab">
+            <span class="nav-icon">📈</span>
+            <span>Аналитика</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="content-wrap">
+        <div class="topbar">
+          <div class="topbar-card">
+            <h2 id="heroTitle">YO — главная панель</h2>
+            <p id="heroText">Выбери нужный раздел слева или открой один из быстрых сценариев ниже.</p>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" id="themeToggle" class="theme-toggle" aria-label="Включить тёмную тему" title="Тема оформления" aria-pressed="false">
+              <span class="theme-toggle-icon theme-toggle-icon--moon" aria-hidden="true">🌙</span>
+              <span class="theme-toggle-icon theme-toggle-icon--sun" aria-hidden="true">☀️</span>
+            </button>
+            <div class="status-chip">
+              <span class="status-dot"></span>
+              <span id="statusChipText">Интерфейс v5 · dashboard mode</span>
+            </div>
+          </div>
+        </div>
+
+        <section class="page-panel active" id="dashboard-page">
+          <div class="dashboard-grid">
+            <article class="dashboard-card" data-open-page="unit-tab">
+              <div class="dash-icon">📊</div>
+              <div>
+                <h3>Юнит-экономика</h3>
+                <p>Считай прибыль, маржу, ROI, точку безубыточности, логистику и НДС по артикулу 1С.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">P&L</span>
+                <span class="dashboard-link">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="cost-tab">
+              <div class="dash-icon">🧵</div>
+              <div>
+                <h3>Себестоимость</h3>
+                <p>Собери полную себестоимость товара из ткани, пошива, упаковки, логистики и прочих затрат.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">COGS</span>
+                <span class="dashboard-link">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="products-tab">
+              <div class="dash-icon">📦</div>
+              <div>
+                <h3>База товаров</h3>
+                <p>Храни артикулы 1С, ссылки и снапшоты расчётов, чтобы быстро собирать поставки и работать без дублей.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">SKU DB</span>
+                <span class="dashboard-link">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="shipments-tab">
+              <div class="dash-icon">🚚</div>
+              <div>
+                <h3>Поставки и аналитика</h3>
+                <p>Собирай поставки, выгружай их и смотри динамику себестоимости и сумм по периодам.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">Flow</span>
+                <span class="dashboard-link">Открыть раздел →</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page-panel" id="unit-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="unit-tab-wb-only hidden unit-wb-root">
+            <div class="card wb-unit-intro-card">
+              <h2>Юнит-экономика Wildberries</h2>
+              <p class="sub">Расчёт только в рублях (модель 2026). Себестоимость, артикул и литраж подставляются из вкладки «Себестоимость» кнопкой переноса.</p>
+              <div class="wb-unit-meta-row">
+                <div class="wb-unit-meta-pill"><span class="k">Артикул 1С</span><strong id="wbUnitArticleVal">—</strong></div>
+                <div class="wb-unit-meta-pill"><span class="k">Литраж</span><strong id="wbUnitLitersDisplay">—</strong> л</div>
+                <div class="wb-unit-meta-pill"><span class="k">Себестоимость</span><strong id="wbUnitCostRubDisplay">—</strong></div>
+              </div>
+              <input type="hidden" id="wbUnitLitersHidden" value="0" />
+            </div>
+            <div class="card">
+              <h2>Параметры продажи</h2>
+              <div class="grid grid-3">
+                <div class="field">
+                  <label for="wbPriceRub">Цена со скидкой (кабинет WB), ₽</label>
+                  <input id="wbPriceRub" class="input" type="number" min="0" step="0.01" value="0" />
+                </div>
+                <div class="field">
+                  <label for="wbSppPct">СПП от WB, %</label>
+                  <input id="wbSppPct" class="input" type="number" min="0" max="100" step="0.1" value="15" title="Скидка постоянного покупателя — вручную из кабинета" />
+                </div>
+                <div class="field">
+                  <label for="wbCommissionPct">Комиссия WB, %</label>
+                  <input id="wbCommissionPct" class="input" type="number" min="0" step="0.01" value="25" />
+                </div>
+                <div class="field">
+                  <label for="wbDrrPct">ДРР (реклама), %</label>
+                  <input id="wbDrrPct" class="input" type="number" min="0" step="0.01" value="0" />
+                </div>
+                <div class="field">
+                  <label for="wbAcquiringPct">Эквайринг, %</label>
+                  <input id="wbAcquiringPct" class="input" type="number" min="0" max="100" step="0.01" value="3" title="По умолчанию 3% — можно изменить" />
+                </div>
+                <div class="field">
+                  <label for="wbIrpIndex">Индекс ИРП</label>
+                  <input id="wbIrpIndex" class="input" type="number" min="0" step="0.01" value="1" />
+                </div>
+                <div class="field">
+                  <label for="wbStorage30Rub">Хранение, ₽</label>
+                  <input id="wbStorage30Rub" class="input" type="number" min="0" step="0.01" value="0" />
+                </div>
+                <div class="field">
+                  <label for="wbCostRub">Себестоимость из калькуляции, ₽</label>
+                  <input id="wbCostRub" class="input" type="number" min="0" step="0.01" value="0" readonly title="Заполняется при переносе из калькуляции WB" />
+                </div>
+              </div>
+              <p class="hint wb-unit-spp-hint" id="wbUnitBuyerHint">Цена для покупателя на сайте: <strong id="wbUnitBuyerPriceVal">—</strong> ₽ <span class="muted">(цена в кабинете минус СПП <span id="wbUnitSppPctEcho">15</span>%)</span></p>
+            </div>
+            <div class="card wb-unit-results-card" id="wbUnitResultsCard" data-profit-state="neutral">
+              <div class="wb-unit-kpi-head">
+                <div class="wb-unit-kpi-label">Чистая прибыль с 1 шт., ₽</div>
+                <div class="wb-unit-kpi-value" id="wbUnitNetProfitVal">0 ₽</div>
+              </div>
+              <div class="mini-grid" style="margin-top:14px;">
+                <div class="mini"><div class="label">Маржа, %</div><div class="value" id="wbUnitMarginVal">0%</div></div>
+                <div class="mini"><div class="label">ROI, %</div><div class="value" id="wbUnitRoiVal">0%</div></div>
+              </div>
+              <h3 class="wb-unit-breakdown-title">Детализация расходов</h3>
+              <div class="list">
+                <div class="row"><div class="key">Комиссия WB</div><div class="val" id="wbUnitFeeVal">0 ₽</div></div>
+                <div class="row"><div class="key" id="wbUnitAcqLabel">Эквайринг</div><div class="val" id="wbUnitAcqVal">0 ₽</div></div>
+                <div class="row"><div class="key">Реклама (ДРР)</div><div class="val" id="wbUnitAdsVal">0 ₽</div></div>
+                <div class="row"><div class="key">Логистика (Узбекистан, с выкупом 82%)</div><div class="val" id="wbUnitLogisticsVal">0 ₽</div></div>
+                <div class="row"><div class="key">Хранение</div><div class="val" id="wbUnitStorageVal">0 ₽</div></div>
+                <div class="row"><div class="key">Себестоимость</div><div class="val" id="wbUnitCostLineVal">0 ₽</div></div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="note">Прибыль: из цены в кабинете вычитаются комиссия, эквайринг (задаётся %), ДРР, логистика Узбекистана (11,3 + (л − 1) × 3,5) ₽/л с ИРП и выкупом 82%, себестоимость в ₽ и хранение. СПП влияет только на справочную цену для покупателя на сайте.</div>
+            </div>
+          </div>
+          <div class="unit-tab-uzum-only">
+          <div class="card">
+            <h2>Блок А. Продажа</h2>
+            <p class="sub">Основные данные для расчёта прибыли по 1 единице товара.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="price">Цена продажи, сум</label>
+                <input id="price" class="input" type="number" min="0" step="0.01" value="148500" />
+              </div>
+              <div class="field">
+                <label for="commission">Комиссия маркетплейса, %</label>
+                <input id="commission" class="input" type="number" min="0" step="0.01" value="22" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Блок Б. Себестоимость</h2>
+            <p class="sub">Себестоимость можно ввести вручную или подставить из вкладки расчёта товара.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="cost">Себестоимость товара, сум</label>
+                <input id="cost" class="input" type="number" min="0" step="0.01" value="86214" />
+              </div>
+              <div class="field">
+                <label for="costVatMode">Себестоимость</label>
+                <select id="costVatMode" class="select">
+                  <option value="with">включает НДС</option>
+                  <option value="without">без НДС</option>
+                </select>
+              </div>
+            </div>
+            <label class="inline-check">
+              <input id="useProductCost" type="checkbox" />
+              Автоматически брать себестоимость из вкладки «Себестоимость товара»
+            </label>
+            <p class="hint" id="productCostSyncText">Сейчас можно считать юнит отдельно, без привязки к вкладке себестоимости.</p>
+          </div>
+
+          <div class="card">
+            <h2>Блок В. Маркетплейс</h2>
+            <p class="sub">Логистика и хранение считаются по ВГХ и оборачиваемости.</p>
+            <div class="grid-3">
+              <div class="field">
+                <label for="length">Длина, мм</label>
+                <input id="length" class="input" type="number" min="0" step="1" value="310" />
+              </div>
+              <div class="field">
+                <label for="width">Ширина, мм</label>
+                <input id="width" class="input" type="number" min="0" step="1" value="200" />
+              </div>
+              <div class="field">
+                <label for="height">Высота, мм</label>
+                <input id="height" class="input" type="number" min="0" step="1" value="130" />
+              </div>
+            </div>
+            <div class="grid" style="margin-top: 12px;">
+              <div class="field">
+                <label for="logisticsTariff">Тариф логистики</label>
+                <select id="logisticsTariff" class="select">
+                  <option value="new" selected>Новый (по литрам)</option>
+                  <option value="old">Старый (по габаритам)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Подсказка</label>
+                <div class="hint">Новый тариф считает по литрам, старый — по категории МГТ/СГТ/КГТ и цене.</div>
+              </div>
+            </div>
+            <div class="pill-row">
+              <div class="pill">1-й литр: 5 250 сум</div>
+              <div class="pill">каждый следующий: 250 сум</div>
+              <div class="pill">максимум логистики: 50 000 сум</div>
+            </div>
+            <div class="grid" style="margin-top: 14px;">
+              <div class="field">
+                <label for="stockStatus">Статус товара</label>
+                <select id="stockStatus" class="select">
+                  <option value="existing">уже на складе</option>
+                  <option value="new">только выйдет / новый SKU</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="turnover">Оборачиваемость, дней</label>
+                <input id="turnover" class="input" type="number" min="0" step="1" value="90" />
+              </div>
+            </div>
+            <div class="grid hidden" id="newSkuBlock">
+              <div class="field">
+                <label for="newSkuDays">Дней с первой поставки</label>
+                <input id="newSkuDays" class="input" type="number" min="0" step="1" value="10" />
+              </div>
+            </div>
+            <p class="hint" id="storageRuleText"></p>
+            <p class="hint" id="storageSyncText">Пока расчёт юнит-экономики использует свои параметры ВГХ и хранения.</p>
+          </div>
+
+          <div class="card">
+            <h2>Блок Г. Налоги</h2>
+            <p class="sub">НДС считается по схеме: исходящий минус входящий.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="vatRate">Ставка НДС, %</label>
+                <input id="vatRate" class="input" type="number" min="0" step="0.01" value="12" />
+              </div>
+              <div class="field">
+                <label for="saleVatMode">Цена продажи</label>
+                <select id="saleVatMode" class="select">
+                  <option value="with">включает НДС</option>
+                  <option value="without">без НДС</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="unit-tab-uzum-only">
+          <div class="card">
+            <div class="kpi-main">
+              <div class="title">Прибыль с 1 единицы</div>
+              <div class="value" id="profitMain">0 сум</div>
+            </div>
+
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Маржа</div>
+                <div class="value" id="marginVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">Наценка</div>
+                <div class="value" id="markupVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">ROI</div>
+                <div class="value" id="roiVal">0%</div>
+              </div>
+              <div class="mini">
+                <div class="label">Точка безубыточности</div>
+                <div class="value" id="bepVal">0 сум</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Детализация</h2>
+            <div class="list">
+              <div class="row"><div class="key">Объём, л</div><div class="val" id="litersVal">0</div></div>
+              <div class="row"><div class="key">Округлённый литраж</div><div class="val" id="roundedLitersVal">0</div></div>
+              <div class="row"><div class="key">Комиссия</div><div class="val" id="commissionVal">0 сум</div></div>
+              <div class="row"><div class="key">Логистика Uzum</div><div class="val" id="logisticsVal">0 сум</div></div>
+              <div class="row"><div class="key">Хранение в день</div><div class="val" id="storageVal">0 сум</div></div>
+              <div class="row"><div class="key">Исходящий НДС</div><div class="val" id="outputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Входящий НДС</div><div class="val" id="inputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Источник входящего НДС</div><div class="val" id="inputVatSourceVal">ручной режим</div></div>
+              <div class="row"><div class="key">Статус переноса из себестоимости</div><div class="val" id="linkedProductVal">нет связи</div></div>
+              <div class="row"><div class="key">НДС к оплате</div><div class="val" id="vatPayableVal">0 сум</div></div>
+              <div class="row"><div class="key">Все расходы</div><div class="val" id="totalCostsVal">0 сум</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Пояснение</h2>
+            <div class="note">
+              Комиссия считается от цены продажи. Логистика и хранение считаются отдельно и не зависят от того, что комиссия уже удержана. Точка безубыточности показывает минимальную цену, при которой прибыль становится нулевой.
+            </div>
+          </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page-panel" id="cost-tab">
+      <div class="layout">
+        <div class="stack">
+          <div id="shipmentCalcModeBar" class="shipment-calc-mode-bar hidden" role="region" aria-label="Режим редактирования для поставки">
+            <div class="shipment-calc-mode-text">
+              <strong>Режим поставки:</strong> правки сохраняются только в текущую сборку коробки, не в базу товаров.
+            </div>
+            <div class="toolbar shipment-calc-mode-actions">
+              <button type="button" id="shipmentCalcSaveBtn" class="btn-primary">Сохранить в поставку</button>
+              <button type="button" id="shipmentCalcCancelBtn" class="btn-secondary">Отмена</button>
+            </div>
+          </div>
+          <div id="costTabMpStubStack" class="card cost-tab-mp-stub hidden" role="status" aria-live="polite"></div>
+          <div id="costTabUzumFlow" class="cost-tab-uzum-flow">
+          <div class="card">
+            <h2>Калькуляция самого товара</h2>
+            <p class="sub">Основной идентификатор записи — <strong>артикул 1С</strong>. Коды витрин (Uzum, WB, Яндекс) вводите только в блоке «Связки с маркетплейсами» ниже.</p>
+            <input type="hidden" id="sku" value="" autocomplete="off" />
+            <div class="grid grid-3">
+              <div class="field">
+                <label for="productArticle1c">Артикул 1С</label>
+                <input id="productArticle1c" class="input" type="text" placeholder="например, ART-0001" />
+              </div>
+              <div class="field">
+                <label for="productCode1c">Код 1С</label>
+                <input id="productCode1c" class="input" type="text" placeholder="например, 000000123" />
+              </div>
+              <div class="field">
+                <label for="productStockQty">Количество на остатке, шт</label>
+                <input id="productStockQty" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+            </div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="productCategory">Категория</label>
+                <select id="productCategory" class="select" required>
+                  <option value="" selected>— выберите категорию —</option>
+                  <option value="1-Постельное белье 1,5">1-Постельное белье 1,5</option>
+                  <option value="2-постельное белье 1 сп">2-постельное белье 1 сп</option>
+                  <option value="3-постельное белье 2сп">3-постельное белье 2сп</option>
+                  <option value="4-постельное белье Евро">4-постельное белье Евро</option>
+                  <option value="5-Наволочки">5-Наволочки</option>
+                  <option value="6-Простыни">6-Простыни</option>
+                  <option value="7-Салфетки">7-Салфетки</option>
+                  <option value="8-Рукавицы">8-Рукавицы</option>
+                  <option value="9-Кухонные наборы">9-Кухонные наборы</option>
+                  <option value="10-Скатерть">10-Скатерть</option>
+                  <option value="11 - Фартук">11 - Фартук</option>
+                </select>
+              </div>
+              <div class="field"></div>
+            </div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="productLink">Ссылка на товар (по желанию)</label>
+                <input id="productLink" class="input" type="text" placeholder="https://..." />
+              </div>
+              <div class="field">
+                <label for="fabricPrice">Цена ткани, сум</label>
+                <input id="fabricPrice" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label for="fabricVatIncluded">Ткань куплена с НДС?</label>
+                <select id="fabricVatIncluded" class="select">
+                  <option value="with">да, сумма уже с НДС</option>
+                  <option value="without">нет, сумма без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="fabricVatRate">Ставка НДС по закупке ткани, %</label>
+                <input id="fabricVatRate" class="input" type="number" min="0" step="0.01" value="12" />
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label for="fabricConsumption">Расход ткани на изделие</label>
+                <input id="fabricConsumption" class="input" type="number" min="0" step="0.001" value="0" />
+              </div>
+              <div class="field">
+                <label for="fabricUnit">Единица расхода ткани</label>
+                <select id="fabricUnit" class="select">
+                  <option value="m">метры</option>
+                  <option value="kg">килограммы</option>
+                  <option value="unit">условная единица</option>
+                </select>
+              </div>
+            </div>
+            <p class="hint">Стоимость ткани на изделие считается как цена ткани × расход ткани.</p>
+          </div>
+
+          <div class="card">
+            <h2>Связки с маркетплейсами</h2>
+            <p class="sub">Один товар в PIM — разные коды на витринах (Uzum, Wildberries, Яндекс).</p>
+            <div class="grid grid-3">
+              <div class="field">
+                <label for="mpSkuUzum">SKU Uzum</label>
+                <input id="mpSkuUzum" class="input" type="text" placeholder="например, BHKRASH-SIN" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="mpWbNmid">nmId WB</label>
+                <input id="mpWbNmid" class="input" type="text" placeholder="номер nmId" inputmode="numeric" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="mpSkuYandex">SKU Yandex</label>
+                <input id="mpSkuYandex" class="input" type="text" placeholder="артикул на Я.Маркете" autocomplete="off" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Расходы на товар</h2>
+            <div class="grid">
+              <div class="field">
+                <label for="sewingCost">Пошив, сум</label>
+                <input id="sewingCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="sewingCostVatIncluded">Пошив: сумма с НДС?</label>
+                <select id="sewingCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="packageCost">Пакет, сум</label>
+                <input id="packageCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="packageCostVatIncluded">Пакет: сумма с НДС?</label>
+                <select id="packageCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="zipperCost">Замок, сум</label>
+                <input id="zipperCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="zipperCostVatIncluded">Замок: сумма с НДС?</label>
+                <select id="zipperCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="elasticCost">Резинка, сум</label>
+                <input id="elasticCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="elasticCostVatIncluded">Резинка: сумма с НДС?</label>
+                <select id="elasticCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="polygraphyCost">Полиграфия, сум</label>
+                <input id="polygraphyCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="polygraphyCostVatIncluded">Полиграфия: сумма с НДС?</label>
+                <select id="polygraphyCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="stickersCost">Стикеры, сум</label>
+                <input id="stickersCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="stickersCostVatIncluded">Стикеры: сумма с НДС?</label>
+                <select id="stickersCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="promoPolygraphyCost">Рекламная полиграфия, сум</label>
+                <input id="promoPolygraphyCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="promoPolygraphyCostVatIncluded">Рекламная полиграфия: сумма с НДС?</label>
+                <select id="promoPolygraphyCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field cost-uzum-only">
+                <label for="inboundLogisticsCost">Логистика до склада Uzum, сум</label>
+                <input id="inboundLogisticsCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field cost-uzum-only">
+                <label for="inboundLogisticsCostVatIncluded">Логистика до склада Uzum: сумма с НДС?</label>
+                <select id="inboundLogisticsCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="transportBoxCost">Коробка транспортная, сум</label>
+                <input id="transportBoxCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="transportBoxCostVatIncluded">Коробка транспортная: сумма с НДС?</label>
+                <select id="transportBoxCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otherProductCost">Прочие расходы, сум</label>
+                <input id="otherProductCost" class="input" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="field">
+                <label for="otherProductCostVatIncluded">Прочие расходы: сумма с НДС?</label>
+                <select id="otherProductCostVatIncluded" class="select">
+                  <option value="with">да, с НДС</option>
+                  <option value="without">нет, без НДС</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card cost-dims-card">
+            <h2>Габариты упаковки</h2>
+            <p class="sub cost-uzum-only">Размеры в см → литраж. Отдельная карточка ниже — «Товар на складе (Uzum)» для резерва хранения.</p>
+            <p class="sub cost-wb-dims-hint hidden">Размеры в см → литраж (без расчёта хранения на складе маркетплейса).</p>
+            <div class="grid grid-3">
+              <div class="field">
+                <label for="uzumLengthCm">Длина, см</label>
+                <input id="uzumLengthCm" class="input" type="number" min="0" step="0.1" value="0" />
+              </div>
+              <div class="field">
+                <label for="uzumWidthCm">Ширина, см</label>
+                <input id="uzumWidthCm" class="input" type="number" min="0" step="0.1" value="0" />
+              </div>
+              <div class="field">
+                <label for="uzumHeightCm">Высота, см</label>
+                <input id="uzumHeightCm" class="input" type="number" min="0" step="0.1" value="0" />
+              </div>
+            </div>
+            <p class="hint">Литраж: <strong id="uzumLitersVal">0</strong> л (Д×Ш×В / 1000)</p>
+          </div>
+
+          <div class="card cost-uzum-storage-only">
+            <h2>Товар на складе (Uzum)</h2>
+            <p class="sub">Учитывается только для Uzum: резерв на хранение в себестоимости. Для WB этот блок скрыт.</p>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="productOnWarehouse">Товар на складе?</label>
+                <select id="productOnWarehouse" class="select">
+                  <option value="no">нет</option>
+                  <option value="yes">да</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="productStorageDays">Срок хранения в расчёте, дней</label>
+                <input id="productStorageDays" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+            </div>
+            <div id="productWarehouseDetails" class="hidden">
+              <div class="grid" style="margin-top:12px;">
+                <div class="field">
+                  <label for="productTurnover">Оборачиваемость, дней</label>
+                  <input id="productTurnover" class="input" type="number" min="0" step="1" value="90" />
+                </div>
+                <div class="field">
+                  <label for="productStockStatus">Статус SKU</label>
+                  <select id="productStockStatus" class="select">
+                    <option value="existing">уже на складе</option>
+                    <option value="new">только выйдет / новый SKU</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid hidden" id="productNewSkuBlock" style="margin-top:12px;">
+                <div class="field">
+                  <label for="productNewSkuDays">Дней с первой поставки</label>
+                  <input id="productNewSkuDays" class="input" type="number" min="0" step="1" value="10" />
+                </div>
+              </div>
+              <p class="hint" id="productStorageRuleText"></p>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div id="costTabMpStubResults" class="card cost-tab-mp-stub hidden" role="status" aria-live="polite"></div>
+          <div id="costTabResultsUzum">
+          <div class="card">
+            <div class="kpi-main">
+              <div class="title" id="productCostMainTitle">Себестоимость изделия</div>
+              <div class="value" id="productCostMain">0 сум</div>
+            </div>
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Входящий НДС по себестоимости</div>
+                <div class="value" id="productInputVatVal">0 сум</div>
+              </div>
+              <div class="mini">
+                <div class="label">Себестоимость без входящего НДС</div>
+                <div class="value" id="productCostNetVatVal">0 сум</div>
+              </div>
+            </div>
+            <div style="margin-top:12px;">
+              <button type="button" id="sendToUnitBtn" class="tab-btn cost-send-unit-btn" style="border-radius:14px; background:linear-gradient(135deg,#6d28d9,#8b5cf6); color:#fff; border-color:#6d28d9; box-shadow:0 12px 24px rgba(109,40,217,.25); padding:14px 18px; width:100%; text-align:center;">Перенести в юнит-экономику →</button>
+            </div>
+            <p class="hint" id="sendToUnitHint">При переносе подставятся себестоимость и параметры в юнит выбранного маркетплейса.</p>
+            <div class="mini-grid" style="margin-top: 12px;">
+              <div class="mini">
+                <div class="label">Артикул 1С</div>
+                <div class="value" id="productArticle1cVal">—</div>
+              </div>
+              <div class="mini">
+                <div class="label">Ткань на изделие</div>
+                <div class="value" id="fabricCostVal">0 сум</div>
+              </div>
+              <div class="mini">
+                <div class="label">Ссылка</div>
+                <div class="value" id="productLinkVal">—</div>
+              </div>
+            </div>
+            <div id="costWbRubWrap" class="cost-wb-rub-wrap hidden">
+              <div class="field" style="margin-top:14px;">
+                <label for="costRubUzRate">Курс RUB/UZS</label>
+                <input id="costRubUzRate" class="input" type="number" min="0.0001" step="0.01" value="130" autocomplete="off" />
+              </div>
+              <p class="cost-wb-total-dual" id="costWbTotalDual">Итого себестоимость: <strong id="costWbTotalSumPart">0 сум</strong> <span class="cost-wb-slash">/</span> <strong id="costWbTotalRubPart">—</strong> ₽</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Состав себестоимости</h2>
+            <div class="list">
+              <div class="row"><div class="key">Ткань</div><div class="val" id="fabricCostDetail">0 сум</div></div>
+              <div class="row"><div class="key">Входящий НДС по ткани</div><div class="val" id="fabricInputVatDetail">0 сум</div></div>
+              <div class="row"><div class="key">Пошив</div><div class="val" id="sewingCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Пакет</div><div class="val" id="packageCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Замок</div><div class="val" id="zipperCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Резинка</div><div class="val" id="elasticCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Полиграфия</div><div class="val" id="polygraphyCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Стикеры</div><div class="val" id="stickersCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Рекламная полиграфия</div><div class="val" id="promoPolygraphyCostVal">0 сум</div></div>
+              <div class="row cost-uzum-only"><div class="key">Логистика до склада Uzum</div><div class="val" id="inboundLogisticsCostVal">0 сум</div></div>
+              <div class="row cost-uzum-only"><div class="key">Резерв на хранение (склад Uzum)</div><div class="val" id="storageReserveVal">0 сум</div></div>
+              <div class="row"><div class="key">Коробка транспортная</div><div class="val" id="transportBoxCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Прочие расходы</div><div class="val" id="otherProductCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Весь входящий НДС</div><div class="val" id="productAllInputVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Себестоимость без входящего НДС</div><div class="val" id="productTotalNoVatVal">0 сум</div></div>
+              <div class="row"><div class="key">Итоговая себестоимость</div><div class="val" id="productTotalCostVal">0 сум</div></div>
+            </div>
+            <div class="export-to-db-wrap">
+              <button type="button" id="exportToDbBtn" class="btn-primary export-to-db-btn">💾 Создать товар в Базе</button>
+              <p class="hint export-to-db-hint">Сохраняет артикул 1С, итоговую себестоимость (сум и ₽), курс RUB/UZS (для WB) и коды маркетплейсов. Если артикул 1С уже есть — можно обновить карточку.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Пояснение</h2>
+            <div class="note">
+              Эта вкладка считает внутреннюю себестоимость единицы товара. Если включить чекбокс в юнит-экономике, итоговая себестоимость отсюда автоматически подставится в поле «Себестоимость товара».
+            </div>
+            <div id="costEditActions" class="toolbar hidden" style="margin-top:14px; flex-direction:column; align-items:stretch;">
+              <button type="button" id="saveProductChangesBtn" class="btn-primary">Сохранить изменения</button>
+              <button type="button" id="cancelCostEditBtn" class="btn-secondary">Отменить редактирование</button>
+            </div>
+          </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    
+    <section class="page-panel" id="products-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>База товаров</h2>
+            <p class="sub">Тут хранится базовая себестоимость по каждому товару. Ключ записи — артикул 1С; сохраняются ссылка, полная калькуляция, входящий НДС и дата обновления.</p>
+            <div class="toolbar">
+              <button id="saveProductToDbBtn" class="btn-primary">Сохранить текущий товар из калькуляции</button>
+              <button id="refreshProductsBtn" class="btn-secondary">Обновить список</button>
+            </div>
+            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
+              <button type="button" id="productsExportXlsxBtn" class="btn-primary">Экспорт в Excel</button>
+              <label class="btn-secondary" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+                Импорт из Excel
+                <input type="file" id="productsImportXlsxInput" accept=".xlsx" hidden />
+              </label>
+              <button type="button" id="productsDownloadTemplateBtn" class="btn-secondary">Скачать шаблон для импорта</button>
+            </div>
+            <div class="card" style="margin-top:12px; padding:14px;">
+              <div class="products-toolbar" style="align-items:flex-end;">
+                <div style="flex:1; min-width:260px;">
+                  <div class="sub" style="margin:0 0 8px;">Сводка базы</div>
+                  <div class="mini-grid">
+                    <div class="mini">
+                      <div class="label">Общая сумма остатков (UZS)</div>
+                      <div class="value" id="productsStockValueTotalVal">0 сум</div>
+                    </div>
+                    <div class="mini">
+                      <div class="label">Всего позиций</div>
+                      <div class="value" id="productsUniqueCountVal">0</div>
+                    </div>
+                    <div class="mini">
+                      <div class="label">Товаров вне стока</div>
+                      <div class="value" id="productsOutOfStockCountVal">0</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="toolbar" style="margin:0; justify-content:flex-end; flex-wrap:wrap; gap:10px;">
+                  <button type="button" id="productsExportDeficitBtn" class="btn-secondary">Скачать список отсутствующих</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="products-toolbar">
+              <div class="products-search">
+                <input id="productsLiveSearch" class="input products-live-search-input" type="search" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum, nmId WB, SKU Yandex…" autocomplete="off" />
+              </div>
+              <div class="products-meta">
+                <span class="chip" id="productsFilteredCountChip">0 найдено</span>
+              </div>
+            </div>
+            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
+              <div class="field" style="min-width:260px; margin:0;">
+                <label for="categoryFilter" style="margin-bottom:6px; display:block;">Фильтр: категория</label>
+                <select id="categoryFilter" class="select">
+                  <option value="" selected>Все категории</option>
+                  <option value="1-Постельное белье 1,5">1-Постельное белье 1,5</option>
+                  <option value="2-постельное белье 1 сп">2-постельное белье 1 сп</option>
+                  <option value="3-постельное белье 2сп">3-постельное белье 2сп</option>
+                  <option value="4-постельное белье Евро">4-постельное белье Евро</option>
+                  <option value="5-Наволочки">5-Наволочки</option>
+                  <option value="6-Простыни">6-Простыни</option>
+                  <option value="7-Салфетки">7-Салфетки</option>
+                  <option value="8-Рукавицы">8-Рукавицы</option>
+                  <option value="9-Кухонные наборы">9-Кухонные наборы</option>
+                  <option value="10-Скатерть">10-Скатерть</option>
+                  <option value="11 - Фартук">11 - Фартук</option>
+                </select>
+              </div>
+              <button type="button" id="productsStockFilterZeroBtn" class="btn-secondary">Закончились</button>
+              <button type="button" id="productsStockFilterLowBtn" class="btn-secondary">Мало (&lt; 10)</button>
+              <button type="button" id="productsStockFilterInBtn" class="btn-secondary">В наличии (&gt; 10)</button>
+              <div class="field" style="min-width:220px; margin:0;">
+                <label for="productsStockLtInput" style="margin-bottom:6px; display:block;">Поиск по остатку</label>
+                <input id="productsStockLtInput" class="input" type="number" min="0" step="1" placeholder="например: меньше 5" />
+              </div>
+              <button type="button" id="productsFiltersResetBtn" class="btn-secondary">Сбросить фильтры</button>
+            </div>
+
+            <div class="products-cards" id="productsCardsList"></div>
+            <div id="productsEmpty" class="empty hidden">Пока база товаров пустая.</div>
+          </div>
+        </div>
+
+        <div class="results">
+          <div class="card">
+            <h2>Сводка базы</h2>
+            <div class="list">
+              <div class="row"><div class="key">Товаров в базе</div><div class="val" id="productsCountVal">0</div></div>
+              <div class="row"><div class="key">Общий остаток, шт</div><div class="val" id="productsStockTotalVal">0</div></div>
+              <div class="row"><div class="key">Товаров без остатка</div><div class="val" id="productsZeroStockVal">0</div></div>
+              <div class="row"><div class="key">Средняя себестоимость</div><div class="val" id="productsAvgCostVal">0 сум</div></div>
+              <div class="row"><div class="key">Последнее обновление</div><div class="val" id="productsLastUpdatedVal">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page-panel" id="components-tab">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Справочник комплектующих</h2>
+            <p class="sub">Коробки, в будущем — пакеты и полиграфия. Укажи название и стоимость доставки до Ташкента для расчёта логистики поставок.</p>
+            <div class="grid">
+              <div class="field">
+                <label for="componentCategory">Тип</label>
+                <select id="componentCategory" class="select">
+                  <option value="box">Коробка</option>
+                  <option value="package">Пакет (заготовка)</option>
+                  <option value="polygraphy">Полиграфия (заготовка)</option>
+                  <option value="other">Прочее</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="componentName">Название</label>
+                <input id="componentName" class="input" type="text" placeholder="Например: Коробка 40×40×40" list="componentsNameDatalist" autocomplete="off" />
+                <datalist id="componentsNameDatalist"></datalist>
+              </div>
+              <div class="field">
+                <label for="componentDeliveryCost">Доставка до Ташкента, сум</label>
+                <input id="componentDeliveryCost" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+              <div class="field">
+                <label for="componentNote">Комментарий (необязательно)</label>
+                <input id="componentNote" class="input" type="text" placeholder="Размеры, артикул…" />
+              </div>
+            </div>
+            <div class="toolbar" style="margin-top:12px;">
+              <button type="button" id="addComponentBtn" class="btn-primary">Добавить в справочник</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Список позиций</h2>
+            <div id="componentsList" class="components-list"></div>
+            <div id="componentsEmpty" class="empty hidden">Справочник пуст. Добавь первую коробку выше.</div>
+          </div>
+        </div>
+        <div class="results">
+          <div class="card">
+            <h2>Подсказка</h2>
+            <p class="sub">В поставках в списке «Размер коробки» показываются позиции с типом «Коробка». Остальные типы — для будущего расширения.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="modal-backdrop" id="productDetailModal">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <button class="btn-secondary" id="productDetailBackBtn">← Назад в базу товаров</button>
+          <div class="modal-actions">
+            <button class="btn-secondary" id="productDetailEditBtn">Редактировать товар</button>
+            <button class="btn-danger" id="productDetailCloseBtn">Закрыть</button>
+          </div>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-hero">
+            <div class="product-avatar" id="productDetailAvatar">YO</div>
+            <div class="modal-hero-main">
+              <h2 class="modal-title" id="productDetailTitle">Товар</h2>
+              <div class="modal-sub" id="productDetailSub">Артикул 1С: —</div>
+              <div class="modal-hero-row">
+                <div class="chip">Barcode: <span id="productDetailBarcode">—</span></div>
+                <a class="btn-secondary product-link-btn" id="productDetailLinkBtn" href="#" target="_blank" rel="noopener">Ссылка на товар</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="tabs products-tabs" role="tablist">
+            <button class="tab-btn active" data-detail-tab="calc">Калькуляция</button>
+            <button class="tab-btn" data-detail-tab="analytics">Аналитика</button>
+            <button class="tab-btn" data-detail-tab="history">История изменений</button>
+          </div>
+
+          <section class="detail-tab active" id="detail-tab-calc">
+            <div class="detail-grid">
+              <div class="card">
+                <div class="toolbar" style="justify-content: space-between;">
+                  <div class="chip">Калькуляция товара</div>
+                  <button class="btn-primary" id="productDetailExportXlsxBtn">Скачать Excel</button>
+                </div>
+                <div class="mini-grid" style="margin-top:12px;">
+                  <div class="mini">
+                    <div class="label">Себестоимость (COGS)</div>
+                    <div class="value" id="detailCostVal">0 сум</div>
+                  </div>
+                  <div class="mini">
+                    <div class="label">Логистика</div>
+                    <div class="value" id="detailLogisticsVal">0 сум</div>
+                  </div>
+                  <div class="mini">
+                    <div class="label">Маржа</div>
+                    <div class="value" id="detailMarginVal">0%</div>
+                  </div>
+                  <div class="mini">
+                    <div class="label">ROI</div>
+                    <div class="value" id="detailRoiVal">0%</div>
+                  </div>
+                </div>
+                <div class="list" style="margin-top:12px;">
+                  <div class="row"><div class="key">Цена (текущая из юнита)</div><div class="val" id="detailPriceVal">0 сум</div></div>
+                  <div class="row"><div class="key">Прибыль</div><div class="val" id="detailProfitVal">0 сум</div></div>
+                  <div class="row"><div class="key">Все расходы</div><div class="val" id="detailTotalCostsVal">0 сум</div></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <h2>Параметры</h2>
+                <p class="sub">Расчёт использует текущие значения из вкладки «Юнит-экономика» (цена, комиссия, НДС, тариф логистики).</p>
+                <div class="list">
+                  <div class="row"><div class="key">Артикул 1С</div><div class="val" id="detailSkuVal">—</div></div>
+                  <div class="row"><div class="key">Объём (л)</div><div class="val" id="detailLitersVal">0</div></div>
+                  <div class="row"><div class="key">Округлённый литраж</div><div class="val" id="detailRoundedLitersVal">0</div></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="detail-tab" id="detail-tab-analytics">
+            <div class="detail-grid">
+              <div class="card">
+                <h2>История отправок (по дням)</h2>
+                <div class="table-wrap">
+                  <table style="min-width: 560px;">
+                    <thead><tr><th>Дата</th><th>Шт</th><th>Сумма</th></tr></thead>
+                    <tbody id="detailShipmentsByDayBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty hidden" id="detailShipmentsEmptyDay">Нет данных по отправкам.</div>
+              </div>
+              <div class="card">
+                <h2>По неделям</h2>
+                <div class="table-wrap">
+                  <table style="min-width: 560px;">
+                    <thead><tr><th>Неделя</th><th>Шт</th><th>Сумма</th></tr></thead>
+                    <tbody id="detailShipmentsByWeekBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty hidden" id="detailShipmentsEmptyWeek">Нет данных по отправкам.</div>
+              </div>
+              <div class="card">
+                <h2>По месяцам</h2>
+                <div class="table-wrap">
+                  <table style="min-width: 560px;">
+                    <thead><tr><th>Месяц</th><th>Шт</th><th>Сумма</th></tr></thead>
+                    <tbody id="detailShipmentsByMonthBody"></tbody>
+                  </table>
+                </div>
+                <div class="empty hidden" id="detailShipmentsEmptyMonth">Нет данных по отправкам.</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="detail-tab" id="detail-tab-history">
+            <div class="card">
+              <div class="toolbar" style="justify-content: space-between;">
+                <h2 style="margin:0;font-size:18px;">История изменений</h2>
+                <button type="button" class="btn-primary" id="productHistoryExportXlsxBtn">Скачать историю (Excel)</button>
+              </div>
+              <p class="sub" style="margin-top:8px;">Записи появляются при сохранении правок из калькулятора (кнопка «Сохранить изменения»).</p>
+              <div id="productHistoryList" class="product-history-list"></div>
+              <div id="productHistoryEmpty" class="empty hidden">История пуста — изменения ещё не сохранялись.</div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+<section class="page-panel" id="shipments-tab">
+      <div id="shipmentsTabMpBody" class="layout wms-layout">
+        <div class="stack wms-main">
+          <div class="card wms-hero-card">
+            <div class="wms-hero-row">
+              <div>
+                <h2>Управление поставками (WMS)</h2>
+                <p class="sub">Сборка по коробкам, учёт логистики и автоматическое списание остатков из базы товаров.</p>
+              </div>
+              <button type="button" id="wmsOpenAssembleBtn" class="btn-primary">Создать поставку</button>
+            </div>
+          </div>
+
+          <div id="wmsAssemblePanel" class="card wms-assemble hidden">
+            <div class="wms-assemble-head">
+              <h2>Сборка поставки</h2>
+              <button type="button" id="wmsCloseAssembleBtn" class="btn-secondary">Закрыть без сохранения</button>
+            </div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="wmsMarketplace">Маркетплейс</label>
+                <select id="wmsMarketplace" class="select">
+                  <option value="Uzum Market">Uzum Market</option>
+                  <option value="Wildberries">Wildberries</option>
+                  <option value="Yandex Market">Yandex Market</option>
+                </select>
+              </div>
+              <div class="field"></div>
+            </div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="wmsShipmentName">Название поставки</label>
+                <input id="wmsShipmentName" class="input" type="text" placeholder="Например: Отгрузка Uzum" />
+              </div>
+              <div class="field">
+                <label for="wmsShipmentDate">Дата</label>
+                <input id="wmsShipmentDate" class="input" type="date" />
+              </div>
+            </div>
+            <p class="sub" style="margin-top:14px;">Коробки</p>
+            <div id="wmsBoxesContainer" class="wms-boxes-container"></div>
+            <button type="button" id="wmsAddBoxBtn" class="btn-secondary wms-add-box-btn">+ Добавить коробку</button>
+            <div class="grid" style="margin-top:18px;">
+              <div class="field">
+                <label for="wmsTruckCost">Грузовик до склада, сум</label>
+                <input id="wmsTruckCost" class="input" type="number" min="0" step="1" value="200000" />
+              </div>
+              <div class="field">
+                <label for="wmsLoaderCost">Услуги грузчика, сум</label>
+                <input id="wmsLoaderCost" class="input" type="number" min="0" step="1" value="50000" />
+              </div>
+            </div>
+            <div class="wms-assemble-footer">
+              <div class="wms-live-totals" id="wmsLiveTotals"></div>
+              <div class="wms-assemble-footer-btns">
+                <button type="button" id="wmsSaveDraftBtn" class="btn-secondary">Сохранить как черновик</button>
+                <button type="button" id="wmsSendShipmentBtn" class="btn-primary">Отправить поставку</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>История поставок</h2>
+            <p class="hint" style="margin-top:8px;">Удаление отправленной поставки возвращает количества товаров на остаток в базе.</p>
+            <div id="wmsShipmentsHistory" class="wms-shipments-history"></div>
+            <div id="wmsShipmentsEmpty" class="empty hidden">Пока нет сохранённых поставок. Нажми «Создать поставку».</div>
+          </div>
+        </div>
+        <div class="results wms-sidebar">
+          <div class="card">
+            <h2>Сводка черновика</h2>
+            <div class="list" id="wmsDraftSummary">
+              <div class="row"><div class="key">Режим</div><div class="val" id="wmsDraftModeVal">—</div></div>
+              <div class="row"><div class="key">Коробок</div><div class="val" id="wmsDraftBoxesCountVal">0</div></div>
+              <div class="row"><div class="key">Товаров, шт</div><div class="val" id="wmsDraftQtyVal">0</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="shipmentsTabMpStub" class="mp-tab-stub card hidden" role="status">
+        <p class="mp-tab-stub-text">Раздел в разработке</p>
+      </div>
+    </section>
+
+    <section class="page-panel" id="stock-analytics-tab">
+      <div id="stockAnalyticsUzumBody" class="stock-analytics-mp-wrap">
+        <header class="stock-analytics-header card">
+          <div>
+            <h2 class="stock-analytics-title">Аналитика отгрузок и журнал</h2>
+            <p class="sub">Топ по текущему месяцу, динамика по неделям и последние записи из облака (<code>activity_log</code>).</p>
+          </div>
+          <button class="btn-secondary" type="button" id="stockAnalyticsRefreshBtn">Обновить</button>
+        </header>
+        <div class="card stock-analytics-block">
+          <h3>Топ товаров по отгрузкам (текущий месяц)</h3>
+          <div id="stockAnalyticsTopBody" class="stock-analytics-host"></div>
+        </div>
+        <div class="card stock-analytics-block">
+          <h3>Динамика отправок</h3>
+          <p class="sub" id="stockAnalyticsWeekMeta"></p>
+          <div class="stock-analytics-chart-wrap">
+            <canvas id="stockAnalyticsWeekChart" height="120" aria-label="График отгрузок по неделям"></canvas>
+          </div>
+        </div>
+        <div class="card stock-analytics-block">
+          <h3>Журнал действий</h3>
+          <div id="stockAuditLogBody" class="stock-analytics-host"></div>
+        </div>
+      </div>
+      <div id="stockAnalyticsMpStub" class="mp-tab-stub card hidden" role="status">
+        <p class="mp-tab-stub-text">Раздел в разработке</p>
+      </div>
+    </section>
+
+<section class="page-panel" id="analytics-tab">
+      <div id="analyticsTabMpBody" class="analytics-tab-mp-wrap">
+      <div id="analyticsUzumRoot" class="analytics-mp-root">
+      <div class="analytics-layout">
+        <aside class="analytics-sidebar card">
+          <h2>Отчёты маркетплейсов</h2>
+          <p class="sub">Сгруппированный отчёт по продажам Uzum Market: загрузка .xlsx, сводные метрики и топ‑10 по нетто‑выручке.</p>
+          <div class="analytics-sidebar-actions">
+            <label class="btn-primary analytics-file-btn">
+              Загрузить отчёт Uzum (Excel)
+              <input type="file" id="analyticsUzumFileInput" accept=".xlsx" hidden />
+            </label>
+          </div>
+          <div class="analytics-history">
+            <h3 class="analytics-history-title">История отчётов</h3>
+            <ul id="analyticsReportsList" class="analytics-reports-list" aria-label="Сохранённые отчёты"></ul>
+            <p id="analyticsReportsEmpty" class="empty analytics-reports-empty">Пока нет сохранённых отчётов.</p>
+          </div>
+        </aside>
+
+        <div class="analytics-main">
+          <div id="analyticsDashboardPlaceholder" class="card analytics-placeholder">
+            <p class="analytics-placeholder-text">Загрузите Excel-отчёт Uzum или откройте сохранённый отчёт из списка слева.</p>
+          </div>
+
+          <div id="analyticsDashboard" class="analytics-dashboard hidden">
+            <header class="card analytics-dashboard-head">
+              <h2 id="analyticsReportTitle">Сводка по отчёту</h2>
+              <p class="sub" id="analyticsReportMeta"></p>
+            </header>
+
+            <div id="pdfContent" style="padding: 20px; background: #fff;">
+            <h2 id="pdfContentTitle" class="analytics-pdf-content-title">Финансовый отчёт</h2>
+
+            <div class="analytics-metric-grid">
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Продано товаров (шт)</span>
+                <span class="analytics-metric-value" id="dashMetricSoldQty">0</span>
+              </article>
+              <article class="analytics-metric-card" id="dashCardSentWarehouse">
+                <span class="analytics-metric-label">Отправлено товаров (шт)</span>
+                <span class="analytics-metric-value" id="dashMetricSentWh">0</span>
+              </article>
+              <article class="analytics-metric-card analytics-withdrawn-card">
+                <span class="analytics-metric-label">Выведено на счет</span>
+                <div class="analytics-withdrawn-controls">
+                  <input type="number" id="withdrawnInput" class="input analytics-withdrawn-input" placeholder="Введите сумму" min="0" step="1" />
+                  <button type="button" id="saveWithdrawnBtn" class="btn-secondary analytics-withdrawn-save">Сохранить</button>
+                </div>
+              </article>
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Общая выручка</span>
+                <span class="analytics-metric-value" id="dashMetricRevenue">0 сум</span>
+              </article>
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Выручка за вычетом комиссии</span>
+                <span class="analytics-metric-value" id="dashMetricRevenueNet">0 сум</span>
+              </article>
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Себестоимость проданных товаров (COGS)</span>
+                <span class="analytics-metric-value" id="dashMetricCogs">0 сум</span>
+              </article>
+              <article class="analytics-metric-card" id="cleanProfitCard">
+                <span class="analytics-metric-label">Итоговая чистая прибыль (после НДС)</span>
+                <span class="analytics-metric-value" id="dashMetricCleanProfit">0 сум</span>
+              </article>
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Итоговая маржа (%)</span>
+                <span class="analytics-metric-value" id="dashMetricMarginPct">0%</span>
+              </article>
+              <article class="analytics-metric-card">
+                <span class="analytics-metric-label">Процент выкупа (Успешно / (Успешно + Отмены))</span>
+                <span class="analytics-metric-value" id="dashMetricBuyoutPct">0%</span>
+              </article>
+            </div>
+
+            <div class="card analytics-abc-block">
+              <h2 class="analytics-abc-heading">ABC‑анализ (по наименованию)</h2>
+              <p class="sub">Строки сгруппированы по названию товара; ABC по суммарной нетто‑выручке (80% / 95% / 100%). В таблице только наименование.</p>
+              <div class="table-wrap analytics-abc-table-scroll">
+                <table class="analytics-abc-table">
+                  <thead>
+                    <tr>
+                      <th>Группа</th>
+                      <th>Товар</th>
+                      <th>Продано</th>
+                      <th>Выручка (нетто)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="analyticsAbcBody">
+                    <tr class="analytics-abc-empty-row">
+                      <td colspan="4">Нет данных — загрузите отчёт Uzum.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            </div>
+
+            <div id="analyticsReportActions" class="analytics-report-actions-bar hidden">
+              <button type="button" id="saveReportBtn" class="btn-primary analytics-action-btn">💾 Сохранить отчет в историю</button>
+              <button type="button" id="downloadPdfBtn" class="btn-secondary analytics-action-btn">📄 Скачать этот отчет (PDF)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <div id="analyticsWbRoot" class="analytics-mp-root hidden">
+        <div class="analytics-layout wb-analytics-layout">
+          <aside class="analytics-sidebar card wb-analytics-sidebar">
+            <h2>WB — глубокая аналитика</h2>
+            <p class="sub">Детализация WB по таблице Носова: колонка «цена розничная с учётом согласованной скидки», тип документа, к перечислению, логистика. Все суммы из отчёта — в сумах; далее вводите себестоимость ед. в сумах и открывайте дашборд.</p>
+            <div class="analytics-sidebar-actions">
+              <label class="btn-primary analytics-file-btn">
+                Загрузить детализацию WB (Excel)
+                <input type="file" id="wbAnalyticsFileInput" accept=".xlsx" hidden />
+              </label>
+            </div>
+            <div class="analytics-history">
+              <h3 class="analytics-history-title">История отчётов WB</h3>
+              <ul id="wbAnalyticsReportsList" class="analytics-reports-list" aria-label="Сохранённые отчёты WB"></ul>
+              <p id="wbAnalyticsReportsEmpty" class="empty analytics-reports-empty">Пока нет сохранённых отчётов WB.</p>
+            </div>
+          </aside>
+          <div class="analytics-main wb-analytics-main">
+            <div id="wbAnalyticsPlaceholder" class="card analytics-placeholder wb-analytics-placeholder">
+              <p class="analytics-placeholder-text">Загрузите .xlsx: шапка в первых 15 строках (fuzzy по «ценарозничная…», «кперечислению…», «типдокумента»). Артикул — «артикулпродавца» / «артикулпоставщика». Далее укажите себестоимость ед. в сумах (как в еженедельном отчёте WB).</p>
+            </div>
+
+            <div id="wbAnalyticsCogsPanel" class="hidden">
+              <div class="card wb-analytics-card wb-analytics-card--cogs">
+                <h2 class="wb-analytics-h2">Себестоимость по артикулам 1С</h2>
+                <p class="sub" id="wbAnalyticsParseMeta"></p>
+                <div class="table-wrap wb-analytics-table-wrap">
+                  <table class="wb-analytics-cogs-table">
+                    <thead>
+                      <tr>
+                        <th>Артикул 1С</th>
+                        <th>Фактически продано, шт</th>
+                        <th>Себестоимость ед. (сум)</th>
+                      </tr>
+                    </thead>
+                    <tbody id="wbAnalyticsCogsTableBody"></tbody>
+                  </table>
+                </div>
+                <div class="toolbar" style="margin-top:16px;">
+                  <button type="button" id="wbAnalyticsCalcBtn" class="btn-primary wb-analytics-calc-btn">Показать аналитику</button>
+                  <button type="button" id="wbAnalyticsCancelCogsBtn" class="btn-secondary">Отменить и загрузить другой файл</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="wbAnalyticsResultsPanel" class="hidden wb-analytics-dashboard">
+              <header class="wb-dash-header card wb-analytics-card">
+                <h2 id="wbAnalyticsReportTitle" class="wb-analytics-h2">WB — таблица Носова</h2>
+                <p class="sub" id="wbAnalyticsReportMeta"></p>
+              </header>
+
+              <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
+                <h3 id="wbInputsHeading" class="wb-dash-section-title">Ручной ввод</h3>
+                <p class="hint wb-dash-hint">Налог и НДС — от базы (сумма продаж базовая − сумма возвратов базовая). Суммы в сумах сохраняются в браузере.</p>
+                <div class="inputs-grid">
+                  <article class="stat-card stat-card--input">
+                    <span class="stat-card__label">Налог (%)</span>
+                    <input type="number" id="wbOpsTaxPct" class="stat-card__input" min="0" max="100" step="0.01" value="0" />
+                  </article>
+                  <article class="stat-card stat-card--input">
+                    <span class="stat-card__label">НДС (%)</span>
+                    <input type="number" id="wbOpsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="0" />
+                  </article>
+                  <article class="stat-card stat-card--input">
+                    <span class="stat-card__label">Выведено денег (сум)</span>
+                    <input type="number" id="wbReportWithdrawnMonthUz" class="stat-card__input" min="0" step="1" value="0" />
+                  </article>
+                  <article class="stat-card stat-card--input">
+                    <span class="stat-card__label">Отправлено товаров / закуп (сум)</span>
+                    <input type="number" id="wbReportGoodsSentUz" class="stat-card__input" min="0" step="1" value="0" />
+                  </article>
+                </div>
+              </section>
+
+              <section class="wb-dash-section" aria-labelledby="wbMainKpiHeading">
+                <h3 id="wbMainKpiHeading" class="wb-dash-section-title">Ключевые показатели</h3>
+                <div class="dashboard-grid">
+                  <article class="stat-card">
+                    <span class="stat-card__label">Общая сумма продаж (базовая), сум</span>
+                    <span class="stat-card__value" id="wbStatSalesBase">0 сум</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Фактически продано шт</span>
+                    <span class="stat-card__value" id="wbStatQtyNet">0</span>
+                    <span class="stat-card__meta">Строк продаж / возвратов: <span id="wbStatRowsSales">0</span> / <span id="wbStatRowsRet">0</span></span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">К перечислению от WB (сум)</span>
+                    <span class="stat-card__value" id="wbStatToTransfer">0 сум</span>
+                  </article>
+                  <article class="stat-card stat-card--hero-net">
+                    <span class="stat-card__label">Чистая прибыль (сум)</span>
+                    <span class="stat-card__value stat-card__value--hero" id="wbStatNet">0 сум</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">ROI %</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatRoi">0%</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Маржа %</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatMargin">0%</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Наценка %</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatMarkup">0%</span>
+                  </article>
+                </div>
+              </section>
+
+              <section class="wb-dash-section" aria-labelledby="wbExtraKpiHeading">
+                <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Детализация</h3>
+                <div class="dashboard-grid">
+                  <article class="stat-card"><span class="stat-card__label">Сумма возвратов (базовая), сум</span><span class="stat-card__value" id="wbStatReturnsBase">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Комиссия WB (сум)</span><span class="stat-card__value" id="wbStatComm">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Логистика (сум)</span><span class="stat-card__value" id="wbStatLog">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Штрафы (сум)</span><span class="stat-card__value" id="wbStatPen">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Валовая прибыль (сум)</span><span class="stat-card__value" id="wbStatGross">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Налог (сум)</span><span class="stat-card__value" id="wbStatTax">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">НДС (сум)</span><span class="stat-card__value" id="wbStatVat">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Себестоимость (сум)</span><span class="stat-card__value" id="wbStatCogs">0 сум</span></article>
+                </div>
+              </section>
+
+              <section class="wb-dash-section">
+                <h3 class="wb-dash-section-title">ABC-анализ товаров</h3>
+                <p class="hint wb-dash-hint">Сортировка по чистой прибыли в сумах (убыв.). A — 80% накопленной прибыли, B — 15%, C — 5%.</p>
+                <div class="table-wrap wb-top-products-wrap">
+                  <table class="wb-top-products-table">
+                    <thead>
+                      <tr>
+                        <th>Артикул</th>
+                        <th>Нетто база (сум)</th>
+                        <th>Факт. шт</th>
+                        <th>Себестоимость (сум)</th>
+                        <th>Чистая прибыль (сум)</th>
+                        <th>ROI %</th>
+                        <th>Группа</th>
+                      </tr>
+                    </thead>
+                    <tbody id="wbTopProductsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="wb-dash-section">
+                <h3 class="wb-dash-section-title">ТОП товаров по прибыли (сум)</h3>
+                <div class="wb-chart-wrap">
+                  <canvas id="wbTopProfitChart" aria-label="Горизонтальная диаграмма ТОП-25"></canvas>
+                </div>
+              </section>
+
+              <section class="wb-dash-section">
+                <h3 class="wb-dash-section-title">Контроль расчёта</h3>
+                <div class="list wb-dash-detail-list" id="wbAnalyticsDetailList"></div>
+              </section>
+
+              <div class="toolbar wb-analytics-actions-bar">
+                <button type="button" id="wbReportSaveUzsBtn" class="btn-secondary">Сохранить в браузер</button>
+                <button type="button" id="wbAnalyticsSaveReportBtn" class="btn-primary">Сохранить отчёт в историю</button>
+                <button type="button" id="wbAnalyticsNewFileBtn" class="btn-secondary">Новый файл</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div id="analyticsTabMpStub" class="mp-tab-stub card hidden" role="status">
+        <p class="mp-tab-stub-text">Раздел в разработке</p>
+      </div>
+    </section>
+
+    <div class="modal-backdrop" id="wmsProductPickModal">
+      <div class="modal-sheet wms-modal-sheet">
+        <div class="modal-header">
+          <h2 class="modal-title" style="margin:0;font-size:18px;">Добавить товар в коробку</h2>
+          <button type="button" class="btn-danger" id="wmsProductPickCloseBtn">Закрыть</button>
+        </div>
+        <div class="modal-body">
+          <p class="sub" style="margin:0 0 10px;">Шаг 1 — выберите строку в списке (видны артикул 1С, код 1С и SKU выбранного маркетплейса). Шаг 2 — укажите количество и нажмите «Добавить в коробку».</p>
+          <input id="wmsProductPickSearch" class="input" type="text" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum / WB / Yandex…" autocomplete="off" />
+          <div id="wmsProductPickList" class="wms-pick-list"></div>
+          <div class="wms-pick-selected hidden" id="wmsPickSelectedPanel">
+            <p class="sub" style="margin:0 0 8px;">Выбрано: <strong id="wmsPickSelectedName">—</strong></p>
+            <div class="field">
+              <label for="wmsPickQty">Шаг 2 — количество, шт</label>
+              <input id="wmsPickQty" class="input" type="number" min="1" step="1" value="1" />
+            </div>
+            <div class="toolbar" style="margin-top:10px;">
+              <button type="button" id="wmsPickConfirmBtn" class="btn-primary">Добавить в коробку</button>
+            </div>
+          </div>
+          <div id="wmsPickEmptyHint" class="hint">Шаг 1: выберите товар в списке выше — затем появится поле количества.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="wmsUnitEconModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
+      <div class="modal-sheet wms-unit-econ-modal-sheet" id="wmsUnitEconModalSheet">
+        <div class="modal-header wms-unit-econ-modal-head">
+          <div>
+            <h2 class="modal-title wms-unit-econ-modal-title">Калькуляция (поставка)</h2>
+            <div id="wmsUnitEconSku" class="wms-unit-econ-sub muted"></div>
+          </div>
+          <button type="button" class="btn-secondary" id="wmsUnitEconModalCloseBtn" aria-label="Закрыть">×</button>
+        </div>
+        <div class="modal-body">
+          <div id="wmsUnitEconRows" class="wms-unit-econ-rows"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="wmsDraftToast" class="wms-toast" role="status" aria-live="polite" aria-hidden="true">Прогресс сохранен</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <script src="script.js?v=wb-nosov-2026-04e-uzs"></script>
+</body>
+</html>
