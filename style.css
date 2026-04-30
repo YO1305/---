@@ -1362,6 +1362,28 @@ body.dark-mode .wms-ship-delete-btn:hover {
   font-size: 13px;
 }
 
+/* WMS: ручной ввод "К ВЫВОДУ (СУМ)" — по стилю как логистика */
+.manual-uzum-payout {
+  width: 100%;
+  min-width: 96px;
+  max-width: 140px;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+}
+.manual-uzum-payout:focus {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px rgba(109, 40, 217, 0.18);
+}
+body.dark-mode .manual-uzum-payout {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+}
+
 #wmsUnitEconModal.modal-backdrop.open {
   z-index: 1000;
 }
