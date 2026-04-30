@@ -5380,6 +5380,7 @@ function renderWmsHistory() {
         ${editDraftBtn || editSentBtn}
         <button type="button" class="btn-secondary" data-wms-toggle-detail="${escapeAttr(String(sh.id))}">Детализация</button>
         <button type="button" class="btn-secondary" data-wms-detail-xlsx="${escapeAttr(String(sh.id))}">Скачать детализацию (Excel)</button>
+        <button type="button" class="btn-secondary btn-download-finance" data-wms-finance-xlsx="${escapeAttr(String(sh.id))}">Скачать Финансовый отчет (Excel)</button>
         <button type="button" class="btn-primary" data-wms-xlsx="${escapeAttr(String(sh.id))}">Скачать поставку (Excel)</button>
         <button type="button" class="btn-secondary" data-wms-1c-xlsx="${escapeAttr(String(sh.id))}">Скачать расходную для 1С</button>
         <button type="button" class="wms-ship-delete-btn" data-wms-delete-shipment="${escapeAttr(String(sh.id))}" title="Удалить поставку" aria-label="Удалить поставку"><span class="wms-del-icon" aria-hidden="true">🗑</span>Удалить</button>
@@ -5447,6 +5448,11 @@ function renderWmsHistory() {
   host.querySelectorAll('[data-wms-detail-xlsx]').forEach(btn => {
     btn.addEventListener('click', () => {
       exportWmsShipmentDetailCalcXlsx(btn.getAttribute('data-wms-detail-xlsx'));
+    });
+  });
+  host.querySelectorAll('[data-wms-finance-xlsx]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      exportShipmentFinanceToExcel(btn.getAttribute('data-wms-finance-xlsx'));
     });
   });
   host.querySelectorAll('[data-wms-saved-calc]').forEach(btn => {
@@ -5753,6 +5759,65 @@ function exportWmsShipmentDetailCalcXlsx(shipmentId) {
   XLSX.utils.book_append_sheet(wb, ws, 'Детализация');
   const safeName = String(sh.name || 'shipment').replace(/[^\w\-]+/g, '_').slice(0, 40);
   XLSX.writeFile(wb, `shipment_detail_${safeName}_${sh.id}.xlsx`);
+}
+
+function exportShipmentFinanceToExcel(shipmentId) {
+  const sh = readShipmentsSafe().find(s => String(s.id) === String(shipmentId));
+  if (!sh) return;
+  if (typeof window === 'undefined' || !window.XLSX) {
+    alert('SheetJS не загрузился.');
+    return;
+  }
+
+  const flat = [];
+  if (sh.version === 2 && Array.isArray(sh.boxes)) {
+    sh.boxes.forEach((b) => (b.items || []).forEach((it) => flat.push(it)));
+  } else {
+    (sh.items || []).forEach((it) => flat.push(it));
+  }
+  if (!flat.length) {
+    alert('В поставке нет строк для выгрузки.');
+    return;
+  }
+
+  const rows = flat.map((it, idx) => {
+    const qty = Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0)));
+    const unitCost = Number(it?.unitCost ?? it?.financialSnapshot?.costGross ?? it?.costPrice ?? it?.cost ?? 0) || 0;
+    const sum = qty * unitCost;
+    const inbound = Number(it?.calc?.inboundLogisticsCost ?? it?.calc?.inbound_logistics_cost ?? 0) || 0;
+    const payout = Number(it?.fixedUzumPayout ?? 0) || 0;
+    const totalPayout = qty * payout;
+    const article1c = String(getShipmentLineArticle1c(it) || '').trim() || '—';
+    return {
+      '№': idx + 1,
+      'Артикул 1С': article1c,
+      'Количество': qty,
+      'Себестоимость': unitCost,
+      'Сумма': sum,
+      'Логистика': inbound,
+      'Сумма к выводу': payout,
+      'Общая сумма к выводу': totalPayout
+    };
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows, { skipHeader: false });
+  ws['!cols'] = [
+    { wch: 6 },
+    { wch: 26 },
+    { wch: 12 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 22 }
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Финансы');
+
+  const safeId = String(sh.id || shipmentId || '—').replace(/[^\w\-]+/g, '_');
+  const dateStr = formatShipmentDateDdMmYyyy(sh.date || sh.shipmentDate || '');
+  const stamp = dateStr ? `${safeId}_${dateStr}` : safeId;
+  XLSX.writeFile(wb, `Финансы_Поставка_${stamp}.xlsx`);
 }
 
 // Инициализация раздела "База товаров"

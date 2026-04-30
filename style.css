@@ -1338,6 +1338,11 @@ body.dark-mode .wms-ship-delete-btn:hover {
   gap: 6px;
   flex-wrap: nowrap;
 }
+
+/* WMS: кнопка финансового отчёта (Excel) */
+.btn-download-finance {
+  white-space: nowrap;
+}
 .wms-icon-btn {
   display: inline-flex;
   align-items: center;
