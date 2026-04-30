@@ -3826,16 +3826,27 @@ async function uzumSellerOpenapiFetchJson(path, queryParams) {
   if (res.status === 401 || res.status === 403) {
     res = await doFetch(String(UZUM_SELLER_OPENAPI_TOKEN));
   }
+  const rawText = await res.text().catch(() => '');
+  let parsed = null;
+  if (rawText) {
+    try { parsed = JSON.parse(rawText); } catch { parsed = null; }
+  }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.error('Ошибка API Uzum для SKU/запроса', { url: url.toString(), status: res.status, statusText: res.statusText, body: text });
-    const err = new Error(`Uzum API: ${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 180)}` : ''}`);
+    console.error('Ошибка API Uzum для SKU/запроса', {
+      url: url.toString(),
+      status: res.status,
+      statusText: res.statusText,
+      body: parsed ?? rawText
+    });
+    const err = new Error(`Uzum API: ${res.status} ${res.statusText}${rawText ? ` — ${rawText.slice(0, 180)}` : ''}`);
     err.status = res.status;
     err.url = url.toString();
-    err.body = text;
+    err.body = parsed ?? rawText;
     throw err;
   }
-  return await res.json();
+  if (parsed != null) return parsed;
+  // если ответ не JSON — вернём как текст в объекте
+  return { raw: rawText };
 }
 
 async function getOwnedUzumShopIdsCached() {
@@ -4050,7 +4061,12 @@ async function fetchUzumApiDumpAndReturnStubPayout(sku) {
     // Если поле пока не нашли — возвращаем заглушку 0, но лог уже есть.
     return 0;
   } catch (error) {
-    console.error('🔥 ОШИБКА UZUM API:', error);
+    console.error('🔥 ОШИБКА UZUM API:', {
+      message: String(error?.message || error),
+      status: error?.status,
+      url: error?.url,
+      body: error?.body
+    });
     return 0;
   }
 }
