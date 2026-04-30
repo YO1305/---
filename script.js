@@ -5784,7 +5784,13 @@ function exportShipmentFinanceToExcel(shipmentId) {
     const qty = Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0)));
     const unitCost = Number(it?.unitCost ?? it?.financialSnapshot?.costGross ?? it?.costPrice ?? it?.cost ?? 0) || 0;
     const sum = qty * unitCost;
-    const inbound = Number(it?.calc?.inboundLogisticsCost ?? it?.calc?.inbound_logistics_cost ?? 0) || 0;
+    const inbound = Number(
+      it?.financialSnapshot?.calc?.inboundLogisticsCost
+      ?? it?.financialSnapshot?.calc?.inbound_logistics_cost
+      ?? it?.calc?.inboundLogisticsCost
+      ?? it?.calc?.inbound_logistics_cost
+      ?? 0
+    ) || 0;
     const payout = Number(it?.fixedUzumPayout ?? 0) || 0;
     const totalPayout = qty * payout;
     const article1c = String(getShipmentLineArticle1c(it) || '').trim() || '—';
