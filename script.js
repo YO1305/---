@@ -3839,23 +3839,89 @@ async function getOwnedUzumShopIdsCached() {
 }
 
 function normalizeSkuKey(sku) {
-  return String(sku || '').trim();
+  // Нормализация артикула/SKU для Uzum: убираем любые пробелы (частая проблема в базе/кабинете).
+  return String(sku || '').trim().replace(/\s+/g, '');
 }
 
-async function fetchUzumPayoutPerUnitBySku(sku) {
+function buildUzumSkuSearchVariants(rawSku) {
+  const raw = String(rawSku || '').trim();
+  if (!raw) return [];
+  const variants = new Set();
+  // базовый
+  variants.add(raw);
+  // дефисы ↔ пробелы (Uzum часто путают)
+  variants.add(raw.replace(/-/g, ' '));
+  variants.add(raw.replace(/\s+/g, '-'));
+  // также добавим вариант с нормализованными пробелами (до удаления)
+  variants.add(raw.replace(/\s+/g, ' '));
+  return Array.from(variants).filter(Boolean);
+}
+
+function normalizeUzumSkuForQuery(s) {
+  return normalizeSkuKey(s);
+}
+
+async function tryFetchUzumPayoutViaProductsInfo(skuQuery) {
+  // ВАЖНО: это первичный целевой эндпоинт (как вы попросили): products/info
+  // Если в аккаунте/регионе он недоступен — вернём null и упадём на fallback.
+  const q = normalizeUzumSkuForQuery(skuQuery);
+  if (!q) return null;
+  try {
+    const data = await uzumSellerOpenapiFetchJson('/products/info', { sku: q });
+    console.log('[UZUM products/info]', { sku: q, response: data });
+    // Пытаемся найти поле payout в разных возможных формах ответа
+    const payout =
+      data?.payout
+      ?? data?.payoutPerUnit
+      ?? data?.uzumPayout
+      ?? data?.withdrawnProfit
+      ?? data?.withdrawn_profit
+      ?? data?.netPayout
+      ?? data?.net_payout;
+    if (payout == null) return null;
+    const v = Number(payout);
+    if (!Number.isFinite(v)) return null;
+    return v;
+  } catch (e) {
+    // логируем, чтобы вы видели ответ/ошибку по конкретному товару (например, “коричневая простыня”)
+    console.log('[UZUM products/info] error', { sku: q, error: String(e?.message || e) });
+    return null;
+  }
+}
+
+async function fetchUzumPayoutPerUnitBySku(sku, opts) {
   // Важно: выполняем только для Uzum-сборки
   if (!isWmsUzumMarketplaceSelected()) return null;
+  const force = !!opts?.force;
   const key = normalizeSkuKey(sku);
   if (!key) return null;
 
   // кеш
   const cached = window.appState.uzumPrices?.[key];
-  if (cached && cached.payoutPerUnit != null) return Number(cached.payoutPerUnit);
+  if (!force && cached && cached.payoutPerUnit != null) return Number(cached.payoutPerUnit);
 
   // дедупликация запросов
-  if (window.appState._uzumPricesInFlight?.[key]) return window.appState._uzumPricesInFlight[key];
+  if (!force && window.appState._uzumPricesInFlight?.[key]) return window.appState._uzumPricesInFlight[key];
 
   const job = (async () => {
+    const variants = buildUzumSkuSearchVariants(String(sku || ''));
+    // 1) Сначала пробуем правильный endpoint products/info (с ретраями по вариантам SKU)
+    for (let i = 0; i < variants.length; i++) {
+      const v = variants[i];
+      const payoutInfo = await tryFetchUzumPayoutViaProductsInfo(v);
+      if (payoutInfo != null && Number.isFinite(Number(payoutInfo))) {
+        if (!window.appState.uzumPrices) window.appState.uzumPrices = Object.create(null);
+        window.appState.uzumPrices[key] = {
+          payoutPerUnit: Number(payoutInfo),
+          fetchedAt: new Date().toISOString(),
+          source: 'products_info',
+          skuQuery: normalizeUzumSkuForQuery(v)
+        };
+        return Number(payoutInfo);
+      }
+    }
+
+    // 2) Fallback: finance/orders (если products/info пустой/недоступен)
     const shopIds = await getOwnedUzumShopIdsCached();
     if (!shopIds.length) throw new Error('Uzum API: не найдено ни одного shopId.');
 
@@ -3873,9 +3939,20 @@ async function fetchUzumPayoutPerUnitBySku(sku) {
     shopIds.slice(0, 5).forEach((id) => qp.append('shopIds', String(id))); // ограничим, чтобы не раздувать URL
 
     const data = await uzumSellerOpenapiFetchJson('/v1/finance/orders', qp);
+    console.log('[UZUM finance/orders]', { sku: key, responseSample: (data?.orderItems || []).slice?.(0, 3) || null });
     const items = Array.isArray(data?.orderItems) ? data.orderItems : [];
-    const row = items.find((it) => normalizeSkuKey(it?.skuTitle) === key);
+    const row = items.find((it) => {
+      const t = normalizeSkuKey(it?.skuTitle);
+      if (!t) return false;
+      if (t === key) return true;
+      // retry match: дефисы ↔ пробелы (в тайтле тоже могут быть странности)
+      const rawT = String(it?.skuTitle || '');
+      return variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT))
+        || variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT.replace(/-/g, ' ')))
+        || variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT.replace(/\s+/g, '-')));
+    });
     if (!row) return null;
+    console.log('[UZUM finance/orders] match', { sku: key, matched: row });
 
     const amount = Math.max(1, Math.floor(Number(row?.amount || 1)));
     const withdrawnProfit = Number(row?.withdrawnProfit);
@@ -3910,6 +3987,7 @@ async function fetchUzumPayoutPerUnitBySku(sku) {
       if (window.appState._uzumPricesInFlight) delete window.appState._uzumPricesInFlight[key];
     });
 
+  // force-режим не должен блокировать “обычные” запросы навсегда — но нам всё равно нужно дедуп внутри одного SKU.
   window.appState._uzumPricesInFlight[key] = job;
   return job;
 }
@@ -3917,10 +3995,15 @@ async function fetchUzumPayoutPerUnitBySku(sku) {
 async function hydrateWmsLineUzumPayoutIfNeeded(line) {
   if (!isWmsUzumMarketplaceSelected()) return;
   if (!line) return;
-  if (line.uzumPayout != null && Number.isFinite(Number(line.uzumPayout))) return;
+  // Если payout уже есть и он НЕ 0 — не трогаем.
+  // Если payout = 0 — принудительно пробуем обновить (как вы попросили).
+  const cur = Number(line.uzumPayout);
+  const has = line.uzumPayout != null && Number.isFinite(cur);
+  const force = has && cur === 0;
+  if (has && !force) return;
   const sku = normalizeSkuKey(line.sku);
   if (!sku) return;
-  const payout = await fetchUzumPayoutPerUnitBySku(sku);
+  const payout = await fetchUzumPayoutPerUnitBySku(sku, { force });
   if (payout == null) return;
   line.uzumPayout = Number(payout);
 }
@@ -4583,7 +4666,17 @@ function renderWmsBoxes() {
       </tr>`;
 
       // Ленивая подгрузка payout (только Uzum), чтобы не блокировать рендер.
-      if (uzumOnly && (line.uzumPayout == null || !Number.isFinite(Number(line.uzumPayout))) && String(line.sku || '').trim()) {
+      const payoutNum = Number(line.uzumPayout);
+      const needsHydrate =
+        uzumOnly
+        && String(line.sku || '').trim()
+        && (
+          line.uzumPayout == null
+          || !Number.isFinite(payoutNum)
+          || payoutNum === 0 // payout=0 — повторяем запрос (требование)
+        );
+      if (needsHydrate && !line._uzumPayoutRetryDone) {
+        if (payoutNum === 0) line._uzumPayoutRetryDone = true; // чтобы не уйти в бесконечный цикл
         void (async () => {
           await hydrateWmsLineUzumPayoutIfNeeded(line);
           // не перерисовываем бесконечно — только если мы всё ещё в Uzum и payout появился
@@ -4879,6 +4972,11 @@ async function confirmWmsPickProduct() {
   if (isWmsUzumMarketplaceSelected()) {
     void (async () => {
       await hydrateWmsLineUzumPayoutIfNeeded(newLine);
+      // Если после первого запроса payout = 0 — просим принудительный повтор (по требованию).
+      if (Number(newLine.uzumPayout) === 0) {
+        await fetchUzumPayoutPerUnitBySku(newLine.sku, { force: true });
+        await hydrateWmsLineUzumPayoutIfNeeded(newLine);
+      }
       if (newLine.uzumPayout != null) renderWmsBoxes();
     })();
   }
