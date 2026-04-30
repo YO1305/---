@@ -3806,11 +3806,13 @@ async function uzumSellerOpenapiFetchJson(path, queryParams) {
   const res = await fetch(url.toString(), {
     method: 'GET',
     headers: {
-      Authorization: UZUM_SELLER_OPENAPI_TOKEN
+      // Требование: Bearer-токен
+      Authorization: `Bearer ${UZUM_SELLER_OPENAPI_TOKEN}`
     }
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    console.error('Ошибка API Uzum для SKU/запроса', { url: url.toString(), status: res.status, statusText: res.statusText, body: text });
     throw new Error(`Uzum API: ${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 180)}` : ''}`);
   }
   return await res.json();
@@ -3861,12 +3863,35 @@ function normalizeUzumSkuForQuery(s) {
   return normalizeSkuKey(s);
 }
 
+function tryFindUzumPayoutInLocalProducts(cleanSku) {
+  const sku = normalizeSkuKey(cleanSku);
+  if (!sku) return null;
+  const products = readProductsSafe();
+  const candidates = [
+    (p) => p?.uzumPayoutPerUnit,
+    (p) => p?.uzumPayout,
+    (p) => p?.calc?.uzumPayoutPerUnit
+  ];
+  for (let i = 0; i < products.length; i++) {
+    const p = products[i];
+    const uz = String(p?.uzumSku ?? p?.uzum_sku ?? p?.calc?.mpSkuUzum ?? '').trim();
+    if (!uz) continue;
+    if (normalizeSkuKey(uz) !== sku) continue;
+    for (let k = 0; k < candidates.length; k++) {
+      const v = Number(candidates[k](p));
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+  }
+  return null;
+}
+
 async function tryFetchUzumPayoutViaProductsInfo(skuQuery) {
   // ВАЖНО: это первичный целевой эндпоинт (как вы попросили): products/info
   // Если в аккаунте/регионе он недоступен — вернём null и упадём на fallback.
   const q = normalizeUzumSkuForQuery(skuQuery);
   if (!q) return null;
   try {
+    console.log('[UZUM] cleanSku before request:', q);
     const data = await uzumSellerOpenapiFetchJson('/products/info', { sku: q });
     console.log('[UZUM products/info]', { sku: q, response: data });
     // Пытаемся найти поле payout в разных возможных формах ответа
@@ -3895,6 +3920,12 @@ async function fetchUzumPayoutPerUnitBySku(sku, opts) {
   const force = !!opts?.force;
   const key = normalizeSkuKey(sku);
   if (!key) return null;
+
+  // 0) Гибридный поиск: сначала пробуем найти в локальной базе товаров (window.appState.products)
+  const localHit = tryFindUzumPayoutInLocalProducts(key);
+  if (localHit != null && Number.isFinite(Number(localHit)) && Number(localHit) > 0) {
+    return Number(localHit);
+  }
 
   // кеш
   const cached = window.appState.uzumPrices?.[key];
@@ -3939,7 +3970,7 @@ async function fetchUzumPayoutPerUnitBySku(sku, opts) {
     shopIds.slice(0, 5).forEach((id) => qp.append('shopIds', String(id))); // ограничим, чтобы не раздувать URL
 
     const data = await uzumSellerOpenapiFetchJson('/v1/finance/orders', qp);
-    console.log('[UZUM finance/orders]', { sku: key, responseSample: (data?.orderItems || []).slice?.(0, 3) || null });
+    console.log('[UZUM finance/orders]', { sku: key, response: data });
     const items = Array.isArray(data?.orderItems) ? data.orderItems : [];
     const row = items.find((it) => {
       const t = normalizeSkuKey(it?.skuTitle);
@@ -4648,7 +4679,7 @@ function renderWmsBoxes() {
       const uc = Number(line.unitCost ?? line.financialSnapshot?.costGross ?? 0);
       const payout = uzumOnly ? (Number.isFinite(Number(line.uzumPayout)) ? Number(line.uzumPayout) : null) : null;
       const payoutCell = uzumOnly
-        ? `<td data-wms-cell-payout title="Сумма к выводу за 1 шт (Uzum API)">${payout != null ? escapeHtml(fmtMoney(payout)) : '<span class="muted">…</span>'}</td>`
+        ? `<td data-wms-cell-payout title="Сумма к выводу за 1 шт (Uzum API)">${payout != null ? escapeHtml(fmtMoney(payout)) : '<span class="muted">Загрузка...</span>'}</td>`
         : '';
       rows += `<tr data-line-id="${escapeAttr(line.lineId)}">
         <td>${escapeHtml(line.financialSnapshot?.name || line.name || '—')}</td>
@@ -4687,7 +4718,7 @@ function renderWmsBoxes() {
     if (!rows) {
       rows = `<tr><td colspan="${uzumOnly ? 8 : 7}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
     }
-    const payoutHead = uzumOnly ? '<th>К ВЫВОДУ (шт)</th>' : '';
+    const payoutHead = uzumOnly ? '<th>К ВЫВОДУ (СУМ)</th>' : '';
     card.innerHTML = `
       <div class="wms-box-card-head">
         <div>
@@ -5473,10 +5504,22 @@ async function deleteWmsShipmentById(shipmentId) {
     }
   }
 
+  // 1) СНАЧАЛА удаляем документ из Firestore
+  const ok = await deleteShipmentFromFirestore(shipmentId);
+  if (!ok) {
+    alert('Не удалось удалить поставку из Firebase. Локально запись не удалена.');
+    return;
+  }
+  // 2) Только после подтверждения Firebase — удаляем локально
   shipments.splice(idx, 1);
   writeStore(STORAGE_KEYS.shipments, shipments);
+  // чистим старые localStorage кеши, если остались (на всякий случай)
+  try {
+    localStorage.removeItem(STORAGE_KEYS.shipments);
+    localStorage.removeItem('shipments');
+    localStorage.removeItem('uzum_shipments_db_v1');
+  } catch {}
   recordActivityLogOnly('shipment_deleted', '', sh.name || '', String(sh.id), { shipment_id: String(sh.id), status: st });
-  await deleteShipmentFromFirestore(shipmentId);
   renderWmsHistory();
   renderProductsDb();
 }
