@@ -3791,7 +3791,9 @@ function setWmsMarketplaceUi(value) {
 
 // ——— Uzum API (WMS payout snapshot) ———
 
-const UZUM_SELLER_OPENAPI_BASE = 'https://api-seller.uzum.uz/api/seller-openapi';
+// Важно: через Vercel rewrites, чтобы обойти CORS:
+// /api/uzum/*  ->  https://api-seller.uzum.uz/api/seller-openapi/*
+const UZUM_SELLER_OPENAPI_BASE = '/api/uzum';
 // токен авторизации без префикса Bearer (как в OpenAPI)
 const UZUM_SELLER_OPENAPI_TOKEN = '0C7tTzWI6pqpIQ2tVWKrKve6J/Cjs20YLWCp0BXjy7U=';
 
@@ -3800,7 +3802,10 @@ function isWmsUzumMarketplaceSelected() {
 }
 
 async function uzumSellerOpenapiFetchJson(path, queryParams) {
-  const url = new URL(String(path).replace(/^\//, ''), `${UZUM_SELLER_OPENAPI_BASE.replace(/\/+$/, '')}/`);
+  const base = String(UZUM_SELLER_OPENAPI_BASE || '').replace(/\/+$/, '');
+  const rel = String(path || '').replace(/^\//, '');
+  // base может быть относительным (/api/uzum), поэтому собираем URL вручную
+  const url = new URL(`${base}/${rel}`, window.location.origin);
   if (queryParams) {
     const qp = queryParams instanceof URLSearchParams ? queryParams : new URLSearchParams(queryParams);
     qp.forEach((v, k) => url.searchParams.append(k, v));
