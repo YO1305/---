@@ -220,16 +220,18 @@ function upsertShipmentToFirestore(shipment) {
     });
 }
 
-function deleteShipmentFromFirestore(shipmentId) {
+async function deleteShipmentFromFirestore(shipmentId) {
   const col = getShipmentsCollectionRef();
   const id = shipmentId != null ? String(shipmentId) : '';
-  if (!col || !id) return Promise.resolve(false);
-  return col.doc(id).delete()
-    .then(() => true)
-    .catch((err) => {
-      console.error('Ошибка удаления поставки из Firestore: ', err);
-      return false;
-    });
+  if (!col || !id) return false;
+  try {
+    // compat-API: эквивалент await deleteDoc(docRef)
+    await col.doc(id).delete();
+    return true;
+  } catch (err) {
+    console.error('Ошибка удаления поставки из Firestore: ', err);
+    return false;
+  }
 }
 
 let _shipmentsRealtimeUnsub = null;
@@ -3787,7 +3789,7 @@ function setWmsMarketplaceUi(value) {
   el.value = v;
 }
 
-// ——— Uzum Seller OpenAPI (payout) ———
+// ——— Uzum API (WMS payout snapshot) ———
 
 const UZUM_SELLER_OPENAPI_BASE = 'https://api-seller.uzum.uz/api/seller-openapi';
 // токен авторизации без префикса Bearer (как в OpenAPI)
@@ -3885,158 +3887,20 @@ function tryFindUzumPayoutInLocalProducts(cleanSku) {
   return null;
 }
 
-async function tryFetchUzumPayoutViaProductsInfo(skuQuery) {
-  // ВАЖНО: это первичный целевой эндпоинт (как вы попросили): products/info
-  // Если в аккаунте/регионе он недоступен — вернём null и упадём на fallback.
-  const q = normalizeUzumSkuForQuery(skuQuery);
-  if (!q) return null;
+async function fetchUzumApiDumpAndReturnStubPayout(sku) {
+  if (!isWmsUzumMarketplaceSelected()) return 0;
+  const cleanSku = String(sku || '').replace(/\s+/g, '');
+  console.log('[UZUM] cleanSku before request:', cleanSku);
+  if (!cleanSku) return 0;
   try {
-    console.log('[UZUM] cleanSku before request:', q);
-    const data = await uzumSellerOpenapiFetchJson('/products/info', { sku: q });
-    console.log('[UZUM products/info]', { sku: q, response: data });
-    // Пытаемся найти поле payout в разных возможных формах ответа
-    const payout =
-      data?.payout
-      ?? data?.payoutPerUnit
-      ?? data?.uzumPayout
-      ?? data?.withdrawnProfit
-      ?? data?.withdrawn_profit
-      ?? data?.netPayout
-      ?? data?.net_payout;
-    if (payout == null) return null;
-    const v = Number(payout);
-    if (!Number.isFinite(v)) return null;
-    return v;
-  } catch (e) {
-    // логируем, чтобы вы видели ответ/ошибку по конкретному товару (например, “коричневая простыня”)
-    console.log('[UZUM products/info] error', { sku: q, error: String(e?.message || e) });
-    return null;
+    const responseData = await uzumSellerOpenapiFetchJson('/products/info', { sku: cleanSku });
+    console.log('🔥 ПОЛНЫЙ ОТВЕТ API UZUM ДЛЯ ' + cleanSku + ':', responseData);
+    // Временно: неизвестны точные поля — возвращаем заглушку 0
+    return 0;
+  } catch (error) {
+    console.error('🔥 ОШИБКА UZUM API:', error);
+    return 0;
   }
-}
-
-async function fetchUzumPayoutPerUnitBySku(sku, opts) {
-  // Важно: выполняем только для Uzum-сборки
-  if (!isWmsUzumMarketplaceSelected()) return null;
-  const force = !!opts?.force;
-  const key = normalizeSkuKey(sku);
-  if (!key) return null;
-
-  // 0) Гибридный поиск: сначала пробуем найти в локальной базе товаров (window.appState.products)
-  const localHit = tryFindUzumPayoutInLocalProducts(key);
-  if (localHit != null && Number.isFinite(Number(localHit)) && Number(localHit) > 0) {
-    return Number(localHit);
-  }
-
-  // кеш
-  const cached = window.appState.uzumPrices?.[key];
-  if (!force && cached && cached.payoutPerUnit != null) return Number(cached.payoutPerUnit);
-
-  // дедупликация запросов
-  if (!force && window.appState._uzumPricesInFlight?.[key]) return window.appState._uzumPricesInFlight[key];
-
-  const job = (async () => {
-    const variants = buildUzumSkuSearchVariants(String(sku || ''));
-    // 1) Сначала пробуем правильный endpoint products/info (с ретраями по вариантам SKU)
-    for (let i = 0; i < variants.length; i++) {
-      const v = variants[i];
-      const payoutInfo = await tryFetchUzumPayoutViaProductsInfo(v);
-      if (payoutInfo != null && Number.isFinite(Number(payoutInfo))) {
-        if (!window.appState.uzumPrices) window.appState.uzumPrices = Object.create(null);
-        window.appState.uzumPrices[key] = {
-          payoutPerUnit: Number(payoutInfo),
-          fetchedAt: new Date().toISOString(),
-          source: 'products_info',
-          skuQuery: normalizeUzumSkuForQuery(v)
-        };
-        return Number(payoutInfo);
-      }
-    }
-
-    // 2) Fallback: finance/orders (если products/info пустой/недоступен)
-    const shopIds = await getOwnedUzumShopIdsCached();
-    if (!shopIds.length) throw new Error('Uzum API: не найдено ни одного shopId.');
-
-    // Берём последние данные по заказам и ищем строку по skuTitle (в API это как правило артикул/SKU продавца).
-    // group=true уменьшает объём и чаще возвращает агрегаты по SKU.
-    const dateTo = Date.now();
-    const dateFrom = dateTo - (120 * 24 * 60 * 60 * 1000); // 120 дней
-    const qp = new URLSearchParams();
-    qp.set('page', '0');
-    qp.set('size', '200');
-    qp.set('group', 'true');
-    qp.set('dateFrom', String(dateFrom));
-    qp.set('dateTo', String(dateTo));
-    // shopIds[] как повторяющиеся параметры
-    shopIds.slice(0, 5).forEach((id) => qp.append('shopIds', String(id))); // ограничим, чтобы не раздувать URL
-
-    const data = await uzumSellerOpenapiFetchJson('/v1/finance/orders', qp);
-    console.log('[UZUM finance/orders]', { sku: key, response: data });
-    const items = Array.isArray(data?.orderItems) ? data.orderItems : [];
-    const row = items.find((it) => {
-      const t = normalizeSkuKey(it?.skuTitle);
-      if (!t) return false;
-      if (t === key) return true;
-      // retry match: дефисы ↔ пробелы (в тайтле тоже могут быть странности)
-      const rawT = String(it?.skuTitle || '');
-      return variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT))
-        || variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT.replace(/-/g, ' ')))
-        || variants.some(v => normalizeSkuKey(v) === normalizeSkuKey(rawT.replace(/\s+/g, '-')));
-    });
-    if (!row) return null;
-    console.log('[UZUM finance/orders] match', { sku: key, matched: row });
-
-    const amount = Math.max(1, Math.floor(Number(row?.amount || 1)));
-    const withdrawnProfit = Number(row?.withdrawnProfit);
-    const sellerPrice = Number(row?.sellerPrice);
-    const commission = Number(row?.commission);
-    const logistic = Number(row?.logisticDeliveryFee);
-
-    let payoutPerUnit = null;
-    if (Number.isFinite(withdrawnProfit)) {
-      payoutPerUnit = withdrawnProfit / amount;
-    } else if (Number.isFinite(sellerPrice) || Number.isFinite(commission) || Number.isFinite(logistic)) {
-      const total = (Number.isFinite(sellerPrice) ? sellerPrice : 0)
-        - (Number.isFinite(commission) ? commission : 0)
-        - (Number.isFinite(logistic) ? logistic : 0);
-      payoutPerUnit = total / amount;
-    }
-    if (payoutPerUnit == null || !Number.isFinite(payoutPerUnit)) return null;
-
-    if (!window.appState.uzumPrices) window.appState.uzumPrices = Object.create(null);
-    window.appState.uzumPrices[key] = {
-      payoutPerUnit: Number(payoutPerUnit),
-      fetchedAt: new Date().toISOString(),
-      source: 'finance_orders'
-    };
-    return Number(payoutPerUnit);
-  })()
-    .catch((e) => {
-      console.error('fetchUzumPayoutPerUnitBySku:', key, e);
-      return null;
-    })
-    .finally(() => {
-      if (window.appState._uzumPricesInFlight) delete window.appState._uzumPricesInFlight[key];
-    });
-
-  // force-режим не должен блокировать “обычные” запросы навсегда — но нам всё равно нужно дедуп внутри одного SKU.
-  window.appState._uzumPricesInFlight[key] = job;
-  return job;
-}
-
-async function hydrateWmsLineUzumPayoutIfNeeded(line) {
-  if (!isWmsUzumMarketplaceSelected()) return;
-  if (!line) return;
-  // Если payout уже есть и он НЕ 0 — не трогаем.
-  // Если payout = 0 — принудительно пробуем обновить (как вы попросили).
-  const cur = Number(line.uzumPayout);
-  const has = line.uzumPayout != null && Number.isFinite(cur);
-  const force = has && cur === 0;
-  if (has && !force) return;
-  const sku = normalizeSkuKey(line.sku);
-  if (!sku) return;
-  const payout = await fetchUzumPayoutPerUnitBySku(sku, { force });
-  if (payout == null) return;
-  line.uzumPayout = Number(payout);
 }
 
 /** Для старых поставок без поля marketplace. */
@@ -4677,9 +4541,19 @@ function renderWmsBoxes() {
       const inboundVal = n(calc.inboundLogisticsCost);
       const q = Math.max(0, Math.floor(Number(line.qty || 0)));
       const uc = Number(line.unitCost ?? line.financialSnapshot?.costGross ?? 0);
-      const payout = uzumOnly ? (Number.isFinite(Number(line.uzumPayout)) ? Number(line.uzumPayout) : null) : null;
+      // Snapshot: fixedUzumPayout (не перезаписывается и не триггерит API при открытии)
+      if (line.fixedUzumPayout == null && line.uzumPayout != null) {
+        // миграция старого ключа → новый снапшот
+        const prev = Number(line.uzumPayout);
+        if (Number.isFinite(prev)) line.fixedUzumPayout = prev;
+      }
+      const fixed = uzumOnly && Number.isFinite(Number(line.fixedUzumPayout)) ? Number(line.fixedUzumPayout) : null;
       const payoutCell = uzumOnly
-        ? `<td data-wms-cell-payout title="Сумма к выводу за 1 шт (Uzum API)">${payout != null ? escapeHtml(fmtMoney(payout)) : '<span class="muted">Загрузка...</span>'}</td>`
+        ? `<td data-wms-cell-payout title="Сумма к выводу за 1 шт (Uzum API)">${
+          line._uzumPayoutLoading
+            ? '<span class="muted">Загрузка...</span>'
+            : (fixed != null ? escapeHtml(fmtMoney(fixed)) : '<span class="muted">0 сум</span>')
+        }</td>`
         : '';
       rows += `<tr data-line-id="${escapeAttr(line.lineId)}">
         <td>${escapeHtml(line.financialSnapshot?.name || line.name || '—')}</td>
@@ -4696,24 +4570,7 @@ function renderWmsBoxes() {
         </td>
       </tr>`;
 
-      // Ленивая подгрузка payout (только Uzum), чтобы не блокировать рендер.
-      const payoutNum = Number(line.uzumPayout);
-      const needsHydrate =
-        uzumOnly
-        && String(line.sku || '').trim()
-        && (
-          line.uzumPayout == null
-          || !Number.isFinite(payoutNum)
-          || payoutNum === 0 // payout=0 — повторяем запрос (требование)
-        );
-      if (needsHydrate && !line._uzumPayoutRetryDone) {
-        if (payoutNum === 0) line._uzumPayoutRetryDone = true; // чтобы не уйти в бесконечный цикл
-        void (async () => {
-          await hydrateWmsLineUzumPayoutIfNeeded(line);
-          // не перерисовываем бесконечно — только если мы всё ещё в Uzum и payout появился
-          if (isWmsUzumMarketplaceSelected() && line.uzumPayout != null) renderWmsBoxes();
-        })();
-      }
+      // ВАЖНО: никаких запросов к API при рендере. Запрос только в момент добавления строки.
     });
     if (!rows) {
       rows = `<tr><td colspan="${uzumOnly ? 8 : 7}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
@@ -4993,22 +4850,21 @@ async function confirmWmsPickProduct() {
     qty,
     unitCost: Number(product.costGross || 0),
     financialSnapshot,
-    // фиксируем payout в момент добавления (если Uzum и уже есть кеш)
-    uzumPayout: (isWmsUzumMarketplaceSelected() && window.appState.uzumPrices?.[String(mpSku.value || '').trim()]?.payoutPerUnit != null)
-      ? Number(window.appState.uzumPrices[String(mpSku.value || '').trim()].payoutPerUnit)
-      : null
+    // Жёсткий снапшот: заполняется ТОЛЬКО при первичном добавлении в коробку (Uzum only)
+    fixedUzumPayout: null,
+    _uzumPayoutLoading: false
   };
   box.items.push(newLine);
   syncWmsLineFinancials(newLine);
   if (isWmsUzumMarketplaceSelected()) {
+    // Единственный запрос к Uzum API — только сейчас, в момент добавления товара.
+    newLine._uzumPayoutLoading = true;
+    renderWmsBoxes();
     void (async () => {
-      await hydrateWmsLineUzumPayoutIfNeeded(newLine);
-      // Если после первого запроса payout = 0 — просим принудительный повтор (по требованию).
-      if (Number(newLine.uzumPayout) === 0) {
-        await fetchUzumPayoutPerUnitBySku(newLine.sku, { force: true });
-        await hydrateWmsLineUzumPayoutIfNeeded(newLine);
-      }
-      if (newLine.uzumPayout != null) renderWmsBoxes();
+      const payout = await fetchUzumApiDumpAndReturnStubPayout(newLine.sku);
+      newLine.fixedUzumPayout = Number(payout || 0);
+      newLine._uzumPayoutLoading = false;
+      renderWmsBoxes();
     })();
   }
   closeWmsProductPickModal();
@@ -5065,8 +4921,10 @@ function buildWmsShipmentRecordFromUi(status, shipmentId) {
         productRecordId: clone.productRecordId,
         lineId: clone.lineId,
         financialSnapshot: clone.financialSnapshot,
-        // фиксируем payout в истории поставок (Uzum only)
-        uzumPayout: clone.uzumPayout != null && Number.isFinite(Number(clone.uzumPayout)) ? Number(clone.uzumPayout) : null
+        // Жёсткая фиксация выплаты Uzum на момент сборки
+        fixedUzumPayout: clone.fixedUzumPayout != null && Number.isFinite(Number(clone.fixedUzumPayout))
+          ? Number(clone.fixedUzumPayout)
+          : (clone.uzumPayout != null && Number.isFinite(Number(clone.uzumPayout)) ? Number(clone.uzumPayout) : 0)
       };
     }),
     totalQuantity: Math.max(0, Math.floor(Number(t.qtyTotal || 0))),
