@@ -4300,7 +4300,7 @@ async function openWmsEditDraft(shipmentId) {
   wmsState.draft = {
     boxes: boxes.length
       ? boxes.map(box => ({
-        id: box.id || newWmsBoxId(),
+        id: (box?.id != null && String(box.id) !== '') ? box.id : newWmsBoxId(),
         componentId: box.componentId || '',
         items: (box.items || []).map(it => deepCloneJson(it))
       }))
@@ -4333,6 +4333,10 @@ function renderWmsDraftSummary() {
   if (qv) qv.textContent = qty.toLocaleString('ru-RU');
 }
 
+function isEditingSentShipmentNow() {
+  return !!wmsState.editingOriginalSent && shipmentRecordStatus(wmsState.editingOriginalSent) === 'sent';
+}
+
 async function handleWmsLineQtyCommit(inp) {
   const boxId = inp.getAttribute('data-wms-qty');
   const lineId = inp.getAttribute('data-line');
@@ -4343,8 +4347,8 @@ async function handleWmsLineQtyCommit(inp) {
     alert('У строки нет привязки к товару в базе (productRecordId).');
     return;
   }
-  const oldQty = Math.max(1, Math.floor(Number(inp.dataset.prevQty || found.line.qty || 1)));
-  let newQty = Math.max(1, Math.floor(Number(inp.value || 1)));
+  const oldQty = Math.max(0, Math.floor(Number(inp.dataset.prevQty ?? found.line.qty ?? 0)));
+  let newQty = Math.max(0, Math.floor(Number(inp.value ?? 0)));
   const products = readProductsSafe();
   const p = products.find(x => recordIdsEqual(x.recordId, rid));
   const stock = p ? Math.max(0, Math.floor(Number(p.stockQty || 0))) : 0;
@@ -4356,19 +4360,32 @@ async function handleWmsLineQtyCommit(inp) {
     return;
   }
   if (newQty === oldQty) return;
-  const deltaWh = oldQty - newQty;
   try {
-    await applyWmsWarehouseStockDelta(rid, deltaWh, {
-      action_type: 'wms_shipment_line_qty',
-      line_old_qty: oldQty,
-      line_new_qty: newQty
-    });
-    found.line.qty = newQty;
-    inp.dataset.prevQty = String(newQty);
+    if (!isEditingSentShipmentNow()) {
+      const deltaWh = oldQty - newQty; // >0 вернуть на склад; <0 списать
+      await applyWmsWarehouseStockDelta(rid, deltaWh, {
+        action_type: 'wms_shipment_line_qty',
+        line_old_qty: oldQty,
+        line_new_qty: newQty
+      });
+    }
+    if (newQty <= 0) {
+      // qty=0 — удаляем строку (а пустую коробку подчистим сразу, чтобы не плодить "пустые №11")
+      const box = found.box;
+      if (box) box.items = (box.items || []).filter(l => l.lineId !== lineId);
+      if (box && (!box.items || box.items.length === 0)) {
+        wmsState.draft.boxes = (wmsState.draft.boxes || []).filter(b => String(b.id) !== String(box.id));
+        if (!wmsState.draft.boxes.length) wmsState.draft.boxes.push({ id: newWmsBoxId(), componentId: '', items: [] });
+      }
+    } else {
+      found.line.qty = newQty;
+      inp.dataset.prevQty = String(newQty);
+      const tr = inp.closest('tr');
+      const uc = Number(found.line.unitCost ?? found.line.financialSnapshot?.costGross ?? 0);
+      const sumCell = tr?.querySelector('[data-wms-cell-sum]');
+      if (sumCell) sumCell.textContent = fmtMoney(newQty * uc);
+    }
     const tr = inp.closest('tr');
-    const uc = Number(found.line.unitCost ?? found.line.financialSnapshot?.costGross ?? 0);
-    const sumCell = tr?.querySelector('[data-wms-cell-sum]');
-    if (sumCell) sumCell.textContent = fmtMoney(newQty * uc);
     renderWmsLiveTotals();
     renderWmsDraftSummary();
     refreshWmsUnitEconModalIfDraftLine(boxId, lineId);
@@ -4455,7 +4472,7 @@ function renderWmsBoxes() {
     btn.addEventListener('click', () => void (async () => {
       const id = btn.getAttribute('data-wms-remove-box');
       const box = wmsState.draft.boxes.find(x => String(x.id) === String(id));
-      if (box && Array.isArray(box.items)) {
+      if (!isEditingSentShipmentNow() && box && Array.isArray(box.items)) {
         for (let i = 0; i < box.items.length; i++) {
           const line = box.items[i];
           const rid = line?.productRecordId != null && String(line.productRecordId) !== '' ? String(line.productRecordId) : '';
@@ -4487,7 +4504,7 @@ function renderWmsBoxes() {
       const line = box ? (box.items || []).find(l => l.lineId === lineId) : null;
       const rid = line?.productRecordId != null && String(line.productRecordId) !== '' ? String(line.productRecordId) : '';
       const q = Math.max(0, Math.floor(Number(line?.qty || 0)));
-      if (line && rid && q) {
+      if (!isEditingSentShipmentNow() && line && rid && q) {
         try {
           await applyWmsWarehouseStockDelta(rid, q, { action_type: 'wms_shipment_remove_line' });
         } catch (e) {
@@ -4497,6 +4514,10 @@ function renderWmsBoxes() {
         }
       }
       if (box) box.items = (box.items || []).filter(l => l.lineId !== lineId);
+      if (box && (!box.items || box.items.length === 0)) {
+        wmsState.draft.boxes = (wmsState.draft.boxes || []).filter(b => String(b.id) !== String(box.id));
+        if (!wmsState.draft.boxes.length) wmsState.draft.boxes.push({ id: newWmsBoxId(), componentId: '', items: [] });
+      }
       renderWmsBoxes();
       renderWmsLiveTotals();
       renderWmsDraftSummary();
@@ -4672,7 +4693,9 @@ async function confirmWmsPickProduct() {
     return;
   }
   try {
-    await applyWmsWarehouseStockDelta(rid, -qty, { action_type: 'wms_shipment_add_line', qty });
+    if (!isEditingSentShipmentNow()) {
+      await applyWmsWarehouseStockDelta(rid, -qty, { action_type: 'wms_shipment_add_line', qty });
+    }
   } catch (e) {
     console.error('confirmWmsPickProduct: списание остатка: ', e);
     alert(e?.message || 'Не удалось зарезервировать остаток в Firebase.');
@@ -4703,16 +4726,20 @@ function buildWmsShipmentRecordFromUi(status, shipmentId) {
   const marketplace = getWmsMarketplaceFromUi();
   finalizeWmsDraftLinesBeforeSave();
   const flat = collectWmsFlatLinesFromDraft();
-  const boxesSnapshot = (wmsState.draft.boxes || []).map(box => {
+  const rawBoxes = (wmsState.draft.boxes || []);
+  const boxesSnapshot = rawBoxes.map(box => {
     const comp = getComponentById(box.componentId);
+    const nextItems = (box.items || [])
+      .map(it => deepCloneJson(it))
+      .filter(it => Math.max(0, Math.floor(Number(it?.qty || 0))) > 0);
     return {
-      id: box.id,
+      id: (box?.id != null && String(box.id) !== '') ? box.id : newWmsBoxId(),
       componentId: box.componentId || '',
       componentName: comp?.name || '',
       deliveryCostTashkent: Number(comp?.deliveryCostTashkent || 0),
-      items: (box.items || []).map(it => deepCloneJson(it))
+      items: nextItems
     };
-  });
+  }).filter(b => Array.isArray(b.items) && b.items.length > 0); // не сохраняем пустые коробки
   const t = computeWmsDraftTotals();
   const nowIso = new Date().toISOString();
   const shipments = readShipmentsSafe();
@@ -4743,6 +4770,9 @@ function buildWmsShipmentRecordFromUi(status, shipmentId) {
         financialSnapshot: clone.financialSnapshot
       };
     }),
+    totalQuantity: Math.max(0, Math.floor(Number(t.qtyTotal || 0))),
+    totalCost: Number(t.goods || 0),
+    totalAmount: Number(t.grand || 0),
     totals: {
       boxLogistics: t.boxLog,
       totalLogistics: t.totalLog,
@@ -4751,6 +4781,96 @@ function buildWmsShipmentRecordFromUi(status, shipmentId) {
     },
     liveStockAllocated: true
   };
+}
+
+function buildShipmentQtyByRecordId(sh) {
+  const map = new Map();
+  if (!sh) return map;
+  let flat = [];
+  if (sh.version === 2 && Array.isArray(sh.boxes)) {
+    sh.boxes.forEach(b => (b.items || []).forEach(it => flat.push(it)));
+  } else {
+    flat = Array.isArray(sh.items) ? sh.items : [];
+  }
+  flat.forEach(it => {
+    const rid = it?.productRecordId != null && String(it.productRecordId) !== '' ? String(it.productRecordId) : '';
+    const q = Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0)));
+    if (!rid || !q) return;
+    map.set(rid, (map.get(rid) || 0) + q);
+  });
+  return map;
+}
+
+function buildShipmentEditStockDeltaByRecordId(oldShipment, newShipment) {
+  // Delta-принцип: delta = oldQty - newQty ( >0 вернуть, <0 списать )
+  const a = buildShipmentQtyByRecordId(oldShipment);
+  const b = buildShipmentQtyByRecordId(newShipment);
+  const out = new Map();
+  const keys = new Set([...Array.from(a.keys()), ...Array.from(b.keys())]);
+  keys.forEach((rid) => {
+    const oldQ = Math.max(0, Math.floor(Number(a.get(rid) || 0)));
+    const newQ = Math.max(0, Math.floor(Number(b.get(rid) || 0)));
+    const delta = oldQ - newQ;
+    if (delta) out.set(String(rid), delta);
+  });
+  return out;
+}
+
+async function saveWmsShipmentToFirestoreTransaction(shipment, stockDeltasByRecordId, auditContext) {
+  const shipmentsCol = getShipmentsCollectionRef();
+  const productsCol = getProductsCollectionRef();
+  const id = shipment?.id != null ? String(shipment.id) : '';
+  if (!shipmentsCol || !productsCol || !id) throw new Error('Firebase: недоступны коллекции или id поставки.');
+  const FieldValue = firebase?.firestore?.FieldValue;
+  if (!FieldValue || typeof FieldValue.increment !== 'function') throw new Error('Firebase FieldValue недоступен.');
+
+  const entries = Array.from((stockDeltasByRecordId instanceof Map) ? stockDeltasByRecordId.entries() : []);
+
+  await db.runTransaction(async (tx) => {
+    // 1) проверить остатки, если нужно списывать (delta < 0)
+    if (entries.length) {
+      const reads = entries.map(([rid]) => productsCol.doc(String(rid)));
+      const snaps = await Promise.all(reads.map(ref => tx.get(ref)));
+      const curStock = new Map();
+      snaps.forEach((snap, i) => {
+        const rid = String(entries[i][0]);
+        const v = snap?.exists ? Number(snap.data()?.stockQty || 0) : 0;
+        curStock.set(rid, Math.max(0, Math.floor(v)));
+      });
+      entries.forEach(([rid, delta]) => {
+        const d = Math.floor(Number(delta || 0));
+        if (!d) return;
+        const cur = curStock.get(String(rid)) ?? 0;
+        if (cur + d < 0) {
+          throw new Error(`Недостаточно остатка для записи ${rid}: нужно ${-d}, на складе ${cur}.`);
+        }
+      });
+      const nowIso = new Date().toISOString();
+      entries.forEach(([rid, delta]) => {
+        const d = Math.floor(Number(delta || 0));
+        if (!d) return;
+        tx.set(productsCol.doc(String(rid)), { stockQty: FieldValue.increment(d), updatedAt: nowIso }, { merge: true });
+      });
+    }
+
+    // 2) сохранить поставку (totals и boxes записываем только если транзакция целиком успешна)
+    tx.set(shipmentsCol.doc(id), shipment, { merge: true });
+  });
+
+  // локально: применяем delta к памяти сразу, чтобы главная страница показала верные остатки без ожидания onSnapshot
+  if (entries.length) {
+    applyStockDeltasToLocalProducts(stockDeltasByRecordId);
+    const act = auditContext?.action_type || 'wms_shipment_save_delta';
+    entries.forEach(([rid, delta]) => {
+      const d = Math.floor(Number(delta || 0));
+      if (!d) return;
+      const p = findProductByRecordId(readProductsSafe(), String(rid));
+      const next = p ? Math.max(0, Math.floor(Number(p.stockQty || 0))) : 0;
+      const prev = Math.max(0, next - d);
+      recordProductStockAudit(String(rid), prev, next, act, auditContext || {});
+    });
+  }
+  return true;
 }
 
 function upsertShipmentInStore(shipment) {
@@ -4764,7 +4884,7 @@ function upsertShipmentInStore(shipment) {
   });
 }
 
-function saveWmsShipmentDraft() {
+async function saveWmsShipmentDraft() {
   const name = (document.getElementById('wmsShipmentName')?.value || '').trim();
   const date = document.getElementById('wmsShipmentDate')?.value || '';
   if (!name) {
@@ -4777,11 +4897,18 @@ function saveWmsShipmentDraft() {
   }
   const shipmentId = wmsState.editingDraftId != null ? wmsState.editingDraftId : Date.now();
   const shipment = buildWmsShipmentRecordFromUi('draft', shipmentId);
-  upsertShipmentInStore(shipment);
-  wmsState.editingDraftId = shipmentId;
-  wmsState.sessionIsNewAssembly = false;
-  renderWmsHistory();
-  showWmsDraftSavedToast();
+  // принудительный пересчёт totals уже внутри buildWmsShipmentRecordFromUi
+  try {
+    await saveWmsShipmentToFirestoreTransaction(shipment, new Map(), { action_type: 'wms_draft_save', shipment_id: String(shipmentId) });
+    upsertShipmentInStore(shipment);
+    wmsState.editingDraftId = shipmentId;
+    wmsState.sessionIsNewAssembly = false;
+    renderWmsHistory();
+    showWmsDraftSavedToast();
+  } catch (e) {
+    console.error('saveWmsShipmentDraft: transaction: ', e);
+    alert(e?.message || 'Не удалось сохранить черновик в Firebase.');
+  }
 }
 
 async function sendWmsShipment() {
@@ -4818,11 +4945,22 @@ async function sendWmsShipment() {
   }
 
   const isEditingSent = !!wmsState.editingOriginalSent && shipmentRecordStatus(wmsState.editingOriginalSent) === 'sent';
-  // Остатки уже синхронизируются при изменении количества в коробке (Firebase + локально). Здесь только статус поставки.
+  // Для sent-редактирования — применяем Delta при сохранении (одной транзакцией), а не "по ходу" ввода.
 
   const shipmentId = wmsState.editingDraftId != null ? wmsState.editingDraftId : Date.now();
   const shipment = buildWmsShipmentRecordFromUi('sent', shipmentId);
-  upsertShipmentInStore(shipment);
+  try {
+    const deltas = isEditingSent ? buildShipmentEditStockDeltaByRecordId(wmsState.editingOriginalSent, shipment) : new Map();
+    await saveWmsShipmentToFirestoreTransaction(shipment, deltas, {
+      action_type: isEditingSent ? 'wms_shipment_sent_edit_save' : 'wms_shipment_sent_save',
+      shipment_id: String(shipmentId)
+    });
+    upsertShipmentInStore(shipment);
+  } catch (e) {
+    console.error('sendWmsShipment: transaction: ', e);
+    alert(e?.message || 'Не удалось сохранить поставку в Firebase.');
+    return;
+  }
   wmsState.sessionIsNewAssembly = false;
   recordActivityLogOnly(
     'shipment_sent',
@@ -5163,12 +5301,39 @@ function renderWmsHistory() {
       void openWmsEditDraft(btn.getAttribute('data-wms-edit-sent'));
     });
   });
+  async function fetchShipmentFreshIntoStore(id) {
+    const col = getShipmentsCollectionRef();
+    if (!col) return null;
+    try {
+      const snap = await col.doc(String(id)).get();
+      if (!snap?.exists) return null;
+      const data = snap.data() || {};
+      const rowId = data.id != null && String(data.id) !== '' ? String(data.id) : String(id);
+      const fresh = { ...data, id: rowId };
+      upsertShipmentInStore(fresh);
+      return fresh;
+    } catch (e) {
+      console.error('fetchShipmentFreshIntoStore: ', e);
+      return null;
+    }
+  }
+
   host.querySelectorAll('[data-wms-toggle-detail]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', () => void (async () => {
       const id = btn.getAttribute('data-wms-toggle-detail');
       const panel = document.getElementById(`wms-ship-detail-${id}`);
-      panel?.classList.toggle('open');
-    });
+      if (!panel) return;
+      // Подтягиваем актуальные boxes прямо из Firebase, затем открываем панель.
+      const fresh = await fetchShipmentFreshIntoStore(id);
+      if (fresh && fresh.version === 2 && Array.isArray(fresh.boxes)) {
+        // Перерисовать весь список проще и безопаснее, чем точечно править DOM разметку деталей.
+        renderWmsHistory();
+        const reopened = document.getElementById(`wms-ship-detail-${id}`);
+        reopened?.classList.add('open');
+      } else {
+        panel.classList.toggle('open');
+      }
+    })());
   });
   host.querySelectorAll('[data-wms-xlsx]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -5653,7 +5818,7 @@ document.getElementById('wmsAddBoxBtn')?.addEventListener('click', () => {
   renderWmsLiveTotals();
   renderWmsDraftSummary();
 });
-document.getElementById('wmsSaveDraftBtn')?.addEventListener('click', saveWmsShipmentDraft);
+document.getElementById('wmsSaveDraftBtn')?.addEventListener('click', () => void saveWmsShipmentDraft());
 document.getElementById('wmsSendShipmentBtn')?.addEventListener('click', () => void sendWmsShipment());
 document.getElementById('shipmentCalcSaveBtn')?.addEventListener('click', saveShipmentCalcFromForm);
 document.getElementById('shipmentCalcCancelBtn')?.addEventListener('click', cancelShipmentCalcEdit);
