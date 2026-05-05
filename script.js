@@ -1587,6 +1587,101 @@ document.querySelectorAll('[data-open-page]').forEach(card => {
   card.addEventListener('click', () => openPage(card.dataset.openPage));
 });
 
+const codeBase1C = {
+  productType: {"КПБ": "01", "КПБ на резинке": "02", "Неполный комплект": "03", "Салфетки": "04", "Скатерть": "05", "Декоративная подушка": "06", "Наволочки": "07", "Стеганное одеяло": "08", "Прихватка": "09", "Рукавица": "10", "Комплект Прихватка+Рукавица": "11", "Простыня на резинке": "12"},
+  size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
+  fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
+  finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
+  density: {"100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08", "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16", "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24", "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32", "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"},
+  width: {"100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"}
+};
+
+const GENERATOR_1C_LABELS = ['Вид продукта', 'Размер', 'Вид ткани', 'Вид отделки', 'Плотность', 'Ширина'];
+const GENERATOR_1C_KEYS = ['productType', 'size', 'fabricType', 'finishType', 'density', 'width'];
+const GENERATOR_SELECT_IDS = ['genProductType', 'genSize', 'genFabricType', 'genFinishType', 'genDensity', 'genWidth'];
+
+function fillGeneratorSelectFromCodeBase(selectId, categoryKey) {
+  const sel = document.getElementById(selectId);
+  if (!sel || !codeBase1C[categoryKey]) return;
+  const frag = document.createDocumentFragment();
+  Object.keys(codeBase1C[categoryKey]).forEach((label) => {
+    const o = document.createElement('option');
+    o.value = label;
+    o.textContent = label;
+    frag.appendChild(o);
+  });
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+}
+
+function findLabelByCodeInCategory(categoryKey, code) {
+  const map = codeBase1C[categoryKey];
+  if (!map) return null;
+  const pair = String(code || '').trim();
+  const hit = Object.entries(map).find(([, v]) => v === pair);
+  return hit ? hit[0] : null;
+}
+
+function initCodeGenerator1C() {
+  GENERATOR_SELECT_IDS.forEach((id, i) => fillGeneratorSelectFromCodeBase(id, GENERATOR_1C_KEYS[i]));
+
+  document.getElementById('btnGenerate')?.addEventListener('click', () => {
+    const vals = GENERATOR_SELECT_IDS.map((id) => document.getElementById(id)?.value);
+    const chunks = GENERATOR_1C_KEYS.map((key, i) => codeBase1C[key][vals[i]]);
+    const missingIdx = chunks.findIndex((c) => !c);
+    const outEl = document.getElementById('resultGeneratedCode');
+    if (!outEl) return;
+    if (missingIdx !== -1) {
+      outEl.textContent = '';
+      return;
+    }
+    let out = chunks.join('');
+    const colorRaw = String(document.getElementById('genColor')?.value || '').trim();
+    if (colorRaw) out += `-${colorRaw}`;
+    outEl.textContent = out;
+  });
+
+  document.getElementById('btnDecode')?.addEventListener('click', () => {
+    const ul = document.getElementById('decodeResultList');
+    if (!ul) return;
+    ul.innerHTML = '';
+    let raw = String(document.getElementById('decodeInput')?.value || '').trim();
+    let colorSuffix = '';
+    const dash = raw.indexOf('-');
+    if (dash !== -1) {
+      colorSuffix = raw.slice(dash + 1).trim();
+      raw = raw.slice(0, dash);
+    }
+    const digits = raw.replace(/\D/g, '').slice(0, 12);
+    if (digits.length < 12) {
+      const li = document.createElement('li');
+      li.textContent = `Введите 12 цифр кода (сейчас ${digits.length}).`;
+      ul.appendChild(li);
+      return;
+    }
+    for (let i = 0; i < 6; i += 1) {
+      const pair = digits.slice(i * 2, i * 2 + 2);
+      const name = findLabelByCodeInCategory(GENERATOR_1C_KEYS[i], pair);
+      const li = document.createElement('li');
+      li.textContent = `${GENERATOR_1C_LABELS[i]}: ${name || `— (код ${pair})`}`;
+      ul.appendChild(li);
+    }
+    if (colorSuffix) {
+      const li = document.createElement('li');
+      li.textContent = `Цвет: ${colorSuffix}`;
+      ul.appendChild(li);
+    }
+  });
+
+  const navGen = document.getElementById('nav-generator');
+  navGen?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openPage('generator-section');
+    }
+  });
+}
+
 [
   'price','commission','cost','costVatMode','length','width','height','stockStatus','logisticsTariff',
   'turnover','newSkuDays','vatRate','saleVatMode','useProductCost'
@@ -7477,6 +7572,7 @@ renderAnalyticsReportsList();
 initUzumCostWarehouseListeners();
 initMarketplaceSwitcher();
 initThemeToggle();
+initCodeGenerator1C();
 document.getElementById('stockAnalyticsRefreshBtn')?.addEventListener('click', () => {
   if (getCurrentMarketplace() === 'uzum') void renderStockAnalyticsPage();
 });

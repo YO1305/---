@@ -62,6 +62,12 @@
             <span class="nav-icon">📈</span>
             <span>Аналитика</span>
           </button>
+          <ul class="nav-menu-addon">
+            <li id="nav-generator" class="nav-item nav-btn" data-page="generator-section" role="button" tabindex="0">
+              <span class="nav-icon">🔤</span>
+              <span>Генератор 1С</span>
+            </li>
+          </ul>
         </nav>
       </aside>
 
@@ -1145,6 +1151,71 @@
       </div>
       <div id="stockAnalyticsMpStub" class="mp-tab-stub card hidden" role="status">
         <p class="mp-tab-stub-text">Раздел в разработке</p>
+      </div>
+    </section>
+
+    <section class="page-panel page-section" id="generator-section">
+      <div class="generator-page-head">
+        <h2 class="generator-page-title">Генератор и Дешифратор кодов 1С</h2>
+        <p class="sub generator-page-sub">Соберите 12-значный код из справочников или вставьте готовую строку с цветом — расшифровка подставит названия свойств.</p>
+      </div>
+      <div class="generator-panels">
+        <article class="card generator-panel">
+          <h3 class="generator-panel-title">Создание кода 1С</h3>
+          <p class="sub">Выберите значения по каждому измерению — в коде они идут в фиксированном порядке (6 блоков по 2 цифры).</p>
+          <div class="generator-fields">
+            <div class="field">
+              <label for="genProductType">Вид продукта</label>
+              <select id="genProductType" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="genSize">Размер</label>
+              <select id="genSize" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="genFabricType">Вид ткани</label>
+              <select id="genFabricType" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="genFinishType">Вид отделки</label>
+              <select id="genFinishType" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="genDensity">Плотность</label>
+              <select id="genDensity" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="genWidth">Ширина</label>
+              <select id="genWidth" class="select"></select>
+            </div>
+            <div class="field generator-field--full">
+              <label for="genColor">Цвет</label>
+              <input type="text" id="genColor" class="input" placeholder="Цвет (напр. крем)" autocomplete="off" />
+            </div>
+          </div>
+          <div class="generator-actions">
+            <button type="button" id="btnGenerate" class="btn-primary">Сгенерировать</button>
+          </div>
+          <div class="field generator-result-wrap">
+            <span class="generator-result-label">Сгенерированный код</span>
+            <div id="resultGeneratedCode" class="generator-code-output" aria-live="polite"></div>
+          </div>
+        </article>
+        <article class="card generator-panel">
+          <h3 class="generator-panel-title">Расшифровка кода 1С</h3>
+          <p class="sub">Формат: 12 цифр и при необходимости суффикс <code class="generator-code-inline">-цвет</code> (например, <code class="generator-code-inline">072101030202-крем</code>).</p>
+          <div class="field">
+            <label for="decodeInput">Строка кода</label>
+            <input type="text" id="decodeInput" class="input" placeholder="Введите код..." autocomplete="off" />
+          </div>
+          <div class="generator-actions">
+            <button type="button" id="btnDecode" class="btn-primary">Расшифровать</button>
+          </div>
+          <div class="generator-decode-out">
+            <span class="generator-result-label">Свойства</span>
+            <ul id="decodeResultList" class="decode-result-list"></ul>
+          </div>
+        </article>
       </div>
     </section>
 
