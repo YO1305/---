@@ -2483,7 +2483,7 @@ body.dark-mode .preview-box {
   max-width: 120px;
 }
 .preview-box--pillow .fabric-texture {
-  aspect-ratio: 70 / 50;
+  aspect-ratio: 65 / 50;
   min-height: 56px;
 }
 .preview-label {
