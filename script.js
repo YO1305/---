@@ -1749,11 +1749,11 @@ function buildPillowZipperCut(pillowHeight, pillowWidth, allowance) {
 }
 
 function buildFlapPillowUnfold(pillowHeight, pillowWidth, allowance, flapSize) {
-  const cutPatternAxis = pillowHeight + allowance * 2;
-  const cutCrossAxis = pillowWidth * 2 + flapSize + allowance * 2;
+  const axisH = pillowHeight + allowance * 2;
+  const axisW = pillowWidth * 2 + flapSize + allowance * 2;
   return {
-    cutPatternAxis,
-    cutCrossAxis,
+    axisH,
+    axisW,
     pillowHeight,
     pillowWidth,
     flapSize,
@@ -1767,92 +1767,70 @@ function buildFlapPillowUnfold(pillowHeight, pillowWidth, allowance, flapSize) {
 
 const FLAP_PILLOW_FIT_ERROR = 'Развёртка наволочки не помещается в ширину ткани';
 
-function layoutFlapPillowOnRoll(unfold, fabric) {
-  const { cutPatternAxis, cutCrossAxis } = unfold;
-  const layouts = [];
-
-  if (fabric.isSolid) {
-    const alongA = cutPatternAxis;
-    const acrossA = cutCrossAxis;
-    if (acrossA <= fabric.width + 0.05) {
-      layouts.push({
-        alongRoll: alongA,
-        acrossRoll: acrossA,
-        layoutLabel: 'вдоль рулона (высота вдоль размотки)'
-      });
-    }
-    const alongB = cutCrossAxis;
-    const acrossB = cutPatternAxis;
-    if (acrossB <= fabric.width + 0.05) {
-      layouts.push({
-        alongRoll: alongB,
-        acrossRoll: acrossB,
-        layoutLabel: 'поперёк рулона (оптимальный поворот развёртки)'
-      });
-    }
-  } else if (fabric.patternDir === 'along') {
-    if (cutCrossAxis > fabric.width + 0.05) {
-      return { ok: false, error: FLAP_PILLOW_FIT_ERROR };
-    }
-    layouts.push({
-      alongRoll: cutPatternAxis,
-      acrossRoll: cutCrossAxis,
-      layoutLabel: 'вдоль рулона (рисунок вдоль, высота по размотке)'
-    });
-  } else {
-    if (cutPatternAxis > fabric.width + 0.05) {
-      return { ok: false, error: FLAP_PILLOW_FIT_ERROR };
-    }
-    layouts.push({
-      alongRoll: cutCrossAxis,
-      acrossRoll: cutPatternAxis,
-      layoutLabel: 'поперёк рулона (рисунок поперёк, обхват по размотке)'
-    });
-  }
-
-  if (!layouts.length) {
-    return { ok: false, error: FLAP_PILLOW_FIT_ERROR };
-  }
-
-  const best = layouts.reduce((min, cur) => (cur.alongRoll < min.alongRoll ? cur : min));
-  return { ok: true, layout: best };
+function nestPillowLayout(layoutLength, layoutWidth, fabWidth, pillowQty) {
+  const itemsPerRow = Math.floor(fabWidth / layoutWidth);
+  if (itemsPerRow < 1) return null;
+  const rows = Math.ceil(pillowQty / itemsPerRow);
+  const totalPillowFabric = rows * layoutLength;
+  return { itemsPerRow, rows, totalPillowFabric, layoutLength, layoutWidth };
 }
 
-function calculateFlapPillowcasesConsumption(unfold, fabric, pillowQty) {
-  const layoutRes = layoutFlapPillowOnRoll(unfold, fabric);
-  if (!layoutRes.ok) return layoutRes;
+function buildPillowDetailLine(pillowQty, totalPillowFabric, itemsPerRow) {
+  const perOne = totalPillowFabric / pillowQty;
+  return `Наволочки (${pillowQty} шт): Общий расход ${Math.round(totalPillowFabric)} см (Расход на 1 шт: ${perOne.toFixed(1)} см). В один ряд по ширине рулона помещается ${itemsPerRow} шт.`;
+}
 
-  const { alongRoll, acrossRoll, layoutLabel } = layoutRes.layout;
-  const itemsPerRow = Math.floor(fabric.width / acrossRoll);
-  if (itemsPerRow < 1) {
+function calculateFlapPillowcasesConsumption(unfold, fabric, pillowQty, pillowPatternDir) {
+  const { axisH, axisW } = unfold;
+  const candidates = [];
+
+  const addCandidate = (layoutLength, layoutWidth, layoutLabel) => {
+    const nest = nestPillowLayout(layoutLength, layoutWidth, fabric.width, pillowQty);
+    if (!nest) return;
+    candidates.push({ ...nest, layoutLabel });
+  };
+
+  if (fabric.isSolid) {
+    addCandidate(axisH, axisW, 'вдоль рулона (AxisH по длине)');
+    addCandidate(axisW, axisH, 'поперёк рулона (AxisW по длине, оптимальный поворот)');
+  } else {
+    const matched = fabric.patternDir === pillowPatternDir;
+    const layoutLength = matched ? axisH : axisW;
+    const layoutWidth = matched ? axisW : axisH;
+    const layoutLabel = matched
+      ? 'направления рисунка совпадают (AxisH вдоль рулона)'
+      : 'направления отличаются (AxisW вдоль рулона)';
+    addCandidate(layoutLength, layoutWidth, layoutLabel);
+  }
+
+  if (!candidates.length) {
     return { ok: false, error: FLAP_PILLOW_FIT_ERROR };
   }
 
-  const rows = Math.ceil(pillowQty / itemsPerRow);
-  const consumption = rows * alongRoll;
-  const consumptionMeters = consumption / 100;
+  const best = candidates.reduce((min, cur) => (
+    cur.totalPillowFabric < min.totalPillowFabric ? cur : min
+  ));
 
   return {
     ok: true,
-    consumption,
-    consumptionMeters,
-    perPieceCm: alongRoll,
+    consumption: best.totalPillowFabric,
+    perPieceCm: best.totalPillowFabric / pillowQty,
     pieceCount: 1,
-    layoutLabel,
-    alongRoll,
-    acrossRoll,
-    cutLength: unfold.cutCrossAxis,
-    cutWidth: unfold.cutPatternAxis,
-    cutPatternAxis: unfold.cutPatternAxis,
-    cutCrossAxis: unfold.cutCrossAxis,
-    unfoldLabel: `${fabricFmtCm(unfold.cutCrossAxis)} × ${fabricFmtCm(unfold.cutPatternAxis)}`,
+    layoutLabel: best.layoutLabel,
+    alongRoll: best.layoutLength,
+    acrossRoll: best.layoutWidth,
+    cutLength: axisW,
+    cutWidth: axisH,
+    axisH,
+    axisW,
+    unfoldLabel: `${fabricFmtCm(axisW)} × ${fabricFmtCm(axisH)}`,
     isFlapUnfold: true,
     nesting: {
-      countPerRow: itemsPerRow,
-      rows,
+      countPerRow: best.itemsPerRow,
+      rows: best.rows,
       totalPieces: pillowQty
     },
-    detailLine: `Наволочка (развёртка ${fabricFmtCm(unfold.cutCrossAxis)} × ${fabricFmtCm(unfold.cutPatternAxis)}). Расход: ${consumptionMeters.toFixed(2)} м (уместилось ${itemsPerRow} шт. в ширину рулона).`
+    detailLine: buildPillowDetailLine(pillowQty, best.totalPillowFabric, best.itemsPerRow)
   };
 }
 
@@ -1935,7 +1913,7 @@ function calculatePieceConsumption(cut, fabric, itemPatternWish) {
   };
 }
 
-function calculatePillowcasesNesting(cut, fabric, itemPatternWish, pillowQty) {
+function calculatePillowcasesNesting(cut, fabric, pillowPatternDir, pillowQty) {
   const totalPieces = pillowQty * cut.pieceCount;
 
   function nestOnePiece(cutLength, cutWidth, finishedLength, finishedWidth, layoutLabel, rotated) {
@@ -1976,7 +1954,7 @@ function calculatePillowcasesNesting(cut, fabric, itemPatternWish, pillowQty) {
   } else {
     const p = layoutFromPattern(
       cut.cutLength, cut.cutWidth, cut.finishedLength, cut.finishedWidth,
-      fabric.patternDir, itemPatternWish
+      fabric.patternDir, pillowPatternDir
     );
     const one = nestOnePiece(
       cut.cutLength, cut.cutWidth, cut.finishedLength, cut.finishedWidth,
@@ -1990,17 +1968,19 @@ function calculatePillowcasesNesting(cut, fabric, itemPatternWish, pillowQty) {
   }
 
   const best = options.reduce((min, cur) => (cur.consumption < min.consumption ? cur : min));
+  const pillowCount = pillowQty;
   return {
     ok: true,
     consumption: best.consumption,
-    perPieceCm: best.alongRoll,
+    perPieceCm: best.consumption / pillowCount,
     pieceCount: cut.pieceCount,
     layoutLabel: best.layoutLabel,
     alongRoll: best.alongRoll,
     acrossRoll: best.acrossRoll,
     cutLength: cut.cutLength,
     cutWidth: cut.cutWidth,
-    nesting: { countPerRow: best.countPerRow, rows: best.rows, totalPieces }
+    nesting: { countPerRow: best.countPerRow, rows: best.rows, totalPieces },
+    detailLine: buildPillowDetailLine(pillowCount, best.consumption, best.countPerRow)
   };
 }
 
@@ -2046,7 +2026,7 @@ function calculateFabricConsumption() {
 
   const duvetWish = document.getElementById('duvetPatternWish')?.value || 'along';
   const sheetWish = document.getElementById('sheetPatternWish')?.value || 'along';
-  const pillowWish = document.getElementById('pillowPatternWish')?.value || 'along';
+  const pillowPatternDir = document.getElementById('pillowPatternDir')?.value || 'along';
 
   const duvetRes = calculatePieceConsumption(duvetCut, fabric, duvetWish);
   if (!duvetRes.ok) return { ok: false, error: `Пододеяльник: ${duvetRes.error}` };
@@ -2058,14 +2038,14 @@ function calculateFabricConsumption() {
   let pillowMeta;
   if (pillowType === 'flap') {
     const unfold = buildFlapPillowUnfold(pillowHeight, pillowWidth, fabric.allowance, flapSize);
-    pillowRes = calculateFlapPillowcasesConsumption(unfold, fabric, pillowQty);
+    pillowRes = calculateFlapPillowcasesConsumption(unfold, fabric, pillowQty, pillowPatternDir);
     pillowMeta = {
       notes: unfold.notes,
       finishedSize: `${fabricFmtCm(pillowHeight)} (вдоль рис.) × ${fabricFmtCm(pillowWidth)} (поперёк)`
     };
   } else {
     const pillowCut = buildPillowZipperCut(pillowHeight, pillowWidth, fabric.allowance);
-    pillowRes = calculatePillowcasesNesting(pillowCut, fabric, pillowWish, pillowQty);
+    pillowRes = calculatePillowcasesNesting(pillowCut, fabric, pillowPatternDir, pillowQty);
     pillowMeta = {
       notes: pillowCut.notes,
       finishedSize: `${fabricFmtCm(pillowHeight)} × ${fabricFmtCm(pillowWidth)}`
@@ -2130,7 +2110,7 @@ function renderFabricCalcResult(result) {
 
   const rows = result.items.map((it) => {
     const cutSize = it.isFlapUnfold
-      ? `Развёртка ${escapeFabricHtml(it.unfoldLabel)}<br><span class="fabric-calc-muted">вдоль рис.: ${fabricFmtCm(it.cutPatternAxis)} · поперёк: ${fabricFmtCm(it.cutCrossAxis)}</span>`
+      ? `Развёртка ${escapeFabricHtml(it.unfoldLabel)}<br><span class="fabric-calc-muted">AxisH: ${fabricFmtCm(it.axisH)} · AxisW: ${fabricFmtCm(it.axisW)}</span>`
       : `${fabricFmtCm(it.cutLength)} × ${fabricFmtCm(it.cutWidth)}`;
     const nestInfo = it.nesting && !it.isFlapUnfold
       ? `<br><span class="fabric-calc-muted">Раскладка: ${it.nesting.countPerRow} шт/ряд × ${it.nesting.rows} ряд(ов), всего лекал ${it.nesting.totalPieces}</span>`
@@ -2178,7 +2158,7 @@ function renderFabricCalcResult(result) {
 const FABRIC_PREVIEW_ITEMS = [
   { selectId: 'duvetPatternWish', previewId: 'preview-duvet' },
   { selectId: 'sheetPatternWish', previewId: 'preview-sheet' },
-  { selectId: 'pillowPatternWish', previewId: 'preview-pillow' }
+  { selectId: 'pillowPatternDir', previewId: 'preview-pillow' }
 ];
 
 function updateVisualPreview() {
@@ -2206,28 +2186,39 @@ function initFabricCalculator() {
   const sheetType = document.getElementById('sheetType');
   const pillowType = document.getElementById('pillowType');
 
-  const syncVisibility = () => {
+  const syncPatternVisibility = () => {
     const isPattern = fabType?.value === 'pattern';
     document.querySelectorAll('.fabric-pattern-only').forEach((el) => {
       el.classList.toggle('hidden', !isPattern);
     });
+    document.querySelectorAll('.fabric-pillow-pattern-only').forEach((el) => {
+      el.classList.toggle('hidden', !isPattern);
+    });
+    updateVisualPreview();
+  };
+
+  const syncFlapVisibility = () => {
+    document.querySelectorAll('.fabric-pillow-flap-only').forEach((el) => {
+      el.classList.toggle('hidden', pillowType?.value !== 'flap');
+    });
+  };
+
+  const syncSheetVisibility = () => {
     const isElastic = sheetType?.value !== 'plain';
     document.querySelectorAll('.fabric-sheet-elastic-only').forEach((el) => {
       el.classList.toggle('hidden', !isElastic);
     });
-    document.querySelectorAll('.fabric-pillow-flap-only').forEach((el) => {
-      el.classList.toggle('hidden', pillowType?.value !== 'flap');
-    });
-    const pillowPatternField = document.getElementById('pillowPatternWish')?.closest('.field');
-    if (pillowPatternField) {
-      pillowPatternField.classList.toggle('hidden', !isPattern || pillowType?.value === 'flap');
-    }
-    updateVisualPreview();
+  };
+
+  const syncVisibility = () => {
+    syncPatternVisibility();
+    syncFlapVisibility();
+    syncSheetVisibility();
   };
 
   fabType?.addEventListener('change', syncVisibility);
-  sheetType?.addEventListener('change', syncVisibility);
-  pillowType?.addEventListener('change', syncVisibility);
+  sheetType?.addEventListener('change', syncSheetVisibility);
+  pillowType?.addEventListener('change', syncFlapVisibility);
   document.querySelectorAll('.fabric-item-pattern').forEach((el) => {
     el.addEventListener('change', updateVisualPreview);
   });
