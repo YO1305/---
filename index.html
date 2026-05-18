@@ -1232,6 +1232,9 @@
 
       <article class="card fabric-calc-card">
         <h3 class="fabric-calc-block-title">Параметры ткани и припуски</h3>
+
+        <div class="fabric-calc-layout">
+          <div class="fabric-calc-form-col">
         <div class="grid grid-3" style="margin-top:12px;">
           <div class="field">
             <label for="fabWidth">Ширина ткани (см)</label>
@@ -1379,8 +1382,29 @@
             </div>
           </div>
         </div>
+          
+          </div>
 
-        
+          <aside class="calc-preview-container" aria-label="Превью направления рисунка на изделиях">
+            <h4 class="fabric-calc-preview-title">Превью кроя</h4>
+            <p class="fabric-calc-preview-hint sub">Направление полоски — как ляжет рисунок на готовую деталь</p>
+            <div class="calc-preview-grid">
+              <div id="preview-duvet" class="preview-box preview-box--duvet">
+                <span class="preview-label">Пододеяльник</span>
+                <div class="fabric-texture" aria-hidden="true"></div>
+              </div>
+              <div id="preview-sheet" class="preview-box preview-box--sheet">
+                <span class="preview-label">Простыня</span>
+                <div class="fabric-texture" aria-hidden="true"></div>
+              </div>
+              <div id="preview-pillow" class="preview-box preview-box--pillow">
+                <span class="preview-label">Наволочка</span>
+                <div class="fabric-texture" aria-hidden="true"></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+
         <div class="generator-actions" style="margin-top:18px;">
           <button type="button" id="btnFabricCalc" class="btn-primary">Рассчитать расход</button>
         </div>

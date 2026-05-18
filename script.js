@@ -2060,6 +2060,32 @@ function renderFabricCalcResult(result) {
   box.classList.remove('hidden');
 }
 
+const FABRIC_PREVIEW_ITEMS = [
+  { selectId: 'duvetPatternWish', previewId: 'preview-duvet' },
+  { selectId: 'sheetPatternWish', previewId: 'preview-sheet' },
+  { selectId: 'pillowPatternWish', previewId: 'preview-pillow' }
+];
+
+function updateVisualPreview() {
+  const isPattern = document.getElementById('fabType')?.value === 'pattern';
+  const container = document.querySelector('.calc-preview-container');
+  container?.classList.toggle('calc-preview-container--solid', !isPattern);
+
+  FABRIC_PREVIEW_ITEMS.forEach(({ selectId, previewId }) => {
+    const box = document.getElementById(previewId);
+    const texture = box?.querySelector('.fabric-texture');
+    const wish = document.getElementById(selectId)?.value || 'along';
+    if (!texture) return;
+
+    texture.classList.toggle('fabric-texture--across', isPattern && wish === 'across');
+    if (!isPattern || wish === 'along') {
+      texture.style.transform = 'rotate(0deg)';
+    } else {
+      texture.style.transform = 'rotate(90deg)';
+    }
+  });
+}
+
 function initFabricCalculator() {
   const fabType = document.getElementById('fabType');
   const sheetType = document.getElementById('sheetType');
@@ -2077,11 +2103,15 @@ function initFabricCalculator() {
     document.querySelectorAll('.fabric-pillow-flap-only').forEach((el) => {
       el.classList.toggle('hidden', pillowType?.value !== 'flap');
     });
+    updateVisualPreview();
   };
 
   fabType?.addEventListener('change', syncVisibility);
   sheetType?.addEventListener('change', syncVisibility);
   pillowType?.addEventListener('change', syncVisibility);
+  document.querySelectorAll('.fabric-item-pattern').forEach((el) => {
+    el.addEventListener('change', updateVisualPreview);
+  });
   syncVisibility();
 
   document.getElementById('btnFabricCalc')?.addEventListener('click', () => {
