@@ -2426,6 +2426,60 @@ body.dark-mode .generator-code-output {
   margin: 0 0 10px;
   font-size: 15px;
 }
+.fabric-calc-piece-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.fabric-calc-check {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fabric-calc-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: #7c3aed;
+}
+.fabric-calc-muted {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.fabric-calc-result-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.fabric-calc-table-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.fabric-calc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.fabric-calc-table th,
+.fabric-calc-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.fabric-calc-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.fabric-calc-table tbody tr:last-child td {
+  border-bottom: none;
+}
 .fabric-calc-result {
   margin-top: 20px;
   padding: 16px 18px;

@@ -1682,63 +1682,7 @@ function initCodeGenerator1C() {
   });
 }
 
-const FABRIC_PIECE_FIT_ERROR = 'Деталь не помещается в ширину ткани';
-
-function applyCutSeamAllowance(lengthCm, widthCm, seamCm) {
-  const add = seamCm * 2;
-  return {
-    cutLength: lengthCm + add,
-    cutWidth: widthCm + add
-  };
-}
-
-function calculatePiece(pieceCutLength, pieceCutWidth, fabricWidth, isSolid, patternDirection) {
-  if (isSolid) {
-    const variantA = pieceCutWidth <= fabricWidth ? pieceCutLength : Infinity;
-    const variantB = pieceCutLength <= fabricWidth ? pieceCutWidth : Infinity;
-    if (!Number.isFinite(variantA) && !Number.isFinite(variantB)) {
-      return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
-    }
-    const consumption = Math.min(variantA, variantB);
-    return { ok: true, consumption };
-  }
-
-  const fits = patternDirection === 'across'
-    ? pieceCutLength <= fabricWidth
-    : pieceCutWidth <= fabricWidth;
-  if (!fits) {
-    return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
-  }
-  const consumption = patternDirection === 'across' ? pieceCutWidth : pieceCutLength;
-  return { ok: true, consumption };
-}
-
-function calculatePillowcasesConsumption(pillowCutLength, pillowCutWidth, fabricWidth, pillowQty, isSolid, patternDirection) {
-  function rowsConsumption(acrossDim, alongDim) {
-    if (acrossDim > fabricWidth) return Infinity;
-    const countPerRow = Math.floor(fabricWidth / acrossDim);
-    if (countPerRow < 1) return Infinity;
-    const rows = Math.ceil(pillowQty / countPerRow);
-    return rows * alongDim;
-  }
-
-  if (isSolid) {
-    const normal = rowsConsumption(pillowCutWidth, pillowCutLength);
-    const rotated = rowsConsumption(pillowCutLength, pillowCutWidth);
-    if (!Number.isFinite(normal) && !Number.isFinite(rotated)) {
-      return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
-    }
-    return { ok: true, consumption: Math.min(normal, rotated) };
-  }
-
-  const acrossDim = patternDirection === 'across' ? pillowCutLength : pillowCutWidth;
-  const alongDim = patternDirection === 'across' ? pillowCutWidth : pillowCutLength;
-  const consumption = rowsConsumption(acrossDim, alongDim);
-  if (!Number.isFinite(consumption)) {
-    return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
-  }
-  return { ok: true, consumption };
-}
+const FABRIC_FIT_ERROR = 'Не помещается в ширину ткани';
 
 function readFabricCalcNumber(id, label, opts = {}) {
   const el = document.getElementById(id);
@@ -1750,55 +1694,315 @@ function readFabricCalcNumber(id, label, opts = {}) {
   return v;
 }
 
-function calculateFabricConsumption() {
-  const seamAllowance = readFabricCalcNumber('fabricSeamAllowance', 'припуск на швы', { allowZero: true });
-  const fabricWidth = readFabricCalcNumber('fabricRollWidth', 'ширина ткани в рулоне');
-  const pillowQty = Math.max(1, Math.round(readFabricCalcNumber('pillowcaseQty', 'количество наволочек')));
-  const isSolid = document.getElementById('fabricDesignType')?.value === 'solid';
-  const patternDirection = document.getElementById('fabricPatternDirection')?.value || 'along';
+function fabricFmtCm(v) {
+  return `${(Math.round(v * 10) / 10).toFixed(1)} см`;
+}
 
-  const duvet = applyCutSeamAllowance(
+function buildDuvetCut(length, width, duvetType, allowance) {
+  const zipperExtra = duvetType === 'zipper' ? 2 : 0;
+  const cutLength = length + allowance * 2;
+  const cutWidth = width + allowance * 2 + zipperExtra;
+  const notes = [
+    duvetType === 'zipper' ? 'На молнии (+2 см к стороне молнии)' : 'Обычный с вырезом',
+    '2 детали (верх / низ)'
+  ];
+  return {
+    cutLength,
+    cutWidth,
+    finishedLength: length,
+    finishedWidth: width,
+    pieceCount: 2,
+    notes
+  };
+}
+
+function buildSheetCut(length, width, sheetType, allowance, mattressHeight) {
+  const isElastic = sheetType !== 'plain';
+  const cutLength = isElastic
+    ? length + mattressHeight * 2 + allowance
+    : length + allowance * 2;
+  const cutWidth = isElastic
+    ? width + mattressHeight * 2 + allowance
+    : width + allowance * 2;
+  const notes = [isElastic
+    ? `На резинке (${sheetType === 'elastic_corners' ? 'углы' : 'периметр'}), загиб ${mattressHeight} см`
+    : 'Обычная'];
+  return {
+    cutLength,
+    cutWidth,
+    finishedLength: length,
+    finishedWidth: width,
+    pieceCount: 1,
+    notes
+  };
+}
+
+function buildPillowCut(length, width, pillowType, allowance, flapSize) {
+  if (pillowType === 'flap') {
+    return {
+      cutLength: length * 2 + flapSize + allowance * 2,
+      cutWidth: width + allowance * 2,
+      finishedLength: length,
+      finishedWidth: width,
+      pieceCount: 1,
+      notes: [`С клапаном ${flapSize} см`, '1 длинная деталь на наволочку']
+    };
+  }
+  return {
+    cutLength: length + allowance * 2,
+    cutWidth: width + allowance * 2,
+    finishedLength: length,
+    finishedWidth: width,
+    pieceCount: 2,
+    notes: ['На молнии', '2 детали на наволочку']
+  };
+}
+
+function fitsAcrossRoll(cutAcross, finishedAcross, fabWidth, useSelvedge) {
+  if (useSelvedge) {
+    if (Math.abs(finishedAcross - fabWidth) < 0.05) return true;
+    return finishedAcross <= fabWidth + 0.05;
+  }
+  return cutAcross <= fabWidth + 0.05;
+}
+
+function nestingAcrossDim(cutAcross, finishedAcross, useSelvedge, fabWidth) {
+  if (useSelvedge && Math.abs(finishedAcross - fabWidth) < 0.05) return fabWidth;
+  return cutAcross;
+}
+
+function layoutFromPattern(cutLength, cutWidth, finishedLength, finishedWidth, fabPatternDir, itemPatternWish) {
+  const matched = fabPatternDir === itemPatternWish;
+  if (matched) {
+    return {
+      alongRoll: cutLength,
+      acrossRoll: cutWidth,
+      finishedAcross: finishedWidth,
+      layoutLabel: 'вдоль рулона (рисунок совпадает)'
+    };
+  }
+  return {
+    alongRoll: cutWidth,
+    acrossRoll: cutLength,
+    finishedAcross: finishedLength,
+    layoutLabel: 'поперёк рулона (рисунок повёрнут на 90°)'
+  };
+}
+
+function evaluateLayout(alongRoll, acrossRoll, finishedAcross, fabric) {
+  if (!fitsAcrossRoll(acrossRoll, finishedAcross, fabric.width, fabric.useSelvedge)) {
+    return null;
+  }
+  return {
+    alongRoll,
+    acrossRoll,
+    finishedAcross,
+    consumption: alongRoll
+  };
+}
+
+function calculatePieceConsumption(cut, fabric, itemPatternWish) {
+  const { cutLength, cutWidth, finishedLength, finishedWidth, pieceCount } = cut;
+  const layouts = [];
+
+  if (fabric.isSolid) {
+    const a = evaluateLayout(cutLength, cutWidth, finishedWidth, fabric);
+    const b = evaluateLayout(cutWidth, cutLength, finishedLength, fabric);
+    if (a) layouts.push({ ...a, layoutLabel: 'вдоль рулона', rotated: false });
+    if (b) layouts.push({ ...b, layoutLabel: 'поперёк рулона (оптимальный поворот)', rotated: true });
+  } else {
+    const p = layoutFromPattern(cutLength, cutWidth, finishedLength, finishedWidth, fabric.patternDir, itemPatternWish);
+    const one = evaluateLayout(p.alongRoll, p.acrossRoll, p.finishedAcross, fabric);
+    if (one) layouts.push({ ...one, layoutLabel: p.layoutLabel, rotated: false });
+  }
+
+  if (!layouts.length) {
+    return { ok: false, error: FABRIC_FIT_ERROR };
+  }
+
+  const best = layouts.reduce((min, cur) => (cur.consumption < min.consumption ? cur : min));
+  const perPieceCm = best.consumption;
+  const totalCm = perPieceCm * pieceCount;
+
+  return {
+    ok: true,
+    consumption: totalCm,
+    perPieceCm,
+    pieceCount,
+    layoutLabel: best.layoutLabel,
+    alongRoll: best.alongRoll,
+    acrossRoll: best.acrossRoll,
+    cutLength,
+    cutWidth
+  };
+}
+
+function calculatePillowcasesNesting(cut, fabric, itemPatternWish, pillowQty) {
+  const totalPieces = pillowQty * cut.pieceCount;
+
+  function nestOnePiece(cutLength, cutWidth, finishedLength, finishedWidth, layoutLabel, rotated) {
+    const acrossForNesting = nestingAcrossDim(
+      rotated ? cutLength : cutWidth,
+      rotated ? finishedLength : finishedWidth,
+      fabric.useSelvedge,
+      fabric.width
+    );
+    if (!fitsAcrossRoll(
+      rotated ? cutLength : cutWidth,
+      rotated ? finishedLength : finishedWidth,
+      fabric.width,
+      fabric.useSelvedge
+    )) {
+      return null;
+    }
+    const countPerRow = Math.max(1, Math.floor(fabric.width / acrossForNesting));
+    const rows = Math.ceil(totalPieces / countPerRow);
+    const alongRoll = rotated ? cutWidth : cutLength;
+    return {
+      consumption: rows * alongRoll,
+      countPerRow,
+      rows,
+      layoutLabel,
+      alongRoll,
+      acrossRoll: rotated ? cutLength : cutWidth
+    };
+  }
+
+  const options = [];
+
+  if (fabric.isSolid) {
+    const a = nestOnePiece(cut.cutLength, cut.cutWidth, cut.finishedLength, cut.finishedWidth, 'вдоль рулона', false);
+    const b = nestOnePiece(cut.cutWidth, cut.cutLength, cut.finishedWidth, cut.finishedLength, 'поперёк рулона (оптимальный поворот)', true);
+    if (a) options.push(a);
+    if (b) options.push(b);
+  } else {
+    const p = layoutFromPattern(
+      cut.cutLength, cut.cutWidth, cut.finishedLength, cut.finishedWidth,
+      fabric.patternDir, itemPatternWish
+    );
+    const one = nestOnePiece(
+      cut.cutLength, cut.cutWidth, cut.finishedLength, cut.finishedWidth,
+      p.layoutLabel, p.alongRoll === cut.cutWidth
+    );
+    if (one) options.push(one);
+  }
+
+  if (!options.length) {
+    return { ok: false, error: FABRIC_FIT_ERROR };
+  }
+
+  const best = options.reduce((min, cur) => (cur.consumption < min.consumption ? cur : min));
+  return {
+    ok: true,
+    consumption: best.consumption,
+    perPieceCm: best.alongRoll,
+    pieceCount: cut.pieceCount,
+    layoutLabel: best.layoutLabel,
+    alongRoll: best.alongRoll,
+    acrossRoll: best.acrossRoll,
+    cutLength: cut.cutLength,
+    cutWidth: cut.cutWidth,
+    nesting: { countPerRow: best.countPerRow, rows: best.rows, totalPieces }
+  };
+}
+
+function getFabricCalcContext() {
+  const allowance = readFabricCalcNumber('seamAllowance', 'припуск на 1 шов', { allowZero: true });
+  const isSolid = document.getElementById('fabType')?.value === 'solid';
+  return {
+    width: readFabricCalcNumber('fabWidth', 'ширина ткани'),
+    isSolid,
+    patternDir: document.getElementById('fabPatternDir')?.value || 'along',
+    useSelvedge: !!document.getElementById('useSelvedge')?.checked,
+    allowance
+  };
+}
+
+function calculateFabricConsumption() {
+  const fabric = getFabricCalcContext();
+  const pillowQty = Math.max(1, Math.round(readFabricCalcNumber('pillowcaseQty', 'количество наволочек')));
+
+  const duvetCut = buildDuvetCut(
     readFabricCalcNumber('duvetLength', 'длина пододеяльника'),
     readFabricCalcNumber('duvetWidth', 'ширина пододеяльника'),
-    seamAllowance
+    document.getElementById('duvetType')?.value || 'envelope',
+    fabric.allowance
   );
-  const sheet = applyCutSeamAllowance(
+  const sheetType = document.getElementById('sheetType')?.value || 'plain';
+  const mattressHeight = sheetType === 'plain'
+    ? 0
+    : readFabricCalcNumber('mattressHeight', 'высота матраса', { allowZero: true });
+  const sheetCut = buildSheetCut(
     readFabricCalcNumber('sheetLength', 'длина простыни'),
     readFabricCalcNumber('sheetWidth', 'ширина простыни'),
-    seamAllowance
+    sheetType,
+    fabric.allowance,
+    mattressHeight
   );
-  const pillow = applyCutSeamAllowance(
+  const pillowType = document.getElementById('pillowType')?.value || 'zipper';
+  const flapSize = pillowType === 'flap'
+    ? readFabricCalcNumber('flapSize', 'размер клапана')
+    : 0;
+  const pillowCut = buildPillowCut(
     readFabricCalcNumber('pillowcaseLength', 'длина наволочки'),
     readFabricCalcNumber('pillowcaseWidth', 'ширина наволочки'),
-    seamAllowance
+    pillowType,
+    fabric.allowance,
+    flapSize
   );
 
-  const duvetRes = calculatePiece(duvet.cutLength, duvet.cutWidth, fabricWidth, isSolid, patternDirection);
+  const duvetWish = document.getElementById('duvetPatternWish')?.value || 'along';
+  const sheetWish = document.getElementById('sheetPatternWish')?.value || 'along';
+  const pillowWish = document.getElementById('pillowPatternWish')?.value || 'along';
+
+  const duvetRes = calculatePieceConsumption(duvetCut, fabric, duvetWish);
   if (!duvetRes.ok) return { ok: false, error: `Пододеяльник: ${duvetRes.error}` };
 
-  const sheetRes = calculatePiece(sheet.cutLength, sheet.cutWidth, fabricWidth, isSolid, patternDirection);
+  const sheetRes = calculatePieceConsumption(sheetCut, fabric, sheetWish);
   if (!sheetRes.ok) return { ok: false, error: `Простыня: ${sheetRes.error}` };
 
-  const pillowRes = calculatePillowcasesConsumption(
-    pillow.cutLength, pillow.cutWidth, fabricWidth, pillowQty, isSolid, patternDirection
-  );
+  const pillowRes = calculatePillowcasesNesting(pillowCut, fabric, pillowWish, pillowQty);
   if (!pillowRes.ok) return { ok: false, error: `Наволочки: ${pillowRes.error}` };
 
-  const duvetCm = duvetRes.consumption;
-  const sheetCm = sheetRes.consumption;
-  const pillowCm = pillowRes.consumption;
-  const totalCm = duvetCm + sheetCm + pillowCm;
+  const items = [
+    {
+      name: 'Пододеяльник',
+      ...duvetRes,
+      notes: duvetCut.notes,
+      finishedSize: `${fabricFmtCm(duvetCut.finishedLength)} × ${fabricFmtCm(duvetCut.finishedWidth)}`
+    },
+    {
+      name: 'Простыня',
+      ...sheetRes,
+      notes: sheetCut.notes,
+      finishedSize: `${fabricFmtCm(sheetCut.finishedLength)} × ${fabricFmtCm(sheetCut.finishedWidth)}`
+    },
+    {
+      name: `Наволочки (${pillowQty} шт)`,
+      ...pillowRes,
+      notes: pillowCut.notes,
+      finishedSize: `${fabricFmtCm(pillowCut.finishedLength)} × ${fabricFmtCm(pillowCut.finishedWidth)}`
+    }
+  ];
+
+  const totalCm = items.reduce((s, it) => s + it.consumption, 0);
 
   return {
     ok: true,
     totalMeters: totalCm / 100,
+    totalCm,
     pillowQty,
-    details: {
-      duvet: duvetCm,
-      sheet: sheetCm,
-      pillowcases: pillowCm
-    }
+    fabric,
+    items
   };
+}
+
+function escapeFabricHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function renderFabricCalcResult(result) {
@@ -1807,34 +2011,78 @@ function renderFabricCalcResult(result) {
 
   if (!result.ok) {
     box.className = 'fabric-calc-result fabric-calc-result--error';
-    box.innerHTML = `<p class="fabric-calc-result-title">Ошибка расчёта</p><p>${result.error}</p>`;
+    box.innerHTML = `<p class="fabric-calc-result-title">Ошибка расчёта</p><p>${escapeFabricHtml(result.error)}</p>`;
     box.classList.remove('hidden');
     return;
   }
 
-  const { totalMeters, pillowQty, details } = result;
+  const selvedgeNote = result.fabric.useSelvedge
+    ? '<p class="fabric-calc-result-note">Учтена кромка: по ширине рулона припуски на боковые швы не добавляются.</p>'
+    : '';
+
+  const rows = result.items.map((it) => {
+    const cutSize = `${fabricFmtCm(it.cutLength)} × ${fabricFmtCm(it.cutWidth)}`;
+    const nestInfo = it.nesting
+      ? `<br><span class="fabric-calc-muted">Раскладка: ${it.nesting.countPerRow} шт/ряд × ${it.nesting.rows} ряд(ов), всего лекал ${it.nesting.totalPieces}</span>`
+      : (it.pieceCount > 1
+        ? `<br><span class="fabric-calc-muted">${it.pieceCount} лекала на изделие</span>`
+        : '');
+    const notes = it.notes.map((n) => escapeFabricHtml(n)).join(' · ');
+    return `
+      <tr>
+        <td><strong>${escapeFabricHtml(it.name)}</strong><br><span class="fabric-calc-muted">Готовое: ${escapeFabricHtml(it.finishedSize)}</span></td>
+        <td>${escapeFabricHtml(cutSize)}<br><span class="fabric-calc-muted">${notes}</span></td>
+        <td>${escapeFabricHtml(it.layoutLabel)}${nestInfo}</td>
+        <td><strong>${fabricFmtCm(it.consumption)}</strong></td>
+      </tr>
+    `;
+  }).join('');
+
   box.className = 'fabric-calc-result fabric-calc-result--ok';
   box.innerHTML = `
-    <p class="fabric-calc-result-title">Итоговый расход ткани: <strong>${totalMeters.toFixed(2)} м</strong></p>
-    <p class="fabric-calc-result-sub">Детализация:</p>
-    <ul class="fabric-calc-result-list">
-      <li>Пододеяльник: <strong>${Math.round(details.duvet)} см</strong></li>
-      <li>Простыня: <strong>${Math.round(details.sheet)} см</strong></li>
-      <li>Наволочки (${pillowQty} шт): <strong>${Math.round(details.pillowcases)} см</strong></li>
-    </ul>
+    <p class="fabric-calc-result-title">Итоговый расход ткани: <strong>${result.totalMeters.toFixed(2)} м</strong> <span class="fabric-calc-muted">(${fabricFmtCm(result.totalCm)} по длине рулона)</span></p>
+    ${selvedgeNote}
+    <p class="fabric-calc-result-sub">Подробный расчёт по деталям</p>
+    <div class="fabric-calc-table-wrap">
+      <table class="fabric-calc-table">
+        <thead>
+          <tr>
+            <th>Деталь</th>
+            <th>Габарит кроя (Д × Ш)</th>
+            <th>Укладка на рулоне</th>
+            <th>Расход</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
   box.classList.remove('hidden');
 }
 
 function initFabricCalculator() {
-  const designSel = document.getElementById('fabricDesignType');
-  const patternRow = document.getElementById('fabricPatternDirectionRow');
+  const fabType = document.getElementById('fabType');
+  const sheetType = document.getElementById('sheetType');
+  const pillowType = document.getElementById('pillowType');
 
-  const syncPatternRow = () => {
-    patternRow?.classList.toggle('hidden', designSel?.value !== 'pattern');
+  const syncVisibility = () => {
+    const isPattern = fabType?.value === 'pattern';
+    document.querySelectorAll('.fabric-pattern-only').forEach((el) => {
+      el.classList.toggle('hidden', !isPattern);
+    });
+    const isElastic = sheetType?.value !== 'plain';
+    document.querySelectorAll('.fabric-sheet-elastic-only').forEach((el) => {
+      el.classList.toggle('hidden', !isElastic);
+    });
+    document.querySelectorAll('.fabric-pillow-flap-only').forEach((el) => {
+      el.classList.toggle('hidden', pillowType?.value !== 'flap');
+    });
   };
-  designSel?.addEventListener('change', syncPatternRow);
-  syncPatternRow();
+
+  fabType?.addEventListener('change', syncVisibility);
+  sheetType?.addEventListener('change', syncVisibility);
+  pillowType?.addEventListener('change', syncVisibility);
+  syncVisibility();
 
   document.getElementById('btnFabricCalc')?.addEventListener('click', () => {
     const box = document.getElementById('fabricCalcResult');
