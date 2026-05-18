@@ -50,6 +50,10 @@
             <span class="nav-icon">📐</span>
             <span>Комплектующие</span>
           </button>
+          <button class="nav-btn" data-page="fabric-calc-section">
+            <span class="nav-icon">✂️</span>
+            <span>Калькулятор ткани</span>
+          </button>
           <button class="nav-btn" data-page="shipments-tab">
             <span class="nav-icon">🚚</span>
             <span>Поставки</span>
@@ -1217,6 +1221,106 @@
           </div>
         </article>
       </div>
+    </section>
+
+    <section class="page-panel page-section" id="fabric-calc-section">
+      
+      <div class="generator-page-head">
+        <h2 class="generator-page-title">Калькулятор расхода ткани</h2>
+        <p class="sub generator-page-sub">Расчёт метража на комплект постельного белья (КПБ) с учётом припусков на швы, ширины рулона и ориентации рисунка.</p>
+      </div>
+
+      <article class="card fabric-calc-card">
+        <h3 class="fabric-calc-block-title">Параметры кроя</h3>
+        <div class="grid grid-3" style="margin-top:12px;">
+          <div class="field">
+            <label for="fabricProductType">Тип изделия</label>
+            <select id="fabricProductType" class="select">
+              <option value="kpb" selected>КПБ</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="fabricSeamAllowance">Припуск на швы (см)</label>
+            <input id="fabricSeamAllowance" class="input" type="number" min="0" step="0.1" value="2" />
+          </div>
+        </div>
+
+        <h4 class="fabric-calc-subtitle">Размеры готового КПБ (Длина × Ширина, см)</h4>
+        <div class="fabric-calc-pieces">
+          <div class="fabric-calc-piece card">
+            <h5>Пододеяльник</h5>
+            <div class="grid grid-2">
+              <div class="field">
+                <label for="duvetLength">Длина</label>
+                <input id="duvetLength" class="input" type="number" min="1" step="0.1" value="203" />
+              </div>
+              <div class="field">
+                <label for="duvetWidth">Ширина</label>
+                <input id="duvetWidth" class="input" type="number" min="1" step="0.1" value="218" />
+              </div>
+            </div>
+          </div>
+          <div class="fabric-calc-piece card">
+            <h5>Простыня</h5>
+            <div class="grid grid-2">
+              <div class="field">
+                <label for="sheetLength">Длина</label>
+                <input id="sheetLength" class="input" type="number" min="1" step="0.1" value="220" />
+              </div>
+              <div class="field">
+                <label for="sheetWidth">Ширина</label>
+                <input id="sheetWidth" class="input" type="number" min="1" step="0.1" value="240" />
+              </div>
+            </div>
+          </div>
+          <div class="fabric-calc-piece card">
+            <h5>Наволочка</h5>
+            
+            <div class="grid grid-2">
+              <div class="field">
+                <label for="pillowcaseLength">Длина</label>
+                <input id="pillowcaseLength" class="input" type="number" min="1" step="0.1" value="70" />
+              </div>
+              <div class="field">
+                <label for="pillowcaseWidth">Ширина</label>
+                <input id="pillowcaseWidth" class="input" type="number" min="1" step="0.1" value="50" />
+              </div>
+            </div>
+            <div class="field" style="margin-top:10px;">
+              <label for="pillowcaseQty">Количество наволочек</label>
+              <input id="pillowcaseQty" class="input" type="number" min="1" step="1" value="2" />
+            </div>
+          </div>
+        </div>
+
+        <h3 class="fabric-calc-block-title" style="margin-top:20px;">Параметры ткани</h3>
+        <div class="grid grid-3" style="margin-top:12px;">
+          <div class="field">
+            <label for="fabricRollWidth">Ширина ткани в рулоне (см)</label>
+            <input id="fabricRollWidth" class="input" type="number" min="1" step="0.1" value="220" />
+          </div>
+          <div class="field">
+            <label for="fabricDesignType">Тип дизайна</label>
+            <select id="fabricDesignType" class="select">
+              <option value="solid">Крашение / гладкокрашеная (можно крутить лекала)</option>
+              <option value="pattern">С рисунком (строгая ориентация)</option>
+            </select>
+          </div>
+          <div class="field hidden" id="fabricPatternDirectionRow">
+            <label for="fabricPatternDirection">Расположение рисунка на рулоне</label>
+            <select id="fabricPatternDirection" class="select">
+              <option value="along">Вдоль рулона</option>
+              <option value="across">Поперёк рулона</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="generator-actions" style="margin-top:18px;">
+          <button type="button" id="btnFabricCalc" class="btn-primary">Рассчитать расход</button>
+        </div>
+
+        <div id="fabricCalcResult" class="fabric-calc-result hidden" aria-live="polite"></div>
+      </article>
     </section>
 
 <section class="page-panel" id="analytics-tab">

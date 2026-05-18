@@ -1682,6 +1682,171 @@ function initCodeGenerator1C() {
   });
 }
 
+const FABRIC_PIECE_FIT_ERROR = 'Деталь не помещается в ширину ткани';
+
+function applyCutSeamAllowance(lengthCm, widthCm, seamCm) {
+  const add = seamCm * 2;
+  return {
+    cutLength: lengthCm + add,
+    cutWidth: widthCm + add
+  };
+}
+
+function calculatePiece(pieceCutLength, pieceCutWidth, fabricWidth, isSolid, patternDirection) {
+  if (isSolid) {
+    const variantA = pieceCutWidth <= fabricWidth ? pieceCutLength : Infinity;
+    const variantB = pieceCutLength <= fabricWidth ? pieceCutWidth : Infinity;
+    if (!Number.isFinite(variantA) && !Number.isFinite(variantB)) {
+      return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
+    }
+    const consumption = Math.min(variantA, variantB);
+    return { ok: true, consumption };
+  }
+
+  const fits = patternDirection === 'across'
+    ? pieceCutLength <= fabricWidth
+    : pieceCutWidth <= fabricWidth;
+  if (!fits) {
+    return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
+  }
+  const consumption = patternDirection === 'across' ? pieceCutWidth : pieceCutLength;
+  return { ok: true, consumption };
+}
+
+function calculatePillowcasesConsumption(pillowCutLength, pillowCutWidth, fabricWidth, pillowQty, isSolid, patternDirection) {
+  function rowsConsumption(acrossDim, alongDim) {
+    if (acrossDim > fabricWidth) return Infinity;
+    const countPerRow = Math.floor(fabricWidth / acrossDim);
+    if (countPerRow < 1) return Infinity;
+    const rows = Math.ceil(pillowQty / countPerRow);
+    return rows * alongDim;
+  }
+
+  if (isSolid) {
+    const normal = rowsConsumption(pillowCutWidth, pillowCutLength);
+    const rotated = rowsConsumption(pillowCutLength, pillowCutWidth);
+    if (!Number.isFinite(normal) && !Number.isFinite(rotated)) {
+      return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
+    }
+    return { ok: true, consumption: Math.min(normal, rotated) };
+  }
+
+  const acrossDim = patternDirection === 'across' ? pillowCutLength : pillowCutWidth;
+  const alongDim = patternDirection === 'across' ? pillowCutWidth : pillowCutLength;
+  const consumption = rowsConsumption(acrossDim, alongDim);
+  if (!Number.isFinite(consumption)) {
+    return { ok: false, error: FABRIC_PIECE_FIT_ERROR };
+  }
+  return { ok: true, consumption };
+}
+
+function readFabricCalcNumber(id, label, opts = {}) {
+  const el = document.getElementById(id);
+  const raw = el?.value;
+  const v = opts.allowZero ? Number(raw) : parseFloat(raw);
+  if (!Number.isFinite(v) || (opts.allowZero ? v < 0 : v <= 0)) {
+    throw new Error(`Укажите корректное значение: ${label}`);
+  }
+  return v;
+}
+
+function calculateFabricConsumption() {
+  const seamAllowance = readFabricCalcNumber('fabricSeamAllowance', 'припуск на швы', { allowZero: true });
+  const fabricWidth = readFabricCalcNumber('fabricRollWidth', 'ширина ткани в рулоне');
+  const pillowQty = Math.max(1, Math.round(readFabricCalcNumber('pillowcaseQty', 'количество наволочек')));
+  const isSolid = document.getElementById('fabricDesignType')?.value === 'solid';
+  const patternDirection = document.getElementById('fabricPatternDirection')?.value || 'along';
+
+  const duvet = applyCutSeamAllowance(
+    readFabricCalcNumber('duvetLength', 'длина пододеяльника'),
+    readFabricCalcNumber('duvetWidth', 'ширина пододеяльника'),
+    seamAllowance
+  );
+  const sheet = applyCutSeamAllowance(
+    readFabricCalcNumber('sheetLength', 'длина простыни'),
+    readFabricCalcNumber('sheetWidth', 'ширина простыни'),
+    seamAllowance
+  );
+  const pillow = applyCutSeamAllowance(
+    readFabricCalcNumber('pillowcaseLength', 'длина наволочки'),
+    readFabricCalcNumber('pillowcaseWidth', 'ширина наволочки'),
+    seamAllowance
+  );
+
+  const duvetRes = calculatePiece(duvet.cutLength, duvet.cutWidth, fabricWidth, isSolid, patternDirection);
+  if (!duvetRes.ok) return { ok: false, error: `Пододеяльник: ${duvetRes.error}` };
+
+  const sheetRes = calculatePiece(sheet.cutLength, sheet.cutWidth, fabricWidth, isSolid, patternDirection);
+  if (!sheetRes.ok) return { ok: false, error: `Простыня: ${sheetRes.error}` };
+
+  const pillowRes = calculatePillowcasesConsumption(
+    pillow.cutLength, pillow.cutWidth, fabricWidth, pillowQty, isSolid, patternDirection
+  );
+  if (!pillowRes.ok) return { ok: false, error: `Наволочки: ${pillowRes.error}` };
+
+  const duvetCm = duvetRes.consumption;
+  const sheetCm = sheetRes.consumption;
+  const pillowCm = pillowRes.consumption;
+  const totalCm = duvetCm + sheetCm + pillowCm;
+
+  return {
+    ok: true,
+    totalMeters: totalCm / 100,
+    pillowQty,
+    details: {
+      duvet: duvetCm,
+      sheet: sheetCm,
+      pillowcases: pillowCm
+    }
+  };
+}
+
+function renderFabricCalcResult(result) {
+  const box = document.getElementById('fabricCalcResult');
+  if (!box) return;
+
+  if (!result.ok) {
+    box.className = 'fabric-calc-result fabric-calc-result--error';
+    box.innerHTML = `<p class="fabric-calc-result-title">Ошибка расчёта</p><p>${result.error}</p>`;
+    box.classList.remove('hidden');
+    return;
+  }
+
+  const { totalMeters, pillowQty, details } = result;
+  box.className = 'fabric-calc-result fabric-calc-result--ok';
+  box.innerHTML = `
+    <p class="fabric-calc-result-title">Итоговый расход ткани: <strong>${totalMeters.toFixed(2)} м</strong></p>
+    <p class="fabric-calc-result-sub">Детализация:</p>
+    <ul class="fabric-calc-result-list">
+      <li>Пододеяльник: <strong>${Math.round(details.duvet)} см</strong></li>
+      <li>Простыня: <strong>${Math.round(details.sheet)} см</strong></li>
+      <li>Наволочки (${pillowQty} шт): <strong>${Math.round(details.pillowcases)} см</strong></li>
+    </ul>
+  `;
+  box.classList.remove('hidden');
+}
+
+function initFabricCalculator() {
+  const designSel = document.getElementById('fabricDesignType');
+  const patternRow = document.getElementById('fabricPatternDirectionRow');
+
+  const syncPatternRow = () => {
+    patternRow?.classList.toggle('hidden', designSel?.value !== 'pattern');
+  };
+  designSel?.addEventListener('change', syncPatternRow);
+  syncPatternRow();
+
+  document.getElementById('btnFabricCalc')?.addEventListener('click', () => {
+    const box = document.getElementById('fabricCalcResult');
+    try {
+      renderFabricCalcResult(calculateFabricConsumption());
+    } catch (err) {
+      renderFabricCalcResult({ ok: false, error: err?.message || 'Проверьте введённые данные' });
+    }
+    box?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
 [
   'price','commission','cost','costVatMode','length','width','height','stockStatus','logisticsTariff',
   'turnover','newSkuDays','vatRate','saleVatMode','useProductCost'
@@ -7573,6 +7738,7 @@ initUzumCostWarehouseListeners();
 initMarketplaceSwitcher();
 initThemeToggle();
 initCodeGenerator1C();
+initFabricCalculator();
 document.getElementById('stockAnalyticsRefreshBtn')?.addEventListener('click', () => {
   if (getCurrentMarketplace() === 'uzum') void renderStockAnalyticsPage();
 });
