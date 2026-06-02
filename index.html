@@ -163,8 +163,8 @@
               <h2>Параметры продажи</h2>
               <div class="grid grid-3">
                 <div class="field">
-                  <label for="wbPriceRub">Цена со скидкой (кабинет WB), ₽</label>
-                  <input id="wbPriceRub" class="input" type="number" min="0" step="0.01" value="0" />
+                  <label for="wbPriceUzs">Цена продажи, сум</label>
+                  <input id="wbPriceUzs" class="input" type="number" min="0" step="1" value="0" />
                 </div>
                 <div class="field">
                   <label for="wbSppPct">СПП от WB, %</label>
@@ -182,21 +182,100 @@
                   <label for="wbAcquiringPct">Эквайринг, %</label>
                   <input id="wbAcquiringPct" class="input" type="number" min="0" max="100" step="0.01" value="3" title="По умолчанию 3% — можно изменить" />
                 </div>
-                <div class="field">
+                <div class="field hidden" aria-hidden="true">
                   <label for="wbIrpIndex">Индекс ИРП</label>
                   <input id="wbIrpIndex" class="input" type="number" min="0" step="0.01" value="1" />
                 </div>
-                <div class="field">
+                <div class="field hidden" aria-hidden="true">
                   <label for="wbStorage30Rub">Хранение, ₽</label>
                   <input id="wbStorage30Rub" class="input" type="number" min="0" step="0.01" value="0" />
                 </div>
                 <div class="field">
+                  <label for="wbCostUzs">Себестоимость, сум</label>
+                  <input id="wbCostUzs" class="input" type="number" min="0" step="1" value="0" placeholder="или заполнится из себестоимости" />
+                </div>
+                <div class="field">
                   <label for="wbCostRub">Себестоимость из калькуляции, ₽</label>
-                  <input id="wbCostRub" class="input" type="number" min="0" step="0.01" value="0" readonly title="Заполняется при переносе из калькуляции WB" />
+                  <input id="wbCostRub" class="input" style="display:none" type="number" min="0" step="0.01" value="0" readonly title="Заполняется при переносе из калькуляции WB" />
                 </div>
               </div>
-              <p class="hint wb-unit-spp-hint" id="wbUnitBuyerHint">Цена для покупателя на сайте: <strong id="wbUnitBuyerPriceVal">—</strong> ₽ <span class="muted">(цена в кабинете минус СПП <span id="wbUnitSppPctEcho">15</span>%)</span></p>
+              <p class="hint wb-unit-spp-hint" id="wbUnitBuyerHint">Цена для покупателя на сайте: <strong id="wbUnitBuyerPriceVal">—</strong> сум <span class="muted">(цена в кабинете минус СПП <span id="wbUnitSppPctEcho">15</span>%)</span></p>
             </div>
+
+            <details class="card wb-params-reference" open>
+              <summary><strong>⚙ Параметры справочника</strong></summary>
+              <div class="wb-params-grid">
+                <div class="field">
+                  <label for="wbBuyoutPct">% выкупа</label>
+                  <input type="number" id="wbBuyoutPct" class="input" value="87" min="1" max="100" step="1" />
+                </div>
+
+                <div class="field">
+                  <label for="wbExchangeRate">Курс WB (1 руб = сум)</label>
+                  <input type="number" id="wbExchangeRate" class="input" value="168" min="1" step="1" />
+                </div>
+
+                <div class="field">
+                  <label for="wbVatPct">НДС, %</label>
+                  <input type="number" id="wbVatPct" class="input" value="12" min="0" max="50" step="1" />
+                  <p class="hint">Выделяется из суммы вывода: × 12 ÷ 112</p>
+                </div>
+
+                <div class="field">
+                  <label for="wbStorageTariff">Тариф хранения (сум/л/день)</label>
+                  <input type="number" id="wbStorageTariff" class="input" value="42" min="0" step="1" />
+                  <p class="hint">Медиана по Ташкенту из отчёта WB: ~42 сум/л/день</p>
+                </div>
+
+                <div class="field">
+                  <label for="wbTurnoverDays">Оборачиваемость (дней до продажи)</label>
+                  <input type="number" id="wbTurnoverDays" class="input" value="30" min="0" step="1" />
+                  <p class="hint">≤30 дн — небольшое, 30–60 — существенно, &gt;60 — критично</p>
+                </div>
+
+                <div class="field">
+                  <label for="wbSafetyPct">Запас к логистике, %</label>
+                  <input type="number" id="wbSafetyPct" class="input" value="10" min="0" max="50" step="1" />
+                  <p class="hint">Буфер на дальние склады и колебания тарифа</p>
+                </div>
+
+                <div class="field">
+                  <label for="wbReturnFixed">Возврат (фикс.), сум</label>
+                  <input type="number" id="wbReturnFixed" class="input" value="7200" min="0" step="100" />
+                  <p class="hint">Из отчёта WB: медиана ~7 200 сум, не зависит от объёма</p>
+                </div>
+
+                <div class="field">
+                  <label for="wbAcceptanceUzs">Платная приёмка (сум/ед.)</label>
+                  <input type="number" id="wbAcceptanceUzs" class="input" value="0" min="0" step="100" />
+                </div>
+              </div>
+            </details>
+
+            <details class="card wb-params-reference" open>
+              <summary><strong>📋 Справочник тарифов по объёму</strong></summary>
+              <p class="hint">Вводи только объём (л) — доставка считается автоматически. Таблица сортируется и сохраняется.</p>
+              <p class="hint">Формула: до 1.5л = 1 403 + 4 600×л | от 1.5л = 4 584 + 2 068×л (из реального отчёта WB, погрешность ~4%)</p>
+
+              <div class="table-wrap" style="margin-top:10px;">
+                <table class="wb-top-products-table">
+                  <thead>
+                    <tr>
+                      <th>Товар</th>
+                      <th>Объём, л</th>
+                      <th>Доставка, сум</th>
+                      <th>С запасом</th>
+                      <th>Возврат, сум</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="wbUzTariffsBody"></tbody>
+                </table>
+              </div>
+              <div style="margin-top:10px;">
+                <button type="button" id="wbUzAddTariffBtn" class="btn-secondary">+ Добавить товар</button>
+              </div>
+            </details>
             <div class="card wb-unit-results-card" id="wbUnitResultsCard" data-profit-state="neutral">
               <div class="wb-unit-kpi-head">
                 <div class="wb-unit-kpi-label">Чистая прибыль с 1 шт., ₽</div>
@@ -208,12 +287,14 @@
               </div>
               <h3 class="wb-unit-breakdown-title">Детализация расходов</h3>
               <div class="list">
-                <div class="row"><div class="key">Комиссия WB</div><div class="val" id="wbUnitFeeVal">0 ₽</div></div>
-                <div class="row"><div class="key" id="wbUnitAcqLabel">Эквайринг</div><div class="val" id="wbUnitAcqVal">0 ₽</div></div>
-                <div class="row"><div class="key">Реклама (ДРР)</div><div class="val" id="wbUnitAdsVal">0 ₽</div></div>
-                <div class="row"><div class="key">Логистика (Узбекистан, с выкупом 82%)</div><div class="val" id="wbUnitLogisticsVal">0 ₽</div></div>
-                <div class="row"><div class="key">Хранение</div><div class="val" id="wbUnitStorageVal">0 ₽</div></div>
-                <div class="row"><div class="key">Себестоимость</div><div class="val" id="wbUnitCostLineVal">0 ₽</div></div>
+                <div class="row"><div class="key">Комиссия WB</div><div class="val" id="wbUnitFeeVal">0 сум</div></div>
+                <div class="row"><div class="key" id="wbUnitAcqLabel">Эквайринг</div><div class="val" id="wbUnitAcqVal">0 сум</div></div>
+                <div class="row"><div class="key">Реклама (ДРР)</div><div class="val" id="wbUnitAdsVal">0 сум</div></div>
+                <div class="row"><div class="key">Логистика (Узбекистан)</div><div class="val" id="wbUnitLogisticsVal">0 сум</div></div>
+                <div class="row"><div class="key">Хранение</div><div class="val" id="wbUnitStorageVal">0 сум</div></div>
+                <div class="row"><div class="key">К перечислению (сумма вывода)</div><div class="val" id="wbUnitToSellerVal">—</div></div>
+                <div class="row"><div class="key">НДС 12% (из суммы вывода)</div><div class="val" id="wbUnitVatVal">—</div></div>
+                <div class="row"><div class="key">Себестоимость</div><div class="val" id="wbUnitCostLineVal">0 сум</div></div>
               </div>
             </div>
             <div class="card">

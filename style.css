@@ -2667,3 +2667,50 @@ body.dark-mode .fabric-calc-result--error {
     max-width: 160px;
   }
 }
+
+/* WB Узбекистан — справочник параметров */
+.wb-params-reference {
+  margin-top: 16px;
+}
+.wb-params-reference summary {
+  cursor: pointer;
+  padding: 10px 0;
+  font-size: 15px;
+  user-select: none;
+}
+.wb-params-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.wbuz-name-input,
+.wbuz-vol-input {
+  font-size: 13px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  background: var(--input-bg, #fff);
+  color: var(--text, #111);
+}
+.tar-auto {
+  font-size: 13px;
+  color: var(--text-muted, #6b7280);
+}
+.tar-safe {
+  font-weight: 600;
+  color: var(--success, #16a34a);
+}
+.btn-danger-sm {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: none;
+  background: var(--danger-bg, #fee2e2);
+  color: var(--danger, #dc2626);
+  cursor: pointer;
+}
+.btn-danger-sm:hover {
+  background: var(--danger, #dc2626);
+  color: #fff;
+}
