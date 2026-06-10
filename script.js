@@ -826,6 +826,11 @@ function recordIdsEqual(a, b) {
   return String(a) === String(b);
 }
 
+/** Нормализует штрихкод Uzum Market (строка, по умолчанию пустая). */
+function normalizeUzumBarcode(value) {
+  return value == null ? '' : String(value).trim();
+}
+
 /** Всегда массив товаров из real-time снимка Firestore. */
 function readProductsSafe() {
   const arr = Array.isArray(realtimeState.products) ? realtimeState.products : [];
@@ -839,6 +844,7 @@ function readProductsSafe() {
       if (!String(next.article1c || '').trim() && String(next.name || '').trim()) {
         next.article1c = String(next.name).trim();
       }
+      next.uzum_barcode = normalizeUzumBarcode(next.uzum_barcode);
       return next;
     });
 }
@@ -857,6 +863,7 @@ function productSearchMatchesQuery(p, qq) {
     p.article_1c,
     // Новая схема хранения "публичных" SKU маркетплейсов
     p.uzumSku,
+    p.uzum_barcode,
     p.wbSku,
     p.yandexSku,
     p.uzum_sku,
@@ -2780,6 +2787,17 @@ function getCostRubCourseForDisplayAndSave() {
   return RUB_UZS_FOR_EXPORT;
 }
 
+function resolveCurrentUzumBarcode() {
+  const inputEl = document.getElementById('mpUzumBarcode');
+  if (inputEl) return normalizeUzumBarcode(inputEl.value);
+  const editingId = state?.productsEdit?.recordId;
+  if (editingId != null && String(editingId) !== '') {
+    const p = findProductByRecordId(readProductsSafe(), editingId);
+    if (p) return normalizeUzumBarcode(p.uzum_barcode);
+  }
+  return '';
+}
+
 function snapshotCurrentProduct() {
   const mpGuard = getCurrentMarketplace();
   if (mpGuard === 'yandex' && !wmsState.shipmentCalcEdit?.active) {
@@ -2869,6 +2887,7 @@ function snapshotCurrentProduct() {
     uzumSku: mpUz,
     wbSku: mpWb,
     yandexSku: mpYa,
+    uzum_barcode: resolveCurrentUzumBarcode(),
     // Легаси-поля (оставляем для обратной совместимости)
     uzum_sku: mpUz,
     wb_nmid: mpWb,
@@ -2926,6 +2945,7 @@ function applySuggestedCategoryIfEmpty() {
 const HISTORY_TOP_LABELS = {
   sku: 'Ключ записи',
   uzum_sku: 'SKU Uzum',
+  uzum_barcode: 'Штрихкод Uzum',
   wb_nmid: 'nmId WB',
   yandex_sku: 'SKU Yandex',
   name: 'Имя записи (легаси, как правило = артикул 1С)',
@@ -3069,6 +3089,7 @@ function resetCostCalculatorForm() {
     'productCode1c',
     'productLink',
     'mpSkuUzum',
+    'mpUzumBarcode',
     'mpWbNmid',
     'mpSkuYandex'
   ];
@@ -3423,6 +3444,8 @@ function loadProductIntoCalculator(product, preserveTab=false, options = {}) {
   const mpW = document.getElementById('mpWbNmid');
   const mpY = document.getElementById('mpSkuYandex');
   if (mpU) mpU.value = String(product.uzumSku ?? product.uzum_sku ?? c.mpSkuUzum ?? '').trim();
+  const mpBc = document.getElementById('mpUzumBarcode');
+  if (mpBc) mpBc.value = normalizeUzumBarcode(product.uzum_barcode);
   if (mpW) mpW.value = String(product.wbSku ?? product.wb_nmid ?? c.mpWbNmid ?? '').trim();
   if (mpY) mpY.value = String(product.yandexSku ?? product.yandex_sku ?? c.mpSkuYandex ?? '').trim();
   const uzl = c.uzumLengthCm != null ? n(c.uzumLengthCm) : n(product.length) / 10;
@@ -3503,18 +3526,60 @@ function closeProductDetail() {
   setModalOpen('productDetailModal', false);
 }
 
+function saveProductUzumBarcodeFromDetail() {
+  const rid = currentDetailRecordId;
+  if (rid == null || String(rid) === '') return;
+  const products = readProductsSafe();
+  const idx = products.findIndex(p => recordIdsEqual(p.recordId, rid));
+  if (idx < 0) {
+    alert('Товар не найден в базе.');
+    return;
+  }
+  const input = document.getElementById('productDetailUzumBarcode');
+  const nextBarcode = normalizeUzumBarcode(input?.value);
+  const existing = products[idx];
+  const prevBarcode = normalizeUzumBarcode(existing.uzum_barcode);
+  if (prevBarcode === nextBarcode) {
+    alert('Нет изменений для сохранения.');
+    return;
+  }
+  const prevHist = Array.isArray(existing.changeHistory) ? existing.changeHistory : [];
+  const updated = {
+    ...existing,
+    uzum_barcode: nextBarcode,
+    updatedAt: new Date().toISOString(),
+    changeHistory: [...prevHist, {
+      at: new Date().toISOString(),
+      changes: [{ field: 'Штрихкод Uzum', oldVal: prevBarcode || '—', newVal: nextBarcode || '—' }]
+    }]
+  };
+  products[idx] = updated;
+  writeStore(STORAGE_KEYS.products, products);
+  upsertProductToFirestore(updated);
+  renderProductsDb();
+  if (typeof renderShipmentSelectors === 'function') renderShipmentSelectors();
+  if (typeof renderAnalyticsSelectors === 'function') renderAnalyticsSelectors();
+  if (typeof renderStockAdjustSelector === 'function') renderStockAdjustSelector();
+  alert('Штрихкод Uzum сохранён.');
+}
+
 function renderProductDetail(product) {
   const title = document.getElementById('productDetailTitle');
   const sub = document.getElementById('productDetailSub');
   const barcode = document.getElementById('productDetailBarcode');
   const linkBtn = document.getElementById('productDetailLinkBtn');
   const avatar = document.getElementById('productDetailAvatar');
+  const uzumSkuEl = document.getElementById('productDetailUzumSku');
+  const uzumBarcodeInput = document.getElementById('productDetailUzumBarcode');
 
   const art = String(product.article1c || '').trim();
+  const uzumSku = String(product.uzumSku ?? product.uzum_sku ?? product.calc?.mpSkuUzum ?? '').trim();
   if (avatar) avatar.textContent = getInitials(art || product.sku || 'YO');
   if (title) title.textContent = art || 'Нет артикула 1С';
   if (sub) sub.textContent = `Артикул 1С: ${art || '—'}`;
   if (barcode) barcode.textContent = product.barcode ? String(product.barcode) : '—';
+  if (uzumSkuEl) uzumSkuEl.textContent = uzumSku || '—';
+  if (uzumBarcodeInput) uzumBarcodeInput.value = normalizeUzumBarcode(product.uzum_barcode);
   if (linkBtn) {
     const has = !!product.link;
     linkBtn.href = has ? product.link : '#';
@@ -4006,6 +4071,7 @@ function renderProducts(filteredArray) {
     const inputVat = Number(p.inputVat || 0);
     const costRub = Number(p.costGrossRub || 0);
     const uzumSku = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
+    const uzumBarcode = normalizeUzumBarcode(p.uzum_barcode);
     const wbSku = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
     const yandexSku = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
     const category = extractProductCategory(p);
@@ -4050,12 +4116,18 @@ function renderProducts(filteredArray) {
         </div>
       </div>
 
-      ${(uzumSku || wbSku || yandexSku) ? `
+      ${(uzumSku || uzumBarcode || wbSku || yandexSku) ? `
         <div class="product-mp-skus" aria-label="SKU маркетплейсов">
           ${uzumSku ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--uzum">
               <span class="k">Uzum SKU</span>
               <span class="v">${escapeHtml(uzumSku)}</span>
+            </div>
+          ` : ''}
+          ${uzumBarcode ? `
+            <div class="product-mp-sku-pill product-mp-sku-pill--uzum">
+              <span class="k">Штрихкод Uzum</span>
+              <span class="v">${escapeHtml(uzumBarcode)}</span>
             </div>
           ` : ''}
           ${wbSku ? `
@@ -4160,6 +4232,7 @@ async function exportProductsDbToExcelDirect() {
     'Артикул 1С',
     'Код 1С (Характеристика)',
     'SKU Uzum (uzumSku)',
+    'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
     'SKU Яндекс (yandexSku)',
     'Себестоимость, сум',
@@ -4176,6 +4249,7 @@ async function exportProductsDbToExcelDirect() {
     const code1c = String(p.code1c ?? '').trim();
     const key = productLinkKey(article1c, code1c);
     const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
+    const uzBc = normalizeUzumBarcode(p.uzum_barcode);
     const wb = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
     const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
     const costUzs = Math.round(productCostPriceUzs(p) * 100) / 100;
@@ -4189,6 +4263,7 @@ async function exportProductsDbToExcelDirect() {
       article1c,
       code1c,
       asExcelTextSku(uz),
+      asExcelTextSku(uzBc),
       asExcelTextSku(wb),
       asExcelTextSku(ya),
       costUzs,
@@ -4207,6 +4282,7 @@ async function exportProductsDbToExcelDirect() {
     { wch: 18 },
     { wch: 22 },
     { wch: 20 },
+    { wch: 22 },
     { wch: 22 },
     { wch: 22 },
     { wch: 16 },
@@ -4240,6 +4316,7 @@ async function exportProductsDeficitToExcel() {
     'Артикул 1С',
     'Код 1С (Характеристика)',
     'SKU Uzum (uzumSku)',
+    'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
     'SKU Яндекс (yandexSku)',
     'Себестоимость, сум',
@@ -4256,6 +4333,7 @@ async function exportProductsDeficitToExcel() {
     const code1c = String(p.code1c ?? '').trim();
     const key = productLinkKey(article1c, code1c);
     const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
+    const uzBc = normalizeUzumBarcode(p.uzum_barcode);
     const wbSku = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
     const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
     const costUzs = Math.round(productCostPriceUzs(p) * 100) / 100;
@@ -4270,6 +4348,7 @@ async function exportProductsDeficitToExcel() {
       article1c,
       code1c,
       asExcelTextSku(uz),
+      asExcelTextSku(uzBc),
       asExcelTextSku(wbSku),
       asExcelTextSku(ya),
       costUzs,
@@ -4290,9 +4369,11 @@ async function exportProductsDeficitToExcel() {
     { wch: 20 },
     { wch: 22 },
     { wch: 22 },
+    { wch: 22 },
     { wch: 16 },
     { wch: 12 },
     { wch: 18 },
+    { wch: 10 },
     { wch: 10 },
     { wch: 10 },
     { wch: 10 }
@@ -4312,6 +4393,7 @@ function buildProductsImportTemplateWorkbook() {
     'Артикул 1С',
     'Код 1С (Характеристика)',
     'SKU Uzum (uzumSku)',
+    'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
     'SKU Яндекс (yandexSku)',
     'Себестоимость, сум',
@@ -4328,6 +4410,7 @@ function buildProductsImportTemplateWorkbook() {
     { wch: 18 },
     { wch: 22 },
     { wch: 20 },
+    { wch: 22 },
     { wch: 22 },
     { wch: 22 },
     { wch: 16 },
@@ -4447,6 +4530,14 @@ async function importProductsFromXlsxFile(file) {
     const key = productLinkKey(article1c, code1c);
     const name = String(pickCell(row, headerIdx, 'Название товара', 'name')).trim() || article1c;
     const uzumSku = stripLeadingApostrophe(pickCell(row, headerIdx, 'SKU Uzum (uzumSku)', 'SKU Uzum', 'uzumSku', 'uzum_sku'));
+    const uzumBarcodeRaw = stripLeadingApostrophe(pickCell(
+      row,
+      headerIdx,
+      'Штрихкод Uzum (uzum_barcode)',
+      'Штрихкод Uzum',
+      'uzum_barcode'
+    ));
+    const uzumBarcode = normalizeUzumBarcode(uzumBarcodeRaw);
     const wbSku = stripLeadingApostrophe(pickCell(row, headerIdx, 'SKU Wildberries (wbSku)', 'SKU Wildberries', 'wbSku', 'wb_nmid', 'nmId WB'));
     const yandexSku = stripLeadingApostrophe(pickCell(row, headerIdx, 'SKU Яндекс (yandexSku)', 'SKU Яндекс', 'yandexSku', 'yandex_sku'));
     const costUzs = numOrZero(pickCell(
@@ -4487,6 +4578,7 @@ async function importProductsFromXlsxFile(file) {
         stockQty,
         updatedAt: now
       };
+      if (uzumBarcode) patch.uzum_barcode = uzumBarcode;
       if (Number.isFinite(costUzs) && costUzs > 0) {
         const v = Math.round(costUzs * 100) / 100;
         patch.costPriceUzs = v;
@@ -4519,6 +4611,7 @@ async function importProductsFromXlsxFile(file) {
         uzumSku: String(uzumSku ?? '').trim(),
         wbSku: String(wbSku ?? '').trim(),
         yandexSku: String(yandexSku ?? '').trim(),
+        uzum_barcode: uzumBarcode,
         uzum_sku: String(uzumSku ?? '').trim(),
         wb_nmid: String(wbSku ?? '').trim(),
         yandex_sku: String(yandexSku ?? '').trim(),
@@ -4814,7 +4907,7 @@ function getShipmentLineBreakdown(line, fromDraft) {
 
 const COST_CALC_BACKUP_IDS = [
   'sku', 'productArticle1c', 'productCode1c', 'productStockQty', 'productLink',
-  'mpSkuUzum', 'mpWbNmid', 'mpSkuYandex', 'costRubUzRate',
+  'mpSkuUzum', 'mpUzumBarcode', 'mpWbNmid', 'mpSkuYandex', 'costRubUzRate',
   'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate',
   'sewingCost', 'packageCost', 'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost',
   'promoPolygraphyCost', 'inboundLogisticsCost', 'transportBoxCost', 'otherProductCost',
@@ -6717,6 +6810,7 @@ document.getElementById('productDetailEditBtn')?.addEventListener('click', () =>
   closeProductDetail();
   loadProductIntoCalculator(product, false, { returnToDetailModal: true });
 });
+document.getElementById('productDetailSaveUzumBarcodeBtn')?.addEventListener('click', saveProductUzumBarcodeFromDetail);
 
 document.getElementById('saveProductChangesBtn')?.addEventListener('click', saveProductChangesFromCalculator);
 document.getElementById('cancelCostEditBtn')?.addEventListener('click', () => {

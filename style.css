@@ -846,6 +846,31 @@ body.dark-mode .modal-sheet {
 .modal-title{ margin:0; font-size: 22px; line-height:1.15; }
 .modal-sub{ color: var(--muted); font-weight: 800; margin-top: 4px; font-size: 13px; }
 .modal-hero-row{ display:flex; gap:10px; flex-wrap:wrap; margin-top: 10px; align-items:center; }
+.product-detail-uzum-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin-top:12px;
+  align-items:flex-end;
+}
+.product-detail-uzum-barcode{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width:min(100%, 320px);
+  flex:1;
+}
+.product-detail-uzum-barcode label{
+  font-size:12px;
+  font-weight:800;
+  color:var(--muted);
+}
+.product-detail-uzum-barcode-actions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.product-detail-uzum-barcode-actions .input{ flex:1; min-width:0; }
 .detail-tab{ display:none; }
 .detail-tab.active{ display:block; }
 .detail-grid{ display:grid; grid-template-columns: minmax(0,1fr); gap: 12px; }

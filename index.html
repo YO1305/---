@@ -573,6 +573,8 @@
               <div class="field">
                 <label for="mpSkuUzum">SKU Uzum</label>
                 <input id="mpSkuUzum" class="input" type="text" placeholder="например, BHKRASH-SIN" autocomplete="off" />
+                <label for="mpUzumBarcode" style="margin-top:10px;">Штрихкод Uzum</label>
+                <input id="mpUzumBarcode" class="input" type="text" placeholder="штрихкод с Uzum Market" inputmode="numeric" autocomplete="off" />
               </div>
               <div class="field">
                 <label for="mpWbNmid">nmId WB</label>
@@ -1020,6 +1022,16 @@
               <div class="modal-hero-row">
                 <div class="chip">Barcode: <span id="productDetailBarcode">—</span></div>
                 <a class="btn-secondary product-link-btn" id="productDetailLinkBtn" href="#" target="_blank" rel="noopener">Ссылка на товар</a>
+              </div>
+              <div class="product-detail-uzum-row">
+                <div class="chip">SKU Uzum: <span id="productDetailUzumSku">—</span></div>
+                <div class="product-detail-uzum-barcode">
+                  <label for="productDetailUzumBarcode">Штрихкод Uzum</label>
+                  <div class="product-detail-uzum-barcode-actions">
+                    <input id="productDetailUzumBarcode" class="input" type="text" placeholder="штрихкод с Uzum Market" inputmode="numeric" autocomplete="off" />
+                    <button type="button" class="btn-primary" id="productDetailSaveUzumBarcodeBtn">Сохранить</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
