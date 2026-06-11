@@ -2608,6 +2608,7 @@ function buildProductFinancialSnapshot(product) {
     article1c: p.article1c,
     code1c: p.code1c,
     costGross: Number(p.costGross || 0),
+    costPriceUzs: Number(p.costPriceUzs ?? p.costGross ?? 0),
     costNet: Number(p.costNet || 0),
     inputVat: Number(p.inputVat || 0),
     length: Number(p.length || 0),
@@ -4826,10 +4827,20 @@ function syncWmsLineFinancials(line) {
   const calc = deepCloneJson(ensureWmsLineCalc(line));
   const vr = n(document.getElementById('vatRate')?.value) || 12;
   const vals = getProductCostFromCalc(calc, vr);
-  line.unitCost = vals.total;
-  line.financialSnapshot.costGross = vals.total;
-  line.financialSnapshot.costNet = vals.totalNet;
-  line.financialSnapshot.inputVat = vals.totalInputVat;
+  const nextTotal = Math.max(0, Number(vals.total) || 0);
+  const prevTotal = Math.max(
+    0,
+    Number(line?.unitCost ?? line?.financialSnapshot?.costPriceUzs ?? line?.financialSnapshot?.costGross ?? 0) || 0
+  );
+  const costTotal = nextTotal > 0 ? nextTotal : prevTotal;
+  line.unitCost = costTotal;
+  if (!line.financialSnapshot) line.financialSnapshot = {};
+  line.financialSnapshot.costGross = costTotal;
+  line.financialSnapshot.costPriceUzs = costTotal;
+  if (nextTotal > 0) {
+    line.financialSnapshot.costNet = vals.totalNet;
+    line.financialSnapshot.inputVat = vals.totalInputVat;
+  }
   line.financialSnapshot.calc = calc;
   const pl = n(calc.productLength);
   const pw = n(calc.productWidth);
@@ -5681,7 +5692,7 @@ async function confirmWmsPickProduct() {
     sku: String(mpSku.value || '').trim() || String(product.sku || '').trim(),
     name: (String(product.name || '').trim() || String(product.article1c || '').trim() || String(product.sku || '').trim() || ''),
     qty,
-    unitCost: Number(product.costGross || 0),
+    unitCost: productCostPriceUzs(product),
     financialSnapshot,
     // Жёсткий снапшот: заполняется ТОЛЬКО при первичном добавлении в коробку (Uzum only)
     fixedUzumPayout: null
@@ -6366,13 +6377,39 @@ function renderWmsHistory() {
   });
 }
 
+function resolveShipmentLineProduct(it) {
+  if (!it || typeof it !== 'object') return null;
+  const rid = it.productRecordId != null ? String(it.productRecordId) : '';
+  if (rid) {
+    const byRid = findProductByRecordId(readProductsSafe(), rid);
+    if (byRid) return byRid;
+  }
+  const sku = String(it.sku || it.financialSnapshot?.sku || '').trim();
+  if (!sku) return null;
+  return readProductsSafe().find((p) => {
+    const keys = [
+      p.sku,
+      p.article1c,
+      p.uzumSku,
+      p.uzum_sku,
+      p.wbSku,
+      p.wb_nmid,
+      p.yandexSku,
+      p.yandex_sku
+    ].map((v) => String(v || '').trim()).filter(Boolean);
+    return keys.includes(sku);
+  }) || null;
+}
+
 function getShipmentLineArticle1c(it) {
   const fs = it?.financialSnapshot || {};
   const calc = fs.calc || {};
   const a1 = fs.article1c != null ? String(fs.article1c).trim() : '';
   if (a1) return a1;
   const c1 = calc.productArticle1c != null ? String(calc.productArticle1c).trim() : '';
-  return c1 || '';
+  if (c1) return c1;
+  const p = resolveShipmentLineProduct(it);
+  return p ? String(p.article1c || p.name || '').trim() : '';
 }
 
 function getShipmentLineCode1c(it) {
@@ -6381,7 +6418,20 @@ function getShipmentLineCode1c(it) {
   const c1 = fs.code1c != null ? String(fs.code1c).trim() : '';
   if (c1) return c1;
   const c2 = calc.productCode1c != null ? String(calc.productCode1c).trim() : '';
-  return c2 || '';
+  if (c2) return c2;
+  const p = resolveShipmentLineProduct(it);
+  return p ? String(p.code1c || '').trim() : '';
+}
+
+/** Себестоимость 1 шт в сумах для строки поставки (снапшот → unitCost → база товаров). */
+function getShipmentLineUnitCostUzs(it) {
+  const fs = it?.financialSnapshot || {};
+  let v = productCostPriceUzs(fs);
+  if (v > 0) return v;
+  v = Number(it?.unitCost ?? it?.cost ?? it?.cogs ?? 0);
+  if (Number.isFinite(v) && v > 0) return v;
+  const p = resolveShipmentLineProduct(it);
+  return p ? productCostPriceUzs(p) : 0;
 }
 
 function exportWmsShipmentTo1cXlsx(shipmentId) {
@@ -6392,8 +6442,8 @@ function exportWmsShipmentTo1cXlsx(shipmentId) {
     return;
   }
 
-  // Собираем все строки из всех коробок поставки (или legacy items)
-  // Ключ агрегации: Артикул 1С + Код 1С. Цена берётся в сумах из costPriceUzs (fallback: costGross).
+  // Собираем все строки из всех коробок поставки (или legacy items).
+  // Шаблон 1С: Номенклатура = Артикул 1С, Характеристика = Код 1С, Цена = себестоимость (сум).
   const map = new Map(); // key: article1c__code1c -> { article1c, code1c, qty, sumUzs }
   let flat = [];
   if (sh.version === 2 && Array.isArray(sh.boxes)) {
@@ -6408,8 +6458,7 @@ function exportWmsShipmentTo1cXlsx(shipmentId) {
     if (!article1c || !code1c) return;
     const qty = Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0)));
     if (!qty) return;
-    const fs = it?.financialSnapshot || {};
-    const unitPriceUzs = productCostPriceUzs(fs);
+    const unitPriceUzs = getShipmentLineUnitCostUzs(it);
     const key = `${article1c}__${code1c}`;
     const prev = map.get(key) || { article1c, code1c, qty: 0, sumUzs: 0 };
     prev.qty += qty;
@@ -6428,15 +6477,17 @@ function exportWmsShipmentTo1cXlsx(shipmentId) {
     return;
   }
 
-  // Заголовки строго по шаблону
+  const missingCostCount = items.filter((x) => (Number(x.qty) || 0) > 0 && !(Number(x.sumUzs) > 0)).length;
+
+  // Заголовки строго по шаблону импорта расходной накладной в 1С
   const header = ['Номенклатура', 'Характеристика', 'Партия', 'Количество', 'Резерв', 'Ед. изм.', 'Цена', 'Сумма', '% НДС', 'НДС', 'Всего'];
   const aoa = [header];
   items.forEach(x => {
     const qty = Number(x.qty) || 0;
     const sumUzs = Math.round(Number(x.sumUzs || 0) * 100) / 100;
     const priceUzs = qty > 0 ? Math.round((sumUzs / qty) * 100) / 100 : 0;
-    // Важно: цена/сумма должны быть ЧИСЛАМИ для импорта в 1С.
-    aoa.push([x.article1c, x.code1c, '', qty, '', '', priceUzs, sumUzs, '', '', sumUzs]);
+    // Цена/Сумма/Всего — числа для импорта в 1С; Номенклатура и Характеристика — артикул и код 1С.
+    aoa.push([x.article1c, x.code1c, '', qty, '', 'шт', priceUzs, sumUzs, '', '', sumUzs]);
   });
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -6451,6 +6502,9 @@ function exportWmsShipmentTo1cXlsx(shipmentId) {
   const dateStr = formatShipmentDateDdMmYyyy(sh.date || sh.shipmentDate || '');
   const safeDate = dateStr ? `_${dateStr}` : '';
   XLSX.writeFile(wb, `Расходная_1С_Поставка_№${num}${safeDate}.xlsx`);
+  if (missingCostCount > 0) {
+    alert(`Файл сформирован. У ${missingCostCount} позиций не найдена себестоимость — колонка «Цена» будет 0. Проверьте себестоимость в базе товаров.`);
+  }
 }
 
 /** Агрегация строк для накладной: одна строка на товар (по productRecordId или SKU), цена — средневзвешенная. */
