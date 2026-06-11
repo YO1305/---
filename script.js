@@ -6287,6 +6287,7 @@ function renderWmsHistory() {
         <button type="button" class="btn-secondary btn-download-finance" data-wms-finance-xlsx="${escapeAttr(String(sh.id))}">Скачать Финансовый отчет (Excel)</button>
         <button type="button" class="btn-primary" data-wms-xlsx="${escapeAttr(String(sh.id))}">Скачать поставку (Excel)</button>
         <button type="button" class="btn-secondary" data-wms-1c-xlsx="${escapeAttr(String(sh.id))}">Скачать расходную для 1С</button>
+        ${normalizeShipmentMarketplace(sh) === 'Uzum Market' ? `<button type="button" class="btn-secondary" data-wms-uzum-invoices-zip="${escapeAttr(String(sh.id))}">Скачать накладные Uzum</button>` : ''}
         <button type="button" class="wms-ship-delete-btn" data-wms-delete-shipment="${escapeAttr(String(sh.id))}" title="Удалить поставку" aria-label="Удалить поставку"><span class="wms-del-icon" aria-hidden="true">🗑</span>Удалить</button>
       </div>
       <div class="wms-ship-detail" id="wms-ship-detail-${sh.id}">${detailHtml}</div>
@@ -6347,6 +6348,11 @@ function renderWmsHistory() {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-wms-1c-xlsx');
       exportWmsShipmentTo1cXlsx(Number(id) || id);
+    });
+  });
+  host.querySelectorAll('[data-wms-uzum-invoices-zip]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      void exportUzumInvoicesZip(btn.getAttribute('data-wms-uzum-invoices-zip'));
     });
   });
   host.querySelectorAll('[data-wms-detail-xlsx]').forEach(btn => {
@@ -6432,6 +6438,254 @@ function getShipmentLineUnitCostUzs(it) {
   if (Number.isFinite(v) && v > 0) return v;
   const p = resolveShipmentLineProduct(it);
   return p ? productCostPriceUzs(p) : 0;
+}
+
+function getShipmentLineUzumBarcode(it) {
+  const p = resolveShipmentLineProduct(it);
+  return p ? normalizeUzumBarcode(p.uzum_barcode) : '';
+}
+
+function ensureExcelJsReady() {
+  if (typeof window === 'undefined' || typeof window.ExcelJS === 'undefined') {
+    throw new Error('ExcelJS не загрузился. Проверьте подключение exceljs.min.js.');
+  }
+}
+
+function ensureJsZipReady() {
+  if (typeof window === 'undefined' || typeof window.JSZip === 'undefined') {
+    throw new Error('JSZip не загрузился. Проверьте подключение jszip.min.js.');
+  }
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function collectShipmentBoxesForExport(sh) {
+  if (sh?.version === 2 && Array.isArray(sh.boxes) && sh.boxes.length) {
+    return sh.boxes.map((box, idx) => ({ box, index: idx + 1 }));
+  }
+  const flat = Array.isArray(sh?.items) ? sh.items : [];
+  if (!flat.length) return [];
+  return [{ box: { items: flat }, index: 1 }];
+}
+
+const UZUM_INVOICE_TEMPLATE_URL = 'assets/uzum-invoice-template.xlsx';
+const UZUM_INVOICE_DATA_START_ROW = 2;
+let uzumInvoiceTemplateBufferCache = null;
+
+function cloneArrayBuffer(buffer) {
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(new Uint8Array(buffer));
+  return copy;
+}
+
+function excelCellText(value) {
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    if (Array.isArray(value.richText)) {
+      return value.richText.map((part) => String(part?.text ?? '')).join('');
+    }
+    if (value.text != null) return String(value.text);
+    if (value.result != null) return String(value.result);
+  }
+  return String(value);
+}
+
+function resolveUzumInvoiceDataSheet(workbook) {
+  const sheets = Array.isArray(workbook?.worksheets) ? workbook.worksheets : [];
+  const byHeader = sheets.find((ws) => {
+    const row = ws.getRow(1);
+    const headers = [1, 2, 3].map((col) => excelCellText(row.getCell(col).value).toLowerCase());
+    return headers.some((h) => h.includes('штрихкод')) && headers.some((h) => h.includes('себестоим'));
+  });
+  if (byHeader) return byHeader;
+  if (sheets.length > 1) return sheets[1];
+  return sheets[0] || null;
+}
+
+function base64ToArrayBuffer(base64) {
+  const normalized = String(base64 || '').replace(/\s+/g, '');
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function loadUzumInvoiceTemplateFromEmbeddedBase64() {
+  const embedded = (typeof window !== 'undefined' && window.UZUM_INVOICE_TEMPLATE_BASE64)
+    ? String(window.UZUM_INVOICE_TEMPLATE_BASE64).trim()
+    : '';
+  if (!embedded) return null;
+  return base64ToArrayBuffer(embedded);
+}
+
+async function loadUzumInvoiceTemplateBuffer() {
+  if (uzumInvoiceTemplateBufferCache) return uzumInvoiceTemplateBufferCache;
+
+  const embeddedBuffer = loadUzumInvoiceTemplateFromEmbeddedBase64();
+  if (embeddedBuffer) {
+    uzumInvoiceTemplateBufferCache = embeddedBuffer;
+    return uzumInvoiceTemplateBufferCache;
+  }
+
+  // fetch работает только по http(s):// — при file:// браузер блокирует локальные файлы
+  if (typeof window !== 'undefined' && window.location?.protocol === 'file:') {
+    throw new Error(
+      'Шаблон Uzum недоступен при открытии index.html напрямую (file://). ' +
+      'Подключите assets/uzum-invoice-template.base64.js или откройте проект через локальный сервер.'
+    );
+  }
+
+  try {
+    const resp = await fetch(UZUM_INVOICE_TEMPLATE_URL, { cache: 'no-store' });
+    if (resp.ok) {
+      uzumInvoiceTemplateBufferCache = await resp.arrayBuffer();
+      return uzumInvoiceTemplateBufferCache;
+    }
+  } catch (e) {
+    console.warn('loadUzumInvoiceTemplateBuffer: fetch не удался', e);
+  }
+
+  throw new Error(`Не удалось загрузить шаблон Uzum. Проверьте ${UZUM_INVOICE_TEMPLATE_URL} или assets/uzum-invoice-template.base64.js.`);
+}
+
+function clearUzumInvoiceDataRows(sheet, fromRow, toRow) {
+  for (let rowNum = fromRow; rowNum <= toRow; rowNum += 1) {
+    const row = sheet.getRow(rowNum);
+    [1, 2, 3].forEach((col) => {
+      const cell = row.getCell(col);
+      cell.value = null;
+    });
+  }
+}
+
+function setUzumInvoiceBarcodeCell(cell, barcode) {
+  const normalized = normalizeUzumBarcode(barcode);
+  if (!normalized) {
+    cell.value = null;
+    return;
+  }
+  if (/^\d+$/.test(normalized)) {
+    cell.value = Number(normalized);
+    cell.numFmt = '0';
+    return;
+  }
+  cell.value = normalized;
+  cell.numFmt = '@';
+}
+
+async function buildUzumInvoiceWorkbookBuffer(boxItems) {
+  ensureExcelJsReady();
+  const templateBuffer = cloneArrayBuffer(await loadUzumInvoiceTemplateBuffer());
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(templateBuffer);
+
+  const sheet = resolveUzumInvoiceDataSheet(workbook);
+  if (!sheet) {
+    throw new Error('В шаблоне Uzum не найден лист с таблицей накладной.');
+  }
+
+  const dataLines = boxItems.filter((it) => Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0))) > 0);
+  const clearToRow = Math.max(sheet.rowCount || 0, UZUM_INVOICE_DATA_START_ROW + dataLines.length + 20, 1000);
+  clearUzumInvoiceDataRows(sheet, UZUM_INVOICE_DATA_START_ROW, clearToRow);
+
+  let rowNum = UZUM_INVOICE_DATA_START_ROW;
+  let rowsWritten = 0;
+  let missingBarcode = 0;
+
+  dataLines.forEach((it) => {
+    const qty = Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0)));
+    if (!qty) return;
+    const barcode = getShipmentLineUzumBarcode(it);
+    if (!barcode) missingBarcode += 1;
+    const costUzs = Math.round(getShipmentLineUnitCostUzs(it) * 100) / 100;
+    const row = sheet.getRow(rowNum);
+    setUzumInvoiceBarcodeCell(row.getCell(1), barcode);
+    row.getCell(2).value = costUzs;
+    row.getCell(3).value = qty;
+    rowNum += 1;
+    rowsWritten += 1;
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return { buffer, rows: rowsWritten, missingBarcode };
+}
+
+/** Накладные Uzum Market: отдельный Excel на каждую коробку, всё в одном ZIP. */
+async function exportUzumInvoicesZip(shipmentId) {
+  const sh = readShipmentsSafe().find(s => String(s.id) === String(shipmentId));
+  if (!sh) return;
+  if (normalizeShipmentMarketplace(sh) !== 'Uzum Market') {
+    alert('Выгрузка накладных Uzum доступна только для поставок Uzum Market.');
+    return;
+  }
+
+  try {
+    ensureExcelJsReady();
+    ensureJsZipReady();
+  } catch (e) {
+    alert(e?.message || String(e));
+    return;
+  }
+
+  const boxEntries = collectShipmentBoxesForExport(sh);
+  if (!boxEntries.length) {
+    alert('В поставке нет коробок для выгрузки.');
+    return;
+  }
+
+  let zip;
+  let filesAdded = 0;
+  let totalMissingBarcode = 0;
+
+  try {
+    await loadUzumInvoiceTemplateBuffer();
+    zip = new JSZip();
+
+    for (const { box, index } of boxEntries) {
+      const lines = (box.items || []).filter((it) => Math.max(0, Math.floor(Number(it?.qty ?? it?.quantity ?? 0))) > 0);
+      if (!lines.length) continue;
+
+      const { buffer, rows, missingBarcode } = await buildUzumInvoiceWorkbookBuffer(lines);
+      if (!rows) continue;
+
+      zip.file(`Накладная_Коробка_${index}.xlsx`, buffer);
+      filesAdded += 1;
+      totalMissingBarcode += missingBarcode;
+    }
+  } catch (e) {
+    console.error('exportUzumInvoicesZip:', e);
+    alert(e?.message || 'Не удалось сформировать накладные Uzum по шаблону.');
+    return;
+  }
+
+  if (!filesAdded) {
+    alert('Нет коробок с товарами для выгрузки накладных Uzum.');
+    return;
+  }
+
+  try {
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const sid = String(sh.id ?? shipmentId).trim() || 'shipment';
+    triggerBlobDownload(zipBlob, `Uzum_Invoices_Delivery_${sid}.zip`);
+    if (totalMissingBarcode > 0) {
+      alert(`Архив сформирован (${filesAdded} файл(ов)). У ${totalMissingBarcode} строк нет штрихкода Uzum — проверьте поле uzum_barcode в базе товаров.`);
+    }
+  } catch (e) {
+    console.error('exportUzumInvoicesZip zip:', e);
+    alert(e?.message || 'Не удалось сформировать ZIP-архив накладных Uzum.');
+  }
 }
 
 function exportWmsShipmentTo1cXlsx(shipmentId) {
