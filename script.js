@@ -1018,6 +1018,319 @@ function applyMarketplaceSectionVisibility() {
   }
 }
 
+// ——— Печать этикеток (термопринтер) ———
+const labelPrintState = {
+  selectedRecordId: null,
+  dropdownOpen: false
+};
+
+const LABEL_SIZE_PRESETS = {
+  '58x40': { width: 58, height: 40 },
+  '75x120': { width: 75, height: 120 },
+  '100x50': { width: 100, height: 50 }
+};
+
+function getProductLabelSkuLines(product) {
+  const p = product || {};
+  const lines = [];
+  const wb = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
+  const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
+  const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+  if (wb) lines.push({ label: 'SKU WB', value: wb });
+  if (uz) lines.push({ label: 'SKU Uzum', value: uz });
+  if (ya) lines.push({ label: 'SKU Yandex', value: ya });
+  return lines;
+}
+
+function sanitizePdfFilenamePart(value) {
+  return String(value || 'товар')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 60) || 'товар';
+}
+
+function getSelectedLabelProduct() {
+  const rid = labelPrintState.selectedRecordId;
+  if (rid == null || String(rid) === '') return null;
+  return findProductByRecordId(readProductsSafe(), rid);
+}
+
+function renderLabelProductPreview(product) {
+  const preview = document.getElementById('labelProductPreview');
+  const articleEl = document.getElementById('labelPreviewArticle1c');
+  const codeEl = document.getElementById('labelPreviewCode1c');
+  const skuList = document.getElementById('labelPreviewSkuList');
+  if (!preview || !product) return;
+  const article1c = String(product.article1c || product.name || '').trim() || '—';
+  const code1c = String(product.code1c || '').trim() || '—';
+  if (articleEl) articleEl.textContent = article1c;
+  if (codeEl) codeEl.textContent = code1c;
+  if (skuList) {
+    const skuLines = getProductLabelSkuLines(product);
+    skuList.innerHTML = skuLines.length
+      ? skuLines.map((line) => `<div class="sku-line"><strong>${escapeHtml(line.label)}:</strong> ${escapeHtml(line.value)}</div>`).join('')
+      : '<div class="sku-line muted">SKU маркетплейсов не заполнены</div>';
+  }
+  preview.classList.remove('hidden');
+}
+
+function clearLabelProductSelection() {
+  labelPrintState.selectedRecordId = null;
+  document.getElementById('labelProductPreview')?.classList.add('hidden');
+}
+
+function setLabelProductSelection(product) {
+  if (!product?.recordId) return;
+  labelPrintState.selectedRecordId = String(product.recordId);
+  const search = document.getElementById('labelProductSearch');
+  const article1c = String(product.article1c || product.name || '').trim();
+  const code1c = String(product.code1c || '').trim();
+  if (search) {
+    search.value = [article1c, code1c].filter(Boolean).join(' · ');
+  }
+  renderLabelProductPreview(product);
+  hideLabelProductDropdown();
+}
+
+function hideLabelProductDropdown() {
+  labelPrintState.dropdownOpen = false;
+  const dropdown = document.getElementById('labelProductSearchDropdown');
+  if (dropdown) {
+    dropdown.classList.add('hidden');
+    dropdown.innerHTML = '';
+  }
+}
+
+function showLabelProductDropdown() {
+  labelPrintState.dropdownOpen = true;
+  document.getElementById('labelProductSearchDropdown')?.classList.remove('hidden');
+}
+
+function renderLabelProductSearchDropdown(query) {
+  const dropdown = document.getElementById('labelProductSearchDropdown');
+  if (!dropdown) return;
+  const qq = String(query || '').trim();
+  const products = readProductsSafe();
+  const filtered = qq ? products.filter((p) => productSearchMatchesQuery(p, qq)) : products;
+  dropdown.innerHTML = '';
+  if (!filtered.length) {
+    dropdown.innerHTML = '<div class="label-product-option muted">Ничего не найдено</div>';
+    showLabelProductDropdown();
+    return;
+  }
+  filtered.slice(0, 40).forEach((p) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'label-product-option';
+    if (recordIdsEqual(p.recordId, labelPrintState.selectedRecordId)) {
+      option.classList.add('active');
+    }
+    const article1c = String(p.article1c || p.name || '').trim() || '—';
+    const code1c = String(p.code1c || '').trim() || '—';
+    const skuLines = getProductLabelSkuLines(p);
+    const skuHint = skuLines.length
+      ? skuLines.map((line) => `${line.label}: ${line.value}`).join(' · ')
+      : 'SKU не заполнены';
+    option.innerHTML = `
+      <div class="title">${escapeHtml(article1c)}</div>
+      <div class="meta">Код 1С: ${escapeHtml(code1c)} · ${escapeHtml(skuHint)}</div>
+    `;
+    option.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      setLabelProductSelection(p);
+    });
+    dropdown.appendChild(option);
+  });
+  showLabelProductDropdown();
+}
+
+function syncLabelCustomSizeVisibility() {
+  const preset = document.getElementById('labelSizePreset')?.value || '58x40';
+  const custom = document.getElementById('labelCustomSizeFields');
+  if (custom) custom.classList.toggle('hidden', preset !== 'custom');
+}
+
+function getLabelDimensionsFromUi() {
+  const preset = document.getElementById('labelSizePreset')?.value || '58x40';
+  if (preset !== 'custom') {
+    const size = LABEL_SIZE_PRESETS[preset] || LABEL_SIZE_PRESETS['58x40'];
+    return { width: size.width, height: size.height };
+  }
+  const width = Math.max(20, Math.min(300, Number(document.getElementById('labelCustomWidth')?.value) || 58));
+  const height = Math.max(20, Math.min(300, Number(document.getElementById('labelCustomHeight')?.value) || 40));
+  return { width, height };
+}
+
+function wrapCanvasLines(ctx, text, maxWidth) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let current = words[0];
+  for (let i = 1; i < words.length; i += 1) {
+    const next = `${current} ${words[i]}`;
+    if (ctx.measureText(next).width <= maxWidth) {
+      current = next;
+    } else {
+      lines.push(current);
+      current = words[i];
+    }
+  }
+  lines.push(current);
+  return lines;
+}
+
+function renderLabelCanvas(product, widthMm, heightMm) {
+  const pxPerMm = 8;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(widthMm * pxPerMm));
+  canvas.height = Math.max(1, Math.round(heightMm * pxPerMm));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D недоступен.');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+
+  const minSide = Math.min(widthMm, heightMm);
+  const articlePt = Math.max(9, Math.min(28, minSide * 0.24));
+  const codePt = Math.max(7, Math.min(18, minSide * 0.16));
+  const skuPt = Math.max(6, Math.min(14, minSide * 0.13));
+  const articlePx = articlePt * (pxPerMm / 2.83465);
+  const codePx = codePt * (pxPerMm / 2.83465);
+  const skuPx = skuPt * (pxPerMm / 2.83465);
+  const paddingY = Math.max(pxPerMm * 2, canvas.height * 0.08);
+  const centerX = canvas.width / 2;
+  const maxTextWidth = canvas.width * 0.92;
+  let y = paddingY;
+
+  const article1c = String(product.article1c || product.name || '').trim() || '—';
+  const code1c = String(product.code1c || '').trim() || '—';
+  const skuLines = getProductLabelSkuLines(product);
+
+  ctx.font = `bold ${articlePx}px Arial, sans-serif`;
+  wrapCanvasLines(ctx, article1c, maxTextWidth).forEach((line) => {
+    ctx.fillText(line, centerX, y);
+    y += articlePx * 1.15;
+  });
+
+  y += articlePx * 0.2;
+  ctx.font = `${codePx}px Arial, sans-serif`;
+  wrapCanvasLines(ctx, code1c, maxTextWidth).forEach((line) => {
+    ctx.fillText(line, centerX, y);
+    y += codePx * 1.2;
+  });
+
+  if (skuLines.length) {
+    y += codePx * 0.35;
+    ctx.font = `${skuPx}px Arial, sans-serif`;
+    skuLines.forEach((line) => {
+      const text = `${line.label}: ${line.value}`;
+      wrapCanvasLines(ctx, text, maxTextWidth).forEach((part) => {
+        ctx.fillText(part, centerX, y);
+        y += skuPx * 1.18;
+      });
+    });
+  }
+
+  return canvas;
+}
+
+function ensureJsPdfReady() {
+  const JsPDF = window.jspdf?.jsPDF || window.jsPDF;
+  if (!JsPDF) {
+    throw new Error('jsPDF не загрузился. Проверьте подключение jspdf.umd.min.js.');
+  }
+  return JsPDF;
+}
+
+function drawLabelOnPdfPage(doc, product, widthMm, heightMm) {
+  const canvas = renderLabelCanvas(product, widthMm, heightMm);
+  const dataUrl = canvas.toDataURL('image/png');
+  doc.addImage(dataUrl, 'PNG', 0, 0, widthMm, heightMm, undefined, 'FAST');
+}
+
+function generateLabelPdfForPrint() {
+  const product = getSelectedLabelProduct();
+  if (!product) {
+    alert('Выберите товар из списка поиска.');
+    return;
+  }
+  const copies = Math.max(1, Math.floor(Number(document.getElementById('labelCopies')?.value) || 1));
+  const { width, height } = getLabelDimensionsFromUi();
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    alert('Укажите корректный размер этикетки.');
+    return;
+  }
+
+  let JsPDF;
+  try {
+    JsPDF = ensureJsPdfReady();
+  } catch (e) {
+    alert(e?.message || String(e));
+    return;
+  }
+
+  const orientation = width >= height ? 'landscape' : 'portrait';
+  const doc = new JsPDF({
+    unit: 'mm',
+    format: [width, height],
+    orientation,
+    compress: true
+  });
+
+  for (let i = 0; i < copies; i += 1) {
+    if (i > 0) doc.addPage([width, height], orientation);
+    drawLabelOnPdfPage(doc, product, width, height);
+  }
+
+  const articlePart = sanitizePdfFilenamePart(product.article1c || product.name || 'товар');
+  doc.save(`Этикетка_${articlePart}_${copies}шт.pdf`);
+}
+
+function initLabelPrintPage() {
+  const search = document.getElementById('labelProductSearch');
+  const preset = document.getElementById('labelSizePreset');
+  const generateBtn = document.getElementById('labelGeneratePdfBtn');
+
+  search?.addEventListener('input', () => {
+    const q = search.value;
+    if (!String(q || '').trim()) {
+      clearLabelProductSelection();
+      hideLabelProductDropdown();
+      return;
+    }
+    if (labelPrintState.selectedRecordId) {
+      const selected = getSelectedLabelProduct();
+      const selectedText = selected
+        ? [String(selected.article1c || selected.name || '').trim(), String(selected.code1c || '').trim()].filter(Boolean).join(' · ')
+        : '';
+      if (q !== selectedText) clearLabelProductSelection();
+    }
+    renderLabelProductSearchDropdown(q);
+  });
+
+  search?.addEventListener('focus', () => {
+    renderLabelProductSearchDropdown(search.value);
+  });
+
+  search?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideLabelProductDropdown();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!labelPrintState.dropdownOpen) return;
+    const field = document.querySelector('.labels-search-field');
+    if (field && !field.contains(e.target)) hideLabelProductDropdown();
+  });
+
+  preset?.addEventListener('change', syncLabelCustomSizeVisibility);
+  generateBtn?.addEventListener('click', generateLabelPdfForPrint);
+  syncLabelCustomSizeVisibility();
+}
+
 function initMarketplaceSwitcher() {
   const wrap = document.getElementById('mpSwitcher');
   if (!wrap) return;
@@ -8681,6 +8994,7 @@ initMarketplaceSwitcher();
 initThemeToggle();
 initCodeGenerator1C();
 initFabricCalculator();
+initLabelPrintPage();
 document.getElementById('stockAnalyticsRefreshBtn')?.addEventListener('click', () => {
   if (getCurrentMarketplace() === 'uzum') void renderStockAnalyticsPage();
 });

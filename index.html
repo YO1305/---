@@ -46,6 +46,10 @@
             <span class="nav-icon">📦</span>
             <span>База товаров</span>
           </button>
+          <button class="nav-btn" data-page="labels-tab">
+            <span class="nav-icon">🏷️</span>
+            <span>Печать этикеток</span>
+          </button>
           <button class="nav-btn" data-page="components-tab">
             <span class="nav-icon">📐</span>
             <span>Комплектующие</span>
@@ -1251,6 +1255,65 @@
       </div>
     </section>
 
+    <section class="page-panel page-section" id="labels-tab">
+      <div class="labels-page-head">
+        <h2 class="labels-page-title">Печать этикеток</h2>
+        <p class="sub labels-page-sub">Бирки для коробок: выберите товар из базы, укажите размер термоэтикетки и скачайте PDF для печати.</p>
+      </div>
+      <div class="labels-layout">
+        <article class="card labels-form-card">
+          <h3 class="labels-panel-title">Параметры этикетки</h3>
+          <div class="field labels-search-field">
+            <label for="labelProductSearch">Поиск товара</label>
+            <input id="labelProductSearch" class="input" type="search" placeholder="Артикул 1С, код 1С, SKU Uzum / WB / Yandex…" autocomplete="off" />
+            <div id="labelProductSearchDropdown" class="label-product-dropdown hidden" role="listbox" aria-label="Результаты поиска товаров"></div>
+          </div>
+          <div id="labelProductPreview" class="label-product-preview hidden" aria-live="polite">
+            <div class="label-preview-title">Выбранный товар</div>
+            <div class="label-preview-row"><span class="k">Артикул 1С</span><span class="v" id="labelPreviewArticle1c">—</span></div>
+            <div class="label-preview-row"><span class="k">Код 1С</span><span class="v" id="labelPreviewCode1c">—</span></div>
+            <div id="labelPreviewSkuList" class="label-preview-skus"></div>
+          </div>
+          <div class="grid grid-2 labels-size-grid">
+            <div class="field">
+              <label for="labelSizePreset">Размер этикетки</label>
+              <select id="labelSizePreset" class="select">
+                <option value="58x40">58×40 мм</option>
+                <option value="75x120">75×120 мм</option>
+                <option value="100x50">100×50 мм</option>
+                <option value="custom">Свой размер</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="labelCopies">Количество копий</label>
+              <input id="labelCopies" class="input" type="number" min="1" step="1" value="1" />
+            </div>
+          </div>
+          <div id="labelCustomSizeFields" class="grid grid-2 labels-custom-size hidden">
+            <div class="field">
+              <label for="labelCustomWidth">Ширина (мм)</label>
+              <input id="labelCustomWidth" class="input" type="number" min="20" max="300" step="1" value="58" />
+            </div>
+            <div class="field">
+              <label for="labelCustomHeight">Высота (мм)</label>
+              <input id="labelCustomHeight" class="input" type="number" min="20" max="300" step="1" value="40" />
+            </div>
+          </div>
+          <div class="labels-actions">
+            <button type="button" id="labelGeneratePdfBtn" class="btn-primary">Сгенерировать PDF для печати</button>
+          </div>
+        </article>
+        <article class="card labels-hint-card">
+          <h3 class="labels-panel-title">Подсказка</h3>
+          <ul class="labels-hint-list">
+            <li>PDF создаётся с точным размером страницы в миллиметрах — готов к отправке на термопринтер.</li>
+            <li>На этикетке выводятся артикул 1С, код 1С и только те SKU маркетплейсов, которые заполнены в карточке товара.</li>
+            <li>Для маленьких этикеток (58×40) шрифт автоматически уменьшается, для крупных — увеличивается.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
     <section class="page-panel page-section" id="generator-section">
       <div class="generator-page-head">
         <h2 class="generator-page-title">Генератор и Дешифратор кодов 1С</h2>
@@ -1832,6 +1895,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="assets/uzum-invoice-template.base64.js"></script>
