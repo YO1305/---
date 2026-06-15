@@ -1794,6 +1794,38 @@
                 </div>
               </section>
 
+              <section class="wb-dash-section" aria-labelledby="wbCommissionRefHeading">
+                <h3 id="wbCommissionRefHeading" class="wb-dash-section-title">Комиссия WB и СПП (справочно)</h3>
+                <p class="hint wb-dash-hint">Справочные показатели — уже учтены внутри «К перечислению», повторно из прибыли не вычитаются.</p>
+                <div class="dashboard-grid">
+                  <article class="stat-card">
+                    <span class="stat-card__label">СПП (скидка платформы)</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatSppPct">0%</span>
+                    <span class="stat-card__meta" id="wbStatSppHint">Скидка WB покупателю из бюджета маркетплейса</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">ВВ без НДС</span>
+                    <span class="stat-card__value" id="wbStatCommVv">0 сум</span>
+                    <span class="stat-card__meta" id="wbStatCommVvPct">0% от факт. выручки</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">НДС с ВВ</span>
+                    <span class="stat-card__value" id="wbStatCommVatVv">0 сум</span>
+                    <span class="stat-card__meta" id="wbStatCommVatVvPct">0% от факт. выручки</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Итого комиссия WB</span>
+                    <span class="stat-card__value" id="wbStatCommTotal">0 сум</span>
+                    <span class="stat-card__meta" id="wbStatCommTotalPct">0% от факт. выручки</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Удержано WB (справочно)</span>
+                    <span class="stat-card__value" id="wbStatWithheldPct">0%</span>
+                    <span class="stat-card__meta">(Факт. выручка − К перечислению) / Факт. выручка</span>
+                  </article>
+                </div>
+              </section>
+
               <section class="wb-dash-section" aria-labelledby="wbExtraKpiHeading">
                 <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Расходы WB</h3>
                 <div class="dashboard-grid">
@@ -1823,7 +1855,7 @@
                       <h4 class="wb-breakdown-item-title">Комиссия WB <span id="wbStatBdComm">0%</span></h4>
                       <span class="wb-breakdown-item-sum" id="wbStatBdCommSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Итоговое вознаграждение Wildberries после всех взаимозачётов. Базовая ставка 18%, но WB частично компенсирует её через платёжные услуги. В отчёте: колонка «Вознаграждение WB (ВВ) без НДС»</p>
+                    <p class="wb-breakdown-item-hint" id="wbStatBdCommHint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Реальное вознаграждение WB: ВВ без НДС + НДС с ВВ. Уже вычтено в «К перечислению» — повторно не вычитается. Источник: колонки «Вознаграждение ВВ» и «НДС с Вознаграждения Вайлдберриз».</p>
                   </article>
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">
@@ -1868,6 +1900,8 @@
                         <th>Возврат</th>
                         <th>Выкуп %</th>
                         <th>Выручка факт.</th>
+                        <th>СПП %</th>
+                        <th>Комиссия WB %</th>
                         <th>К перечислению</th>
                         <th>COGS</th>
                         <th>Чистая прибыль</th>
