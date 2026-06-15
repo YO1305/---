@@ -1680,8 +1680,8 @@
       <div id="analyticsWbRoot" class="analytics-mp-root hidden">
         <div class="analytics-layout wb-analytics-layout">
           <aside class="analytics-sidebar card wb-analytics-sidebar">
-            <h2>WB — глубокая аналитика</h2>
-            <p class="sub">Детализация WB по таблице Носова: колонка «цена розничная с учётом согласованной скидки», тип документа, к перечислению, логистика. Все суммы из отчёта — в сумах; далее вводите себестоимость ед. в сумах и открывайте дашборд.</p>
+            <h2>WB — еженедельная аналитика</h2>
+            <p class="sub">Детализированный отчёт WB: выручка по фактической цене (после СПП), к перечислению, комиссия, логистика, НДС 12% от выплаты. Себестоимость подтягивается из базы товаров по артикулу поставщика.</p>
             <div class="analytics-sidebar-actions">
               <label class="btn-primary analytics-file-btn">
                 Загрузить детализацию WB (Excel)
@@ -1696,18 +1696,18 @@
           </aside>
           <div class="analytics-main wb-analytics-main">
             <div id="wbAnalyticsPlaceholder" class="card analytics-placeholder wb-analytics-placeholder">
-              <p class="analytics-placeholder-text">Загрузите .xlsx: шапка в первых 15 строках (fuzzy по «ценарозничная…», «кперечислению…», «типдокумента»). Артикул — «артикулпродавца» / «артикулпоставщика». Далее укажите себестоимость ед. в сумах (как в еженедельном отчёте WB).</p>
+              <p class="analytics-placeholder-text">Загрузите еженедельный .xlsx WB (Sheet1). Система разделит строки Продажа / Возврат / логистика, посчитает маржу от фактической выручки WB и покажет ABC по прибыли.</p>
             </div>
 
             <div id="wbAnalyticsCogsPanel" class="hidden">
               <div class="card wb-analytics-card wb-analytics-card--cogs">
-                <h2 class="wb-analytics-h2">Себестоимость по артикулам 1С</h2>
+                <h2 class="wb-analytics-h2">Себестоимость по артикулам</h2>
                 <p class="sub" id="wbAnalyticsParseMeta"></p>
                 <div class="table-wrap wb-analytics-table-wrap">
                   <table class="wb-analytics-cogs-table">
                     <thead>
                       <tr>
-                        <th>Артикул 1С</th>
+                        <th>Артикул поставщика</th>
                         <th>Фактически продано, шт</th>
                         <th>Себестоимость ед. (сум)</th>
                       </tr>
@@ -1724,21 +1724,23 @@
 
             <div id="wbAnalyticsResultsPanel" class="hidden wb-analytics-dashboard">
               <header class="wb-dash-header card wb-analytics-card">
-                <h2 id="wbAnalyticsReportTitle" class="wb-analytics-h2">WB — таблица Носова</h2>
+                <h2 id="wbAnalyticsReportTitle" class="wb-analytics-h2">WB — еженедельный отчёт</h2>
                 <p class="sub" id="wbAnalyticsReportMeta"></p>
+                <p class="sub" id="wbAnalyticsPeriod"></p>
+                <p id="wbAnalyticsCostWarnings" class="note hidden" role="status"></p>
               </header>
 
               <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
-                <h3 id="wbInputsHeading" class="wb-dash-section-title">Ручной ввод</h3>
-                <p class="hint wb-dash-hint">Налог и НДС — от базы (сумма продаж базовая − сумма возвратов базовая). Суммы в сумах сохраняются в браузере.</p>
+                <h3 id="wbInputsHeading" class="wb-dash-section-title">Настройки расчёта</h3>
+                <p class="hint wb-dash-hint">НДС считается от суммы «к перечислению». Курс — только для справочного пересчёта прибыли в ₽.</p>
                 <div class="inputs-grid">
                   <article class="stat-card stat-card--input">
-                    <span class="stat-card__label">Налог (%)</span>
-                    <input type="number" id="wbOpsTaxPct" class="stat-card__input" min="0" max="100" step="0.01" value="0" />
+                    <span class="stat-card__label">Курс WB (сум за 1 ₽)</span>
+                    <input type="number" id="wbAnalyticsExchangeRate" class="stat-card__input" min="0.0001" step="0.00001" value="168.54789" />
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">НДС (%)</span>
-                    <input type="number" id="wbOpsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="0" />
+                    <input type="number" id="wbAnalyticsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="12" />
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Выведено денег (сум)</span>
@@ -1755,13 +1757,17 @@
                 <h3 id="wbMainKpiHeading" class="wb-dash-section-title">Ключевые показатели</h3>
                 <div class="dashboard-grid">
                   <article class="stat-card">
-                    <span class="stat-card__label">Общая сумма продаж (базовая), сум</span>
-                    <span class="stat-card__value" id="wbStatSalesBase">0 сум</span>
+                    <span class="stat-card__label">Выручка фактическая (после СПП), сум</span>
+                    <span class="stat-card__value" id="wbStatRevenueFact">0 сум</span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">Фактически продано шт</span>
-                    <span class="stat-card__value" id="wbStatQtyNet">0</span>
-                    <span class="stat-card__meta">Строк продаж / возвратов: <span id="wbStatRowsSales">0</span> / <span id="wbStatRowsRet">0</span></span>
+                    <span class="stat-card__label">Выручка розничная (до СПП), сум</span>
+                    <span class="stat-card__value" id="wbStatRevenueRetail">0 сум</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Продано / возврат, шт</span>
+                    <span class="stat-card__value" id="wbStatSalesQty">0</span>
+                    <span class="stat-card__meta">Возвратов: <span id="wbStatReturnsQty">0</span> · выкуп <span id="wbStatBuyout">0%</span></span>
                   </article>
                   <article class="stat-card">
                     <span class="stat-card__label">К перечислению от WB (сум)</span>
@@ -1770,50 +1776,65 @@
                   <article class="stat-card stat-card--hero-net">
                     <span class="stat-card__label">Чистая прибыль (сум)</span>
                     <span class="stat-card__value stat-card__value--hero" id="wbStatNet">0 сум</span>
+                    <span class="stat-card__meta">≈ <span id="wbStatNetRub">0 ₽</span> по курсу WB</span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">ROI %</span>
-                    <span class="stat-card__value stat-card__value--accent" id="wbStatRoi">0%</span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">Маржа %</span>
+                    <span class="stat-card__label">Маржа от факт. выручки</span>
                     <span class="stat-card__value stat-card__value--accent" id="wbStatMargin">0%</span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">Наценка %</span>
-                    <span class="stat-card__value stat-card__value--accent" id="wbStatMarkup">0%</span>
+                    <span class="stat-card__label">Маржа от розн. цены</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatMarginRetail">0%</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Рентабельность (ROI)</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatRoi">0%</span>
                   </article>
                 </div>
               </section>
 
               <section class="wb-dash-section" aria-labelledby="wbExtraKpiHeading">
-                <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Детализация</h3>
+                <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Расходы WB</h3>
                 <div class="dashboard-grid">
-                  <article class="stat-card"><span class="stat-card__label">Сумма возвратов (базовая), сум</span><span class="stat-card__value" id="wbStatReturnsBase">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Комиссия WB (сум)</span><span class="stat-card__value" id="wbStatComm">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Логистика (сум)</span><span class="stat-card__value" id="wbStatLog">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Хранение (сум)</span><span class="stat-card__value" id="wbStatStorage">0 сум</span></article>
+                  <article class="stat-card"><span class="stat-card__label">Удержания (сум)</span><span class="stat-card__value" id="wbStatDeductions">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Штрафы (сум)</span><span class="stat-card__value" id="wbStatPen">0 сум</span></article>
-                  <article class="stat-card"><span class="stat-card__label">Валовая прибыль (сум)</span><span class="stat-card__value" id="wbStatGross">0 сум</span></article>
-                  <article class="stat-card"><span class="stat-card__label">Налог (сум)</span><span class="stat-card__value" id="wbStatTax">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">НДС (сум)</span><span class="stat-card__value" id="wbStatVat">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Себестоимость (сум)</span><span class="stat-card__value" id="wbStatCogs">0 сум</span></article>
                 </div>
               </section>
 
+              <section class="wb-dash-section" aria-labelledby="wbBreakdownHeading">
+                <h3 id="wbBreakdownHeading" class="wb-dash-section-title">Структура расходов (% от факт. выручки)</h3>
+                <div class="dashboard-grid">
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">COGS</span><span class="stat-card__value" id="wbStatBdCogs">0%</span></article>
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Комиссия</span><span class="stat-card__value" id="wbStatBdComm">0%</span></article>
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Логистика</span><span class="stat-card__value" id="wbStatBdLog">0%</span></article>
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Хранение</span><span class="stat-card__value" id="wbStatBdStorage">0%</span></article>
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">НДС</span><span class="stat-card__value" id="wbStatBdVat">0%</span></article>
+                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Прибыль</span><span class="stat-card__value stat-card__value--accent" id="wbStatBdProfit">0%</span></article>
+                </div>
+              </section>
+
               <section class="wb-dash-section">
-                <h3 class="wb-dash-section-title">ABC-анализ товаров</h3>
-                <p class="hint wb-dash-hint">Сортировка по чистой прибыли в сумах (убыв.). A — 80% накопленной прибыли, B — 15%, C — 5%.</p>
+                <h3 class="wb-dash-section-title">ABC-анализ по артикулам</h3>
+                <p class="hint wb-dash-hint">Сортировка по чистой прибыли. A — 80% накопленной прибыли, B — 15%, C — остальные. Отрицательная прибыль — всегда C.</p>
                 <div class="table-wrap wb-top-products-wrap">
                   <table class="wb-top-products-table">
                     <thead>
                       <tr>
                         <th>Артикул</th>
-                        <th>Нетто база (сум)</th>
-                        <th>Факт. шт</th>
-                        <th>Себестоимость (сум)</th>
-                        <th>Чистая прибыль (сум)</th>
-                        <th>ROI %</th>
-                        <th>Группа</th>
+                        <th>Продано</th>
+                        <th>Возврат</th>
+                        <th>Выкуп %</th>
+                        <th>Выручка факт.</th>
+                        <th>К перечислению</th>
+                        <th>COGS</th>
+                        <th>Чистая прибыль</th>
+                        <th>Маржа %</th>
+                        <th>ABC</th>
                       </tr>
                     </thead>
                     <tbody id="wbTopProductsBody"></tbody>

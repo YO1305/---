@@ -2855,8 +2855,9 @@ const STORAGE_KEYS = {
   components: 'uzum_components_db_v1',
   mpReports: 'uzum_mp_monthly_reports_v1',
   reportsHistory: 'uzum_analytics_reports_history_v1',
-  wbAnalyticsReports: 'wb_analytics_reports_history_v3',
-  wbAnalyticsReportingUzs: 'wb_analytics_reporting_uzs_v3'
+  wbAnalyticsReports: 'wb_analytics_reports_history_v4',
+  wbAnalyticsReportingUzs: 'wb_analytics_reporting_uzs_v3',
+  wbAnalyticsSettings: 'wb_analytics_settings_v1'
 };
 
 /** Легаси-черновик (старый UI поставок); WMS резервирует остаток через wmsState */
@@ -7568,9 +7569,7 @@ function readWbReportingUzs() {
   const o = readStore(STORAGE_KEYS.wbAnalyticsReportingUzs, {}) || {};
   return {
     withdrawnMonthUz: Math.max(0, Number(o.withdrawnMonthUz) || 0),
-    goodsSentUz: Math.max(0, Number(o.goodsSentUz) || 0),
-    taxPct: Math.max(0, Math.min(100, Number(o.taxPct) || 0)),
-    vatPct: Math.max(0, Math.min(100, Number(o.vatPct) || 0))
+    goodsSentUz: Math.max(0, Number(o.goodsSentUz) || 0)
   };
 }
 
@@ -7578,18 +7577,14 @@ function writeWbReportingUzs(data) {
   const cur = readWbReportingUzs();
   writeStore(STORAGE_KEYS.wbAnalyticsReportingUzs, {
     withdrawnMonthUz: Math.max(0, Number(data.withdrawnMonthUz ?? cur.withdrawnMonthUz) || 0),
-    goodsSentUz: Math.max(0, Number(data.goodsSentUz ?? cur.goodsSentUz) || 0),
-    taxPct: Math.max(0, Math.min(100, Number(data.taxPct ?? cur.taxPct) || 0)),
-    vatPct: Math.max(0, Math.min(100, Number(data.vatPct ?? cur.vatPct) || 0))
+    goodsSentUz: Math.max(0, Number(data.goodsSentUz ?? cur.goodsSentUz) || 0)
   });
 }
 
 function wbReadOpsFromInputs() {
   return {
     withdrawnMonthUz: n(document.getElementById('wbReportWithdrawnMonthUz')?.value),
-    goodsSentUz: n(document.getElementById('wbReportGoodsSentUz')?.value),
-    taxPct: n(document.getElementById('wbOpsTaxPct')?.value),
-    vatPct: n(document.getElementById('wbOpsVatPct')?.value)
+    goodsSentUz: n(document.getElementById('wbReportGoodsSentUz')?.value)
   };
 }
 
@@ -7602,8 +7597,6 @@ function loadWbReportingUzsIntoInputs() {
   };
   set('wbReportWithdrawnMonthUz', Math.round(d.withdrawnMonthUz));
   set('wbReportGoodsSentUz', Math.round(d.goodsSentUz));
-  set('wbOpsTaxPct', d.taxPct);
-  set('wbOpsVatPct', d.vatPct);
 }
 
 function updateWbReportingUzsDisplay() {
@@ -7643,12 +7636,48 @@ function wbFindColByHeaderPredicate(headerRowArr, predicate) {
   return -1;
 }
 
-/** Ключевые фрагменты нормализованных заголовков (таблица Носова, детализация WB). */
-const WB_NOSOV_HEADER_KEYS = {
-  priceBase: 'ценарозничнаясучетомсогласованнойскидки',
+/** Настройки аналитики еженедельного отчёта WB (UZ). */
+const WB_SETTINGS_DEFAULT = {
+  wb_exchange_rate: 168.54789,
+  vat_rate: 0.12,
+  currency: 'UZS',
+  abc_thresholds: [0.8, 0.95]
+};
+
+function readWbAnalyticsSettings() {
+  const o = readStore(STORAGE_KEYS.wbAnalyticsSettings, {}) || {};
+  const rate = Number(o.wb_exchange_rate);
+  const vat = Number(o.vat_rate);
+  return {
+    wb_exchange_rate: Number.isFinite(rate) && rate > 0 ? rate : WB_SETTINGS_DEFAULT.wb_exchange_rate,
+    vat_rate: Number.isFinite(vat) && vat >= 0 ? vat : WB_SETTINGS_DEFAULT.vat_rate,
+    currency: 'UZS',
+    abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
+  };
+}
+
+function writeWbAnalyticsSettings(patch) {
+  const cur = readWbAnalyticsSettings();
+  writeStore(STORAGE_KEYS.wbAnalyticsSettings, {
+    wb_exchange_rate: Math.max(0.0001, Number(patch.wb_exchange_rate ?? cur.wb_exchange_rate) || cur.wb_exchange_rate),
+    vat_rate: Math.max(0, Math.min(1, Number(patch.vat_rate ?? cur.vat_rate) || cur.vat_rate))
+  });
+}
+
+/** Ключевые фрагменты нормализованных заголовков (детализация WB). */
+const WB_REPORT_HEADER_KEYS = {
+  docType: 'типдокумента',
+  supplierSku: 'артикулпоставщика',
+  qty: 'колво',
+  priceRetail: 'ценарозничная',
+  priceFact: 'вайлдберризреализовалтовар',
   toTransfer: 'кперечислениюпродавцузареализованныйтовар',
+  commission: 'вознаграждениевайлдберриз',
   logistics: 'услугиподоставкетоварапокупателю',
-  docType: 'типдокумента'
+  storage: 'хранение',
+  deductions: 'удержания',
+  saleDate: 'датапродажи',
+  fines: 'штраф'
 };
 
 /** Денежные суммы в аналитике WB: значения из отчёта и себестоимость уже в сумах (UZS). */
@@ -7664,24 +7693,95 @@ function fmtWbPctLocale(value) {
   return `${x.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
 }
 
+function wbNormalizeSku(raw) {
+  return String(raw ?? '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function wbDisplaySku(raw) {
+  return String(raw ?? '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseWbSaleDateCell(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date && !Number.isNaN(val.getTime())) return val.toISOString().slice(0, 10);
+  if (typeof val === 'number' && val > 20000 && typeof XLSX !== 'undefined' && XLSX.SSF?.parse_date_code) {
+    const d = XLSX.SSF.parse_date_code(val);
+    if (d?.y) {
+      return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+    }
+  }
+  const s = String(val).trim();
+  const iso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[0];
+  const ru = s.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  if (ru) return `${ru[3]}-${ru[2]}-${ru[1]}`;
+  const parsed = new Date(s);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return null;
+}
+
+function wbDocTypeKind(raw) {
+  const n = normalizeString(raw);
+  if (!n) return 'service';
+  if (n === 'продажа') return 'sale';
+  if (n === 'возврат') return 'return';
+  return 'other';
+}
+
+let wbProductCostLookupCache = null;
+function buildWbProductCostLookup() {
+  if (wbProductCostLookupCache) return wbProductCostLookupCache;
+  const map = new Map();
+  readProductsSafe().forEach(p => {
+    const cost = Number(p.costGross ?? p.costPriceUzs ?? 0);
+    if (!Number.isFinite(cost) || cost <= 0) return;
+    [p.article1c, p.name, p.wbSku, p.sku, p.code1c]
+      .map(k => wbNormalizeSku(k))
+      .filter(Boolean)
+      .forEach(k => {
+        if (!map.has(k)) map.set(k, cost);
+      });
+  });
+  wbProductCostLookupCache = map;
+  return map;
+}
+
+function invalidateWbProductCostLookup() {
+  wbProductCostLookupCache = null;
+}
+
+function findWbProductNameBySkuKey(skuKey) {
+  const key = wbNormalizeSku(skuKey);
+  if (!key) return '';
+  const hit = readProductsSafe().find(p => {
+    return [p.article1c, p.name, p.wbSku, p.sku, p.code1c].some(v => wbNormalizeSku(v) === key);
+  });
+  if (!hit) return '';
+  return String(hit.name || hit.article1c || '').trim();
+}
+
 function wbFindArticleColumn(headerRowArr) {
-  let idx = wbFindColByHeaderPredicate(headerRowArr, n => n.includes('артикулпродавца'));
-  if (idx >= 0) return { idx, label: 'Артикул продавца' };
-  idx = wbFindColByHeaderPredicate(headerRowArr, n => n.includes('артикулпоставщика'));
+  let idx = wbFindColByHeaderPredicate(headerRowArr, n => n.includes('артикулпоставщика'));
   if (idx >= 0) return { idx, label: 'Артикул поставщика' };
+  idx = wbFindColByHeaderPredicate(headerRowArr, n => n.includes('артикулпродавца'));
+  if (idx >= 0) return { idx, label: 'Артикул продавца' };
   idx = wbFindColByHeaderPredicate(headerRowArr, n => n.includes('артикул1с'));
   if (idx >= 0) return { idx, label: 'Артикул 1С' };
   return { idx: -1, label: '' };
 }
 
-/**
- * Строка шапки: в первых 15 строках ищем колонку базы цены / к перечислению / типа документа (fuzzy).
- */
-function findWbNosovHeaderRowIndex(matrix, maxScan = 15) {
+function findWbReportHeaderRowIndex(matrix, maxScan = 15) {
   const markers = [
-    WB_NOSOV_HEADER_KEYS.priceBase,
-    WB_NOSOV_HEADER_KEYS.toTransfer,
-    WB_NOSOV_HEADER_KEYS.docType
+    WB_REPORT_HEADER_KEYS.priceFact,
+    WB_REPORT_HEADER_KEYS.toTransfer,
+    WB_REPORT_HEADER_KEYS.docType
   ];
   const lim = Math.min(matrix.length, maxScan);
   for (let r = 0; r < lim; r++) {
@@ -7694,42 +7794,63 @@ function findWbNosovHeaderRowIndex(matrix, maxScan = 15) {
   return -1;
 }
 
-/**
- * Маппинг колонок по нормализованным подстрокам (как у Носова).
- */
 function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
-  const headerRow = findWbNosovHeaderRowIndex(matrix, maxScan);
+  const headerRow = findWbReportHeaderRowIndex(matrix, maxScan);
   if (headerRow < 0) {
     throw new Error(
-      `В первых ${maxScan} строках не найдена шапка. Нужны столбцы с «${WB_NOSOV_HEADER_KEYS.priceBase}», «${WB_NOSOV_HEADER_KEYS.toTransfer}» или «${WB_NOSOV_HEADER_KEYS.docType}» в названии (без пробелов, нижний регистр).`
+      `В первых ${maxScan} строках не найдена шапка. Нужны столбцы «Вайлдберриз реализовал Товар», «К перечислению…» или «Тип документа».`
     );
   }
 
   const headerCells = matrix[headerRow] || [];
-  const priceBase = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_NOSOV_HEADER_KEYS.priceBase));
-  const toSeller = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_NOSOV_HEADER_KEYS.toTransfer));
-  const logistics = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_NOSOV_HEADER_KEYS.logistics));
-  const docType = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_NOSOV_HEADER_KEYS.docType));
-  const penalties = wbFindColByHeaderPredicate(headerCells, n => n.includes('штраф'));
-  const { idx: article1c, label: articleHeaderUsed } = wbFindArticleColumn(headerCells);
+  const priceFact = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n.includes(WB_REPORT_HEADER_KEYS.priceFact) || (n.includes('вайлдберриз') && n.includes('реализовал'))
+  );
+  const priceRetail = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n.includes(WB_REPORT_HEADER_KEYS.priceRetail) && !n.includes('вайлдберриз')
+  );
+  const toSeller = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.toTransfer));
+  const logistics = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.logistics));
+  const storage = wbFindColByHeaderPredicate(headerCells, n => n === 'хранение' || n.includes('хранение'));
+  const deductions = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.deductions));
+  const commission = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n.includes(WB_REPORT_HEADER_KEYS.commission) && n.includes('ндс')
+  );
+  const docType = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.docType));
+  const qty = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n === 'колво' || n.startsWith('колво') || n.includes('количество')
+  );
+  const saleDate = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.saleDate));
+  const fines = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.fines));
+  const { idx: articleCol, label: articleHeaderUsed } = wbFindArticleColumn(headerCells);
 
   const col = {
-    priceBase,
+    priceFact,
+    priceRetail: priceRetail >= 0 ? priceRetail : -1,
     toSeller,
     logistics,
-    penalties: penalties >= 0 ? penalties : -1,
+    storage: storage >= 0 ? storage : -1,
+    deductions: deductions >= 0 ? deductions : -1,
+    commission: commission >= 0 ? commission : -1,
+    fines: fines >= 0 ? fines : -1,
+    qty: qty >= 0 ? qty : -1,
+    saleDate: saleDate >= 0 ? saleDate : -1,
     docType,
-    article1c,
+    article: articleCol,
     articleHeaderUsed:
-      articleHeaderUsed || (article1c >= 0 ? String(headerCells[article1c] ?? '').replace(/\s+/g, ' ').trim() : '')
+      articleHeaderUsed || (articleCol >= 0 ? String(headerCells[articleCol] ?? '').replace(/\s+/g, ' ').trim() : '')
   };
 
   const missing = [];
-  if (col.priceBase < 0) missing.push(`«${WB_NOSOV_HEADER_KEYS.priceBase}» (цена розничная…)`);
-  if (col.toSeller < 0) missing.push(`«${WB_NOSOV_HEADER_KEYS.toTransfer}»`);
-  if (col.logistics < 0) missing.push(`«${WB_NOSOV_HEADER_KEYS.logistics}»`);
-  if (col.docType < 0) missing.push(`«${WB_NOSOV_HEADER_KEYS.docType}»`);
-  if (col.article1c < 0) missing.push('«артикулпродавца» / «артикулпоставщика»');
+  if (col.priceFact < 0) missing.push('«Вайлдберриз реализовал Товар (Пр)»');
+  if (col.toSeller < 0) missing.push('«К перечислению Продавцу за реализованный Товар»');
+  if (col.docType < 0) missing.push('«Тип документа»');
+  if (col.article < 0) missing.push('«Артикул поставщика»');
+  if (col.qty < 0) missing.push('«Кол-во»');
 
   if (missing.length) {
     throw new Error(`Строка заголовков ${headerRow + 1}: не сопоставлены колонки: ${missing.join('; ')}.`);
@@ -7742,22 +7863,42 @@ function wbWorksheetToMatrix(ws) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
 }
 
+function touchWbSkuBucket(bySku, skuKey, displaySku) {
+  if (!bySku[skuKey]) {
+    bySku[skuKey] = {
+      skuKey,
+      displaySku: displaySku || skuKey,
+      sales_qty: 0,
+      returns_qty: 0,
+      revenue_fact: 0,
+      revenue_retail: 0,
+      payout_sales: 0,
+      payout_returns: 0,
+      commission: 0
+    };
+  } else if (displaySku && !bySku[skuKey].displaySku) {
+    bySku[skuKey].displaySku = displaySku;
+  }
+  return bySku[skuKey];
+}
+
 /**
- * Детализация WB — алгоритм Носова: база «цена розничная с учётом согласованной скидки», строки Продажа/Возврат,
- * комиссия WB = (сумма базы продаж − сумма базы возвратов) − к перечислению.
+ * Парсинг еженедельного детализированного отчёта WB (.xlsx).
+ * Все суммы в файле — в сумах (UZS).
  */
-function processWBReport(arrayBuffer) {
-  if (typeof XLSX === 'undefined') throw new Error('Библиотека SheetJS (XLSX) не загружена. Проверьте подключение xlsx.full.min.js.');
+function parseWbReport(arrayBuffer) {
+  if (typeof XLSX === 'undefined') throw new Error('Библиотека SheetJS (XLSX) не загружена.');
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
-  if (!wb.SheetNames || !wb.SheetNames.length) throw new Error('Пустой Excel.');
+  if (!wb.SheetNames?.length) throw new Error('Пустой Excel.');
+
   let chosen = null;
   for (let si = 0; si < wb.SheetNames.length; si++) {
     const name = wb.SheetNames[si];
-    const m = wbWorksheetToMatrix(wb.Sheets[name]);
-    if (!m.length) continue;
+    const matrix = wbWorksheetToMatrix(wb.Sheets[name]);
+    if (!matrix.length) continue;
     try {
-      const { headerRow, col } = findWbReportHeaderAndColumns(m, 15);
-      chosen = { matrix: m, sheetName: name, headerRow, col };
+      const { headerRow, col } = findWbReportHeaderAndColumns(matrix, 15);
+      chosen = { matrix, sheetName: name, headerRow, col };
       break;
     } catch (e) {
       /* следующий лист */
@@ -7765,136 +7906,284 @@ function processWBReport(arrayBuffer) {
   }
   if (!chosen) {
     const firstName = wb.SheetNames[0];
-    const m0 = wbWorksheetToMatrix(wb.Sheets[firstName]);
-    findWbReportHeaderAndColumns(m0, 15);
+    findWbReportHeaderAndColumns(wbWorksheetToMatrix(wb.Sheets[firstName]), 15);
   }
-  const { matrix: bestMatrix, sheetName: bestName, headerRow: hRow, col: C } = chosen;
 
-  let sumSalesBase = 0;
-  let sumReturnsBase = 0;
-  let countSales = 0;
-  let countReturns = 0;
-  let toTransferSum = 0;
-  let logisticsSum = 0;
-  let penaltiesSum = 0;
-
-  const articleStats = {};
-  const touchArt = art => {
-    if (!articleStats[art]) {
-      articleStats[art] = {
-        saleCount: 0,
-        returnCount: 0,
-        sumBaseSales: 0,
-        sumBaseReturns: 0
-      };
-    }
-    return articleStats[art];
-  };
-
+  const { matrix, sheetName, headerRow: hRow, col: C } = chosen;
   const cellAt = (row, i) => (i >= 0 && i < row.length ? parseWBNumber(row[i]) : 0);
 
-  for (let r = hRow + 1; r < bestMatrix.length; r++) {
-    const row = bestMatrix[r];
-    if (!row || !row.length) continue;
+  const aggregates = {
+    revenue_fact_sum: 0,
+    revenue_retail_sum: 0,
+    sales_qty: 0,
+    returns_qty: 0,
+    payout_sum: 0,
+    commission_sum: 0,
+    logistics_sum: 0,
+    storage_sum: 0,
+    deductions_sum: 0,
+    fines_sum: 0
+  };
+  const bySku = {};
+  const saleDates = [];
 
-    const docNorm = normalizeString(row[C.docType]);
-    const isSale = docNorm === 'продажа';
-    const isReturn = docNorm === 'возврат';
+  let commissionRawSum = 0;
 
-    const priceBase = cellAt(row, C.priceBase);
-    toTransferSum += cellAt(row, C.toSeller);
-    logisticsSum += cellAt(row, C.logistics);
-    penaltiesSum += cellAt(row, C.penalties);
+  for (let r = hRow + 1; r < matrix.length; r++) {
+    const row = matrix[r];
+    if (!row?.length) continue;
 
-    const artRaw = String(row[C.article1c] ?? '')
-      .replace(/\u00a0/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const kind = wbDocTypeKind(row[C.docType]);
+    const qty = C.qty >= 0 ? cellAt(row, C.qty) : 0;
+    const priceFact = cellAt(row, C.priceFact);
+    const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
+    const toTransfer = cellAt(row, C.toSeller);
+    const logistics = cellAt(row, C.logistics);
+    const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
+    const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
+    const fines = C.fines >= 0 ? cellAt(row, C.fines) : 0;
+    const commission = C.commission >= 0 ? cellAt(row, C.commission) : 0;
 
-    if (isSale) {
-      sumSalesBase += priceBase;
-      countSales += 1;
-      if (artRaw) {
-        const st = touchArt(artRaw);
-        st.saleCount += 1;
-        st.sumBaseSales += priceBase;
+    aggregates.logistics_sum += logistics;
+    aggregates.storage_sum += storage;
+    aggregates.deductions_sum += deductions;
+    aggregates.fines_sum += fines;
+    commissionRawSum += commission;
+
+    if (C.saleDate >= 0) {
+      const d = parseWbSaleDateCell(row[C.saleDate]);
+      if (d) saleDates.push(d);
+    }
+
+    const displaySku = wbDisplaySku(row[C.article]);
+    const skuKey = wbNormalizeSku(displaySku);
+
+    if (kind === 'sale') {
+      aggregates.revenue_fact_sum += priceFact;
+      aggregates.revenue_retail_sum += priceRetail;
+      aggregates.sales_qty += qty;
+      aggregates.payout_sum += toTransfer;
+      if (skuKey) {
+        const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
+        bucket.sales_qty += qty;
+        bucket.revenue_fact += priceFact;
+        bucket.revenue_retail += priceRetail;
+        bucket.payout_sales += toTransfer;
+        bucket.commission += commission;
       }
-    } else if (isReturn) {
-      sumReturnsBase += priceBase;
-      countReturns += 1;
-      if (artRaw) {
-        const st = touchArt(artRaw);
-        st.returnCount += 1;
-        st.sumBaseReturns += priceBase;
+    } else if (kind === 'return') {
+      aggregates.returns_qty += qty;
+      aggregates.payout_sum += toTransfer;
+      if (skuKey) {
+        const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
+        bucket.returns_qty += qty;
+        bucket.payout_returns += toTransfer;
+        bucket.commission += commission;
       }
     }
   }
 
-  const netBase = sumSalesBase - sumReturnsBase;
-  const commissionWb = netBase - toTransferSum;
+  aggregates.commission_sum = Math.abs(commissionRawSum);
 
-  const articleKeys = Object.keys(articleStats).sort((a, b) => a.localeCompare(b, 'ru'));
-  const articleQty = {};
-  const articleRevenue = {};
-  const articleReturnQty = {};
-  articleKeys.forEach(k => {
-    const st = articleStats[k];
-    const net = Math.max(0, st.saleCount - st.returnCount);
-    articleQty[k] = net;
-    articleRevenue[k] = st.sumBaseSales - st.sumBaseReturns;
-    articleReturnQty[k] = st.returnCount;
-  });
+  const period = { date_from: '', date_to: '' };
+  if (saleDates.length) {
+    saleDates.sort();
+    period.date_from = saleDates[0];
+    period.date_to = saleDates[saleDates.length - 1];
+  }
 
-  const qtyNetSold = Math.max(0, countSales - countReturns);
+  const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    sheetName: bestName,
+    formatVersion: 2,
+    sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
     colIndices: { ...C },
-    sumSalesBase,
-    sumReturnsBase,
-    netBase,
-    totalSaleRows: countSales,
-    totalReturnRows: countReturns,
-    qtyNetSold,
-    toTransferSum,
-    logisticsSum,
-    penaltiesSum,
-    commissionWb,
-    articleStats,
-    articleKeys,
-    articleQty,
-    articleRevenue,
-    articleReturnQty,
-    totalRevenue: sumSalesBase,
-    totalReturnsAbs: sumReturnsBase,
-    sales: sumSalesBase,
-    returnsRubAbs: sumReturnsBase,
-    qtySoldGross: countSales,
-    qtyReturns: countReturns,
-    toTransfer: toTransferSum,
-    logistics: logisticsSum,
-    fee: commissionWb,
-    otherDeductions: penaltiesSum,
-    penaltiesSum,
-    acquiringSum: 0,
-    acquiring: 0
+    period,
+    aggregates,
+    bySku,
+    skuKeys
   };
 }
 
-const parseWbWeeklyDetailWorkbook = processWBReport;
+const parseWbWeeklyDetailWorkbook = parseWbReport;
+const processWBReport = parseWbReport;
 
-/** Себестоимость в сумах из справочника товаров (поле costGross), без пересчёта из ₽. */
-function getWbCostSumFromProductsDb(article1c) {
-  const key = String(article1c || '').trim();
+function getWbCostSumFromProductsDb(article) {
+  const key = wbNormalizeSku(article);
   if (!key) return null;
-  const products = readProductsSafe();
-  const p = products.find(x => String(x.article1c || '').trim() === key);
-  if (!p) return null;
-  const sum = Number(p.costGross);
-  if (Number.isFinite(sum) && sum > 0) return sum;
-  return null;
+  const cost = buildWbProductCostLookup().get(key);
+  return cost != null && cost > 0 ? cost : null;
+}
+
+/**
+ * Join с БД себестоимостей + ручные значения из шага COGS.
+ * @param {ReturnType<typeof parseWbReport>} raw
+ * @param {Record<string, number>} costOverrides — себестоимость ед. в сумах по displaySku
+ */
+function enrichWithCosts(raw, costOverrides = {}) {
+  const lookup = buildWbProductCostLookup();
+  const costBySku = {};
+  const nameBySku = {};
+  const skusWithoutCost = [];
+  let totalCogsSum = 0;
+
+  Object.values(raw.bySku || {}).forEach(row => {
+    const key = row.skuKey;
+    if (!key) return;
+    const display = row.displaySku || key;
+    let unitCost = Math.max(0, n(costOverrides[display] ?? costOverrides[key]));
+    if (!(unitCost > 0)) unitCost = lookup.get(key) || 0;
+    costBySku[key] = unitCost;
+    nameBySku[key] = findWbProductNameBySkuKey(key) || display;
+    if (!(unitCost > 0) && row.sales_qty > 0) skusWithoutCost.push(display);
+    totalCogsSum += unitCost * row.sales_qty;
+  });
+
+  return {
+    costBySku,
+    nameBySku,
+    totalCogsSum,
+    skusWithoutCost: [...new Set(skusWithoutCost)].sort((a, b) => a.localeCompare(b, 'ru'))
+  };
+}
+
+/**
+ * Расчёт сводки и детализации по артикулам (спецификация WB UZ).
+ */
+function calculateWbReportAnalytics(raw, enriched, settings) {
+  const s = { ...WB_SETTINGS_DEFAULT, ...settings };
+  const agg = raw.aggregates;
+  const rate = s.wb_exchange_rate;
+  const vatRate = s.vat_rate;
+  const [abcA, abcB] = s.abc_thresholds;
+
+  const payout = agg.payout_sum;
+  const vat = payout * vatRate;
+  const cogs = enriched.totalCogsSum;
+  const netProfit = payout - cogs - vat;
+  const revFact = agg.revenue_fact_sum;
+  const revRetail = agg.revenue_retail_sum;
+  const salesQty = agg.sales_qty;
+  const returnsQty = agg.returns_qty;
+  const buyoutDenom = salesQty + returnsQty;
+  const buyoutRate = buyoutDenom > 0 ? (salesQty / buyoutDenom) * 100 : 0;
+
+  const netMargin = revFact > 0.0001 ? (netProfit / revFact) * 100 : 0;
+  const netMarginRetail = revRetail > 0.0001 ? (netProfit / revRetail) * 100 : 0;
+  const roiPct = cogs > 0.0001 ? (netProfit / cogs) * 100 : 0;
+
+  const costBreakdown =
+    revFact > 0.0001
+      ? {
+          cogs_pct: (cogs / revFact) * 100,
+          commission_pct: (agg.commission_sum / revFact) * 100,
+          logistics_pct: (agg.logistics_sum / revFact) * 100,
+          storage_pct: (agg.storage_sum / revFact) * 100,
+          vat_pct: (vat / revFact) * 100,
+          profit_pct: netMargin
+        }
+      : {
+          cogs_pct: 0,
+          commission_pct: 0,
+          logistics_pct: 0,
+          storage_pct: 0,
+          vat_pct: 0,
+          profit_pct: 0
+        };
+
+  const logisticsTotal = agg.logistics_sum;
+  const storageTotal = agg.storage_sum;
+
+  const bySku = (raw.skuKeys || Object.keys(raw.bySku || {}))
+    .map(skuKey => {
+      const row = raw.bySku[skuKey];
+      if (!row) return null;
+      const unitCost = enriched.costBySku[skuKey] || 0;
+      const payoutSku = row.payout_sales + row.payout_returns;
+      const cogsSku = unitCost * row.sales_qty;
+      const vatSku = payoutSku * vatRate;
+      const profitSku = payoutSku - cogsSku - vatSku;
+      const revSku = row.revenue_fact;
+      const marginSku = revSku > 0.0001 ? (profitSku / revSku) * 100 : 0;
+      const buyoutSku =
+        row.sales_qty + row.returns_qty > 0 ? (row.sales_qty / (row.sales_qty + row.returns_qty)) * 100 : 0;
+      const logisticsAlloc = revFact > 0.0001 ? logisticsTotal * (revSku / revFact) : 0;
+      const storageAlloc = revFact > 0.0001 ? storageTotal * (revSku / revFact) : 0;
+      return {
+        sku: row.displaySku || skuKey,
+        skuKey,
+        name: enriched.nameBySku[skuKey] || row.displaySku || skuKey,
+        sales_qty: row.sales_qty,
+        returns_qty: row.returns_qty,
+        buyout_rate: buyoutSku,
+        revenue_sum: revSku,
+        payout_sum: payoutSku,
+        cogs_sum: cogsSku,
+        logistics_alloc: logisticsAlloc,
+        storage_alloc: storageAlloc,
+        net_profit_sum: profitSku,
+        net_margin_pct: marginSku
+      };
+    })
+    .filter(Boolean)
+    .filter(r => r.sales_qty > 0 || r.returns_qty > 0);
+
+  bySku.sort((a, b) => b.net_profit_sum - a.net_profit_sum);
+
+  const positiveProfit = bySku.filter(r => r.net_profit_sum > 0);
+  const totalPosProfit = positiveProfit.reduce((sum, r) => sum + r.net_profit_sum, 0);
+  let cumulative = 0;
+  bySku.forEach(r => {
+    if (r.net_profit_sum <= 0) {
+      r.abc_class = 'C';
+      return;
+    }
+    const share = totalPosProfit > 0.0001 ? (r.net_profit_sum / totalPosProfit) * 100 : 0;
+    cumulative += share;
+    if (cumulative <= abcA * 100) r.abc_class = 'A';
+    else if (cumulative <= abcB * 100) r.abc_class = 'B';
+    else r.abc_class = 'C';
+  });
+
+  return {
+    period: raw.period,
+    summary: {
+      sales_qty: salesQty,
+      returns_qty: returnsQty,
+      buyout_rate: buyoutRate,
+      revenue_retail_sum: revRetail,
+      revenue_fact_sum: revFact,
+      revenue_fact_rub: rate > 0 ? revFact / rate : 0,
+      wb_commission_sum: agg.commission_sum,
+      wb_logistics_sum: agg.logistics_sum,
+      wb_storage_sum: agg.storage_sum,
+      wb_deductions_sum: agg.deductions_sum,
+      wb_fines_sum: agg.fines_sum,
+      cogs_sum: cogs,
+      vat_sum: vat,
+      payout_sum: payout,
+      net_profit_sum: netProfit,
+      net_profit_rub: rate > 0 ? netProfit / rate : 0,
+      net_margin_pct: netMargin,
+      net_margin_retail_pct: netMarginRetail,
+      roi_pct: roiPct,
+      cost_breakdown: costBreakdown,
+      skus_without_cost: enriched.skusWithoutCost
+    },
+    by_sku: bySku
+  };
+}
+
+function buildWbAnalyticsFromParsed(parsed, cogsMap, settings) {
+  const enriched = enrichWithCosts(parsed, cogsMap);
+  const analytics = calculateWbReportAnalytics(parsed, enriched, settings || readWbAnalyticsSettings());
+  return { analytics, enriched, cogsByArticle: cogsMap, settings: settings || readWbAnalyticsSettings() };
+}
+
+function isLegacyWbParsed(parsed) {
+  return parsed && !parsed.formatVersion && (parsed.sumSalesBase != null || parsed.articleQty != null);
 }
 
 function resetWbAnalyticsUi() {
@@ -7919,20 +8208,26 @@ function showWbCogsStep(parsed, metaText, title) {
   document.getElementById('wbAnalyticsCogsPanel')?.classList.remove('hidden');
   document.getElementById('wbAnalyticsResultsPanel')?.classList.add('hidden');
 
-  const arts = Object.keys(parsed.articleQty || {}).sort((a, b) => a.localeCompare(b, 'ru'));
+  const arts = (parsed.skuKeys || [])
+    .map(k => parsed.bySku[k])
+    .filter(r => r && r.sales_qty > 0)
+    .sort((a, b) => a.displaySku.localeCompare(b.displaySku, 'ru'));
   const tb = document.getElementById('wbAnalyticsCogsTableBody');
   if (!tb) return;
-  tb.innerHTML = arts
-    .map(art => {
-      const esc = escapeHtml(art);
-      const qty = parsed.articleQty[art];
-      const sumDb = getWbCostSumFromProductsDb(art);
-      const hasDb = sumDb != null;
-      const val = hasDb ? String(Math.round(sumDb * 100) / 100) : '';
-      const cls = hasDb ? 'input wb-cogs-input' : 'input wb-cogs-input wb-cogs-input--missing';
-      return `<tr data-wb-art="${escapeAttr(art)}"><td class="wb-cogs-article">${esc}</td><td>${fmtAnalyticsInt(qty)}</td><td><input type="number" class="${cls}" min="0" step="0.01" data-wb-cogs-input value="${val}" placeholder="Себестоимость ед. (сум)" aria-label="Себестоимость ед. (сум), ${esc}" /></td></tr>`;
-    })
-    .join('');
+  tb.innerHTML = arts.length
+    ? arts
+        .map(row => {
+          const art = row.displaySku;
+          const esc = escapeHtml(art);
+          const qty = row.sales_qty;
+          const sumDb = getWbCostSumFromProductsDb(art);
+          const hasDb = sumDb != null;
+          const val = hasDb ? String(Math.round(sumDb * 100) / 100) : '';
+          const cls = hasDb ? 'input wb-cogs-input' : 'input wb-cogs-input wb-cogs-input--missing';
+          return `<tr data-wb-art="${escapeAttr(art)}"><td class="wb-cogs-article">${esc}</td><td>${fmtAnalyticsInt(qty)}</td><td><input type="number" class="${cls}" min="0" step="0.01" data-wb-cogs-input value="${val}" placeholder="Себестоимость ед. (сум)" aria-label="Себестоимость ед. (сум), ${esc}" /></td></tr>`;
+        })
+        .join('')
+    : '<tr><td colspan="3" class="muted">Нет строк продаж с артикулами.</td></tr>';
 }
 
 function collectWbCogsInputs() {
@@ -7943,48 +8238,6 @@ function collectWbCogsInputs() {
     map[art] = Math.max(0, n(inp?.value));
   });
   return map;
-}
-
-/** @param {Record<string, number>} cogsByArticleRub — себестоимость ед., сум (имя поля из истории сохранённых отчётов). */
-function computeWbFinalMetrics(parsed, cogsByArticleRub, taxPct, vatPct) {
-  const sumSalesBase = parsed.sumSalesBase != null ? parsed.sumSalesBase : parsed.totalRevenue || 0;
-  const sumReturnsBase = parsed.sumReturnsBase != null ? parsed.sumReturnsBase : parsed.totalReturnsAbs || 0;
-  const taxBase = sumSalesBase - sumReturnsBase;
-  const tax = Math.max(0, taxBase) * (Math.max(0, taxPct) / 100);
-  const vat = Math.max(0, taxBase) * (Math.max(0, vatPct) / 100);
-  let totalCogs = 0;
-  const keys = parsed.articleKeys || Object.keys(parsed.articleQty || {});
-  keys.forEach(art => {
-    const q = parsed.articleQty[art] || 0;
-    const c = Math.max(0, n(cogsByArticleRub[art]));
-    totalCogs += c * q;
-  });
-  const toT = parsed.toTransferSum != null ? parsed.toTransferSum : parsed.toTransfer || 0;
-  const log = parsed.logisticsSum != null ? parsed.logisticsSum : parsed.logistics || 0;
-  const pen = parsed.penaltiesSum != null ? parsed.penaltiesSum : 0;
-  const grossProfit = toT - log - pen - totalCogs;
-  const netProfit = grossProfit - tax - vat;
-  const roiPct = totalCogs > 0.0001 ? (netProfit / totalCogs) * 100 : 0;
-  const marginPct = sumSalesBase > 0.0001 ? (netProfit / sumSalesBase) * 100 : 0;
-  const markupPct = totalCogs > 0.0001 ? (netProfit / totalCogs) * 100 : 0;
-  const commissionWb = taxBase - toT;
-  return {
-    taxBase,
-    tax,
-    vat,
-    totalCogs,
-    grossProfit,
-    netProfit,
-    roiPct,
-    marginPct,
-    markupPct,
-    sumSalesBase,
-    sumReturnsBase,
-    toTransfer: toT,
-    logistics: log,
-    penalties: pen,
-    commissionWb
-  };
 }
 
 function destroyWbAnalyticsChart() {
@@ -7998,115 +8251,44 @@ function destroyWbAnalyticsChart() {
   }
 }
 
-/**
- * ABC по чистой прибыли: доля (база продаж − база возвратов) артикула в общей базе распределяет
- * к перечислению, логистику, штрафы, налог и НДС; COGS = фактически продано шт × себестоимость ед.
- */
-function wbBuildTopProductsByNetProfit(parsed, cogsByArticleRub, full) {
-  const taxBase = full.taxBase || 0;
-  const K = full.toTransfer || 0;
-  const L = full.logistics || 0;
-  const P = full.penalties || 0;
-  const tax = full.tax || 0;
-  const vat = full.vat || 0;
-  const Cfee = full.commissionWb != null ? full.commissionWb : parsed.commissionWb || 0;
-  const stats = parsed.articleStats || {};
-  const keys =
-    parsed.articleKeys ||
-    Object.keys(parsed.articleQty || {}).filter(k => (parsed.articleQty[k] || 0) > 0);
+function loadWbAnalyticsSettingsIntoInputs() {
+  const s = readWbAnalyticsSettings();
+  const rateEl = document.getElementById('wbAnalyticsExchangeRate');
+  if (rateEl) rateEl.value = String(s.wb_exchange_rate);
+  const vatEl = document.getElementById('wbAnalyticsVatPct');
+  if (vatEl) vatEl.value = String(Math.round(s.vat_rate * 10000) / 100);
+}
 
-  const rows = keys
-    .map(art => {
-      const st = stats[art] || {
-        saleCount: 0,
-        returnCount: 0,
-        sumBaseSales: 0,
-        sumBaseReturns: 0
-      };
-      const saleCount = st.saleCount || 0;
-      const returnCount = st.returnCount || 0;
-      const netQty = Math.max(0, saleCount - returnCount);
-      const artNetBase = (st.sumBaseSales || 0) - (st.sumBaseReturns || 0);
-      const w = taxBase > 0.0001 ? artNetBase / taxBase : 0;
-      const kPart = K * w;
-      const logPart = L * w;
-      const penPart = P * w;
-      const feePart = Cfee * w;
-      const costUnit = Math.max(0, n(cogsByArticleRub[art]));
-      const cogsTot = costUnit * netQty;
-      const grossPart = kPart - logPart - penPart - cogsTot;
-      const taxPart = tax * w;
-      const vatPart = vat * w;
-      const netPart = grossPart - taxPart - vatPart;
-      const roiArt = cogsTot > 0.0001 ? (netPart / cogsTot) * 100 : 0;
-      return {
-        art,
-        saleCount: netQty,
-        returnCount: st.returnCount || 0,
-        revenue: st.sumBaseSales || 0,
-        returnsBase: st.sumBaseReturns || 0,
-        netBase: artNetBase,
-        logisticsAlloc: logPart,
-        commissionAlloc: feePart,
-        cogsTotal: cogsTot,
-        netProfit: netPart,
-        roiPct: roiArt
-      };
-    })
-    .filter(
-      r =>
-        r.saleCount > 0 ||
-        r.returnCount > 0 ||
-        Math.abs(r.netBase) > 0.0001 ||
-        (r.revenue || 0) > 0.0001
-    );
-
-  rows.sort((a, b) => b.netProfit - a.netProfit);
-  const posSum = rows.reduce((s, x) => s + Math.max(0, x.netProfit), 0);
-  let running = 0;
-  return rows.map(r => {
-    const pos = Math.max(0, r.netProfit);
-    const share = posSum > 0.0001 ? (pos / posSum) * 100 : 0;
-    running += share;
-    let group = 'C';
-    if (posSum <= 0.0001) group = 'C';
-    else if (running <= 80) group = 'A';
-    else if (running <= 95) group = 'B';
-    else group = 'C';
-    return { ...r, share, running, group };
-  });
+function readWbAnalyticsSettingsFromInputs() {
+  const rate = n(document.getElementById('wbAnalyticsExchangeRate')?.value);
+  const vatPct = n(document.getElementById('wbAnalyticsVatPct')?.value);
+  const cur = readWbAnalyticsSettings();
+  return {
+    wb_exchange_rate: rate > 0 ? rate : cur.wb_exchange_rate,
+    vat_rate: vatPct >= 0 ? vatPct / 100 : cur.vat_rate,
+    currency: 'UZS',
+    abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
+  };
 }
 
 function wbRefreshChartAfterTheme() {
-  if (!wbAnalyticsState.computed || !wbAnalyticsState.parsed) return;
+  if (!wbAnalyticsState.computed?.analytics || !wbAnalyticsState.parsed) return;
   const panel = document.getElementById('wbAnalyticsResultsPanel');
   if (!panel || panel.classList.contains('hidden')) return;
-  const ops = wbReadOpsFromInputs();
-  const full = computeWbFinalMetrics(
-    wbAnalyticsState.parsed,
-    wbAnalyticsState.computed.cogsByArticleRub || {},
-    ops.taxPct,
-    ops.vatPct
-  );
-  const topRows = wbBuildTopProductsByNetProfit(
-    wbAnalyticsState.parsed,
-    wbAnalyticsState.computed.cogsByArticleRub || {},
-    full
-  );
-  renderWbTopProfitChart(topRows);
+  renderWbTopProfitChart(wbAnalyticsState.computed.analytics.by_sku || []);
 }
 
 function renderWbTopProfitChart(abcRows) {
   destroyWbAnalyticsChart();
   const canvas = document.getElementById('wbTopProfitChart');
   if (!canvas || typeof Chart === 'undefined') return;
-  const top = abcRows.slice(0, 25);
+  const top = (abcRows || []).slice(0, 25);
   const rev = [...top].reverse();
   const labels = rev.map(r => {
-    const a = String(r.art || '');
+    const a = String(r.sku || r.name || '');
     return a.length > 30 ? `${a.slice(0, 28)}…` : a;
   });
-  const data = rev.map(r => Math.round(r.netProfit * 100) / 100);
+  const data = rev.map(r => Math.round((r.net_profit_sum || 0) * 100) / 100);
   const dark = document.body.classList.contains('dark-mode');
   const tick = dark ? '#94a3b8' : '#475569';
   const grid = dark ? '#334155' : '#e2e8f0';
@@ -8132,8 +8314,7 @@ function renderWbTopProfitChart(abcRows) {
         tooltip: {
           callbacks: {
             label(ctx) {
-              const v = ctx.parsed.x;
-              return fmtWbRubLocale(v);
+              return fmtWbRubLocale(ctx.parsed.x);
             }
           }
         }
@@ -8153,83 +8334,123 @@ function renderWbTopProfitChart(abcRows) {
 }
 
 function paintWbAnalyticsDashboard(computed, parsed) {
-  const ops = wbReadOpsFromInputs();
-  const cogsMap = computed.cogsByArticleRub || {};
-  const full = computeWbFinalMetrics(parsed, cogsMap, ops.taxPct, ops.vatPct);
+  let bundle = computed;
+  if (!bundle?.analytics) {
+    if (isLegacyWbParsed(parsed)) {
+      alert('Этот отчёт сохранён в старом формате. Загрузите файл .xlsx заново.');
+      return;
+    }
+    const cogsMap = computed?.cogsByArticle || computed?.cogsByArticleRub || {};
+    bundle = buildWbAnalyticsFromParsed(parsed, cogsMap, readWbAnalyticsSettingsFromInputs());
+    wbAnalyticsState.computed = bundle;
+  }
+
+  const { analytics } = bundle;
+  const s = analytics.summary;
+  const bd = s.cost_breakdown || {};
 
   const setTxt = (id, t) => {
     const el = document.getElementById(id);
     if (el) el.textContent = t;
   };
 
-  const saleRows = parsed.totalSaleRows != null ? parsed.totalSaleRows : 0;
-  const retRows = parsed.totalReturnRows != null ? parsed.totalReturnRows : 0;
-  const qtyNet = parsed.qtyNetSold != null ? parsed.qtyNetSold : Math.max(0, saleRows - retRows);
-
-  setTxt('wbStatSalesBase', fmtWbRubLocale(full.sumSalesBase));
-  setTxt('wbStatQtyNet', fmtAnalyticsInt(qtyNet));
-  setTxt('wbStatToTransfer', fmtWbRubLocale(full.toTransfer));
-  setTxt('wbStatNet', fmtWbRubLocale(full.netProfit));
-  const netHero = document.getElementById('wbStatNet');
-  if (netHero) {
-    netHero.style.color = full.netProfit < 0 ? 'var(--bad)' : '';
+  const periodEl = document.getElementById('wbAnalyticsPeriod');
+  if (periodEl) {
+    const p = analytics.period || {};
+    periodEl.textContent =
+      p.date_from && p.date_to ? `Период: ${fmtDate(p.date_from)} — ${fmtDate(p.date_to)}` : 'Период: не определён';
   }
-  setTxt('wbStatRoi', fmtWbPctLocale(full.roiPct));
-  setTxt('wbStatMargin', fmtWbPctLocale(full.marginPct));
-  setTxt('wbStatMarkup', fmtWbPctLocale(full.markupPct));
 
-  setTxt('wbStatReturnsBase', fmtWbRubLocale(full.sumReturnsBase));
-  setTxt('wbStatComm', fmtWbRubLocale(full.commissionWb));
-  setTxt('wbStatLog', fmtWbRubLocale(full.logistics));
-  setTxt('wbStatPen', fmtWbRubLocale(full.penalties));
-  setTxt('wbStatGross', fmtWbRubLocale(full.grossProfit));
-  setTxt('wbStatTax', fmtWbRubLocale(full.tax));
-  setTxt('wbStatVat', fmtWbRubLocale(full.vat));
-  setTxt('wbStatCogs', fmtWbRubLocale(full.totalCogs));
-  setTxt('wbStatRowsSales', fmtAnalyticsInt(saleRows));
-  setTxt('wbStatRowsRet', fmtAnalyticsInt(retRows));
+  setTxt('wbStatRevenueFact', fmtWbRubLocale(s.revenue_fact_sum));
+  setTxt('wbStatRevenueRetail', fmtWbRubLocale(s.revenue_retail_sum));
+  setTxt('wbStatSalesQty', fmtAnalyticsInt(s.sales_qty));
+  setTxt('wbStatReturnsQty', fmtAnalyticsInt(s.returns_qty));
+  setTxt('wbStatBuyout', fmtWbPctLocale(s.buyout_rate));
+  setTxt('wbStatToTransfer', fmtWbRubLocale(s.payout_sum));
+  setTxt('wbStatNet', fmtWbRubLocale(s.net_profit_sum));
+  const netHero = document.getElementById('wbStatNet');
+  if (netHero) netHero.style.color = s.net_profit_sum < 0 ? 'var(--bad)' : '';
+  setTxt('wbStatNetRub', `${(s.net_profit_rub || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 })} ₽`);
+  setTxt('wbStatRoi', fmtWbPctLocale(s.roi_pct));
+  setTxt('wbStatMargin', fmtWbPctLocale(s.net_margin_pct));
+  setTxt('wbStatMarginRetail', fmtWbPctLocale(s.net_margin_retail_pct));
 
-  const topRows = wbBuildTopProductsByNetProfit(parsed, cogsMap, full);
+  setTxt('wbStatComm', fmtWbRubLocale(s.wb_commission_sum));
+  setTxt('wbStatLog', fmtWbRubLocale(s.wb_logistics_sum));
+  setTxt('wbStatStorage', fmtWbRubLocale(s.wb_storage_sum));
+  setTxt('wbStatDeductions', fmtWbRubLocale(s.wb_deductions_sum));
+  setTxt('wbStatPen', fmtWbRubLocale(s.wb_fines_sum));
+  setTxt('wbStatVat', fmtWbRubLocale(s.vat_sum));
+  setTxt('wbStatCogs', fmtWbRubLocale(s.cogs_sum));
+
+  setTxt('wbStatBdCogs', fmtWbPctLocale(bd.cogs_pct));
+  setTxt('wbStatBdComm', fmtWbPctLocale(bd.commission_pct));
+  setTxt('wbStatBdLog', fmtWbPctLocale(bd.logistics_pct));
+  setTxt('wbStatBdStorage', fmtWbPctLocale(bd.storage_pct));
+  setTxt('wbStatBdVat', fmtWbPctLocale(bd.vat_pct));
+  setTxt('wbStatBdProfit', fmtWbPctLocale(bd.profit_pct));
+
+  const warnEl = document.getElementById('wbAnalyticsCostWarnings');
+  if (warnEl) {
+    const missing = s.skus_without_cost || [];
+    if (missing.length) {
+      warnEl.classList.remove('hidden');
+      warnEl.innerHTML = `<strong>Артикулы без себестоимости в БД (${missing.length}):</strong> ${escapeHtml(missing.join(', '))}`;
+    } else {
+      warnEl.classList.add('hidden');
+      warnEl.textContent = '';
+    }
+  }
+
+  const topRows = analytics.by_sku || [];
   const topBody = document.getElementById('wbTopProductsBody');
   if (topBody) {
     topBody.innerHTML = topRows.length
       ? topRows
           .map(r => {
-            const gcls = r.group === 'A' ? 'wb-abc-a' : r.group === 'B' ? 'wb-abc-b' : 'wb-abc-c';
+            const gcls =
+              r.abc_class === 'A' ? 'wb-abc-a' : r.abc_class === 'B' ? 'wb-abc-b' : 'wb-abc-c';
             return `<tr>
-              <td class="wb-cogs-article">${escapeHtml(r.art)}</td>
-              <td>${escapeHtml(fmtWbRubLocale(r.netBase))}</td>
-              <td>${fmtAnalyticsInt(r.saleCount)}</td>
-              <td>${escapeHtml(fmtWbRubLocale(r.cogsTotal))}</td>
-              <td class="wb-net-cell">${escapeHtml(fmtWbRubLocale(r.netProfit))}</td>
-              <td>${escapeHtml(fmtWbPctLocale(r.roiPct))}</td>
-              <td><span class="wb-abc-badge ${gcls}">${escapeHtml(r.group)}</span></td>
+              <td class="wb-cogs-article">${escapeHtml(r.sku)}<div class="analytics-abc-sku-inline">${escapeHtml(r.name || '')}</div></td>
+              <td>${fmtAnalyticsInt(r.sales_qty)}</td>
+              <td>${fmtAnalyticsInt(r.returns_qty)}</td>
+              <td>${escapeHtml(fmtWbPctLocale(r.buyout_rate))}</td>
+              <td>${escapeHtml(fmtWbRubLocale(r.revenue_sum))}</td>
+              <td>${escapeHtml(fmtWbRubLocale(r.payout_sum))}</td>
+              <td>${escapeHtml(fmtWbRubLocale(r.cogs_sum))}</td>
+              <td class="wb-net-cell">${escapeHtml(fmtWbRubLocale(r.net_profit_sum))}</td>
+              <td>${escapeHtml(fmtWbPctLocale(r.net_margin_pct))}</td>
+              <td><span class="wb-abc-badge ${gcls}">${escapeHtml(r.abc_class)}</span></td>
             </tr>`;
           })
           .join('')
-      : '<tr><td colspan="7" class="muted">Нет данных по артикулам.</td></tr>';
+      : '<tr><td colspan="10" class="muted">Нет данных по артикулам.</td></tr>';
   }
   renderWbTopProfitChart(topRows);
 
   const list = document.getElementById('wbAnalyticsDetailList');
   if (list) {
+    const settings = bundle.settings || readWbAnalyticsSettings();
     const rows = [
-      ['Сумма продаж (базовая), сум', fmtWbRubLocale(full.sumSalesBase)],
-      ['Сумма возвратов (базовая), сум', fmtWbRubLocale(full.sumReturnsBase)],
-      ['База налога и комиссии (продажи − возвраты), сум', fmtWbRubLocale(full.taxBase)],
-      ['Комиссия WB = база − к перечислению, сум', fmtWbRubLocale(full.commissionWb)],
-      ['К перечислению (все строки), сум', fmtWbRubLocale(full.toTransfer)],
-      ['Логистика, сум', fmtWbRubLocale(full.logistics)],
-      ['Штрафы, сум', fmtWbRubLocale(full.penalties)],
-      ['Себестоимость, сум', fmtWbRubLocale(full.totalCogs)],
-      ['Валовая прибыль, сум', fmtWbRubLocale(full.grossProfit)],
-      ['Налог, сум', fmtWbRubLocale(full.tax)],
-      ['НДС, сум', fmtWbRubLocale(full.vat)],
-      ['Чистая прибыль, сум', fmtWbRubLocale(full.netProfit)],
-      ['Маржа % (чистая / база продаж)', fmtWbPctLocale(full.marginPct)],
-      ['ROI / Наценка % (чистая / себестоимость)', `${fmtWbPctLocale(full.roiPct)} / ${fmtWbPctLocale(full.markupPct)}`]
+      ['Выручка фактическая (после СПП), сум', fmtWbRubLocale(s.revenue_fact_sum)],
+      ['Выручка розничная (до СПП), сум', fmtWbRubLocale(s.revenue_retail_sum)],
+      ['К перечислению (продажи + возвраты), сум', fmtWbRubLocale(s.payout_sum)],
+      ['Комиссия WB |ВВ без НДС|, сум', fmtWbRubLocale(s.wb_commission_sum)],
+      ['Логистика, сум', fmtWbRubLocale(s.wb_logistics_sum)],
+      ['Хранение, сум', fmtWbRubLocale(s.wb_storage_sum)],
+      ['Удержания, сум', fmtWbRubLocale(s.wb_deductions_sum)],
+      ['Штрафы, сум', fmtWbRubLocale(s.wb_fines_sum)],
+      ['Себестоимость проданного, сум', fmtWbRubLocale(s.cogs_sum)],
+      [`НДС ${Math.round(settings.vat_rate * 100)}% от к перечислению, сум`, fmtWbRubLocale(s.vat_sum)],
+      ['Чистая прибыль = к перечислению − COGS − НДС, сум', fmtWbRubLocale(s.net_profit_sum)],
+      ['Маржа от факт. выручки, %', fmtWbPctLocale(s.net_margin_pct)],
+      ['Маржа от розничной цены, %', fmtWbPctLocale(s.net_margin_retail_pct)],
+      ['Рентабельность (прибыль / себест.), %', fmtWbPctLocale(s.roi_pct)],
+      ['Курс WB (сум за 1 ₽)', String(settings.wb_exchange_rate)]
     ];
-    list.innerHTML = rows.map(([k, v]) => `<div class="row"><div class="key">${escapeHtml(k)}</div><div class="val">${escapeHtml(v)}</div></div>`).join('');
+    list.innerHTML = rows
+      .map(([k, v]) => `<div class="row"><div class="key">${escapeHtml(k)}</div><div class="val">${escapeHtml(v)}</div></div>`)
+      .join('');
   }
 }
 
@@ -8270,22 +8491,24 @@ function renderWbAnalyticsReportsList() {
 function openWbAnalyticsReportById(id) {
   const rep = readWbAnalyticsReportsHistory().find(r => r && String(r.id) === String(id));
   if (!rep || !rep.parsed) return;
+  if (isLegacyWbParsed(rep.parsed)) {
+    alert('Отчёт в старом формате. Загрузите файл .xlsx заново для пересчёта по новой спецификации.');
+    return;
+  }
   wbAnalyticsState.parsed = rep.parsed;
   wbAnalyticsState.computed = rep.computed || null;
   wbAnalyticsState.fileName = rep.fileName || '';
   wbAnalyticsState.reportTitle = rep.title || 'Отчёт WB';
   wbAnalyticsState.currentReportId = rep.id;
+  loadWbAnalyticsSettingsIntoInputs();
   loadWbReportingUzsIntoInputs();
-  const taxOp = document.getElementById('wbOpsTaxPct');
-  if (taxOp && rep.taxPct != null) taxOp.value = String(rep.taxPct);
-  const vatOp = document.getElementById('wbOpsVatPct');
-  const vSaved = rep.vatPct != null ? rep.vatPct : rep.computed?.vatPct;
-  if (vatOp && vSaved != null) vatOp.value = String(vSaved);
-  document.getElementById('wbAnalyticsReportTitle') && (document.getElementById('wbAnalyticsReportTitle').textContent = wbAnalyticsState.reportTitle);
+  if (rep.settings) writeWbAnalyticsSettings(rep.settings);
+  document.getElementById('wbAnalyticsReportTitle') &&
+    (document.getElementById('wbAnalyticsReportTitle').textContent = wbAnalyticsState.reportTitle);
   document.getElementById('wbAnalyticsReportMeta') &&
     (document.getElementById('wbAnalyticsReportMeta').textContent = `${rep.fileName || ''} · лист «${rep.parsed.sheetName || ''}»`);
   document.getElementById('wbAnalyticsPlaceholder')?.classList.add('hidden');
-  if (rep.computed) {
+  if (rep.computed?.analytics) {
     document.getElementById('wbAnalyticsCogsPanel')?.classList.add('hidden');
     document.getElementById('wbAnalyticsResultsPanel')?.classList.remove('hidden');
     paintWbAnalyticsDashboard(rep.computed, rep.parsed);
@@ -8309,16 +8532,25 @@ async function handleWbAnalyticsFileSelected(ev) {
     return;
   }
   try {
+    invalidateWbProductCostLookup();
     const buf = await file.arrayBuffer();
-    const parsed = parseWbWeeklyDetailWorkbook(buf);
+    const parsed = parseWbReport(buf);
     const title = deriveReportNameFromFileName(file.name);
+    const agg = parsed.aggregates;
     const artCol = parsed.articleSourceColumn ? `Колонка артикула: «${parsed.articleSourceColumn}». ` : '';
-    const meta = `Лист «${parsed.sheetName}» · ${artCol}шапка: строка ${parsed.headerRow + 1}. База продаж: ${fmtWbRubLocale(parsed.sumSalesBase)} · база возвратов: ${fmtWbRubLocale(parsed.sumReturnsBase)} · к перечислению: ${fmtWbRubLocale(parsed.toTransferSum)} · комиссия WB: ${fmtWbRubLocale(parsed.commissionWb)}. Строк продаж/возвратов: ${fmtAnalyticsInt(parsed.totalSaleRows || 0)} / ${fmtAnalyticsInt(parsed.totalReturnRows || 0)}. Артикулов: ${(parsed.articleKeys || []).length}.`;
+    const period =
+      parsed.period?.date_from && parsed.period?.date_to
+        ? `Период ${fmtDate(parsed.period.date_from)} — ${fmtDate(parsed.period.date_to)}. `
+        : '';
+    const meta = `${period}Лист «${parsed.sheetName}» · ${artCol}шапка: строка ${parsed.headerRow + 1}. Выручка факт.: ${fmtWbRubLocale(agg.revenue_fact_sum)} · к перечислению: ${fmtWbRubLocale(agg.payout_sum)} · продано/возврат шт: ${fmtAnalyticsInt(agg.sales_qty)} / ${fmtAnalyticsInt(agg.returns_qty)}. Артикулов: ${(parsed.skuKeys || []).length}.`;
     wbAnalyticsState.fileName = file.name;
     wbAnalyticsState.currentReportId = null;
+    loadWbAnalyticsSettingsIntoInputs();
     showWbCogsStep(parsed, meta, title);
-    document.getElementById('wbAnalyticsReportTitle') && (document.getElementById('wbAnalyticsReportTitle').textContent = title);
-    document.getElementById('wbAnalyticsReportMeta') && (document.getElementById('wbAnalyticsReportMeta').textContent = file.name);
+    document.getElementById('wbAnalyticsReportTitle') &&
+      (document.getElementById('wbAnalyticsReportTitle').textContent = title);
+    document.getElementById('wbAnalyticsReportMeta') &&
+      (document.getElementById('wbAnalyticsReportMeta').textContent = file.name);
   } catch (err) {
     console.error(err);
     alert(err && err.message ? err.message : 'Ошибка чтения WB Excel.');
@@ -8328,6 +8560,7 @@ async function handleWbAnalyticsFileSelected(ev) {
 function wireWbAnalyticsUiOnce() {
   if (wireWbAnalyticsUiOnce.done) return;
   wireWbAnalyticsUiOnce.done = true;
+  loadWbAnalyticsSettingsIntoInputs();
   document.getElementById('wbAnalyticsFileInput')?.addEventListener('change', handleWbAnalyticsFileSelected);
   document.getElementById('wbAnalyticsCancelCogsBtn')?.addEventListener('click', () => {
     resetWbAnalyticsUi();
@@ -8336,20 +8569,17 @@ function wireWbAnalyticsUiOnce() {
     const parsed = wbAnalyticsState.parsed;
     if (!parsed) return;
     const cogsMap = collectWbCogsInputs();
-    const missing = Object.keys(parsed.articleQty).filter(a => !(cogsMap[a] > 0));
+    const saleSkus = (parsed.skuKeys || [])
+      .map(k => parsed.bySku[k])
+      .filter(r => r && r.sales_qty > 0)
+      .map(r => r.displaySku);
+    const missing = saleSkus.filter(a => !(cogsMap[a] > 0) && !(getWbCostSumFromProductsDb(a) > 0));
     if (missing.length) {
       if (!confirm(`Не для всех артикулов указана себестоимость > 0. Продолжить? (${missing.length} поз.)`)) return;
     }
-    loadWbReportingUzsIntoInputs();
-    const ops = wbReadOpsFromInputs();
-    writeWbReportingUzs(ops);
-    const computed = computeWbFinalMetrics(parsed, cogsMap, ops.taxPct, ops.vatPct);
-    wbAnalyticsState.computed = {
-      ...computed,
-      cogsByArticleRub: cogsMap,
-      taxPct: ops.taxPct,
-      vatPct: ops.vatPct
-    };
+    const settings = readWbAnalyticsSettingsFromInputs();
+    writeWbAnalyticsSettings(settings);
+    wbAnalyticsState.computed = buildWbAnalyticsFromParsed(parsed, cogsMap, settings);
     document.getElementById('wbAnalyticsCogsPanel')?.classList.add('hidden');
     document.getElementById('wbAnalyticsResultsPanel')?.classList.remove('hidden');
     paintWbAnalyticsDashboard(wbAnalyticsState.computed, parsed);
@@ -8359,29 +8589,37 @@ function wireWbAnalyticsUiOnce() {
   });
   document.getElementById('wbReportSaveUzsBtn')?.addEventListener('click', () => {
     writeWbReportingUzs(wbReadOpsFromInputs());
-    if (wbAnalyticsState.computed && wbAnalyticsState.parsed) {
-      paintWbAnalyticsDashboard(wbAnalyticsState.computed, wbAnalyticsState.parsed);
-    }
+    writeWbAnalyticsSettings(readWbAnalyticsSettingsFromInputs());
     alert('Сохранено');
   });
-  const wbOpsRefreshPaint = () => {
-    writeWbReportingUzs(wbReadOpsFromInputs());
+  const wbSettingsRefreshPaint = () => {
+    writeWbAnalyticsSettings(readWbAnalyticsSettingsFromInputs());
     if (wbAnalyticsState.computed && wbAnalyticsState.parsed) {
+      const cogsMap =
+        wbAnalyticsState.computed.cogsByArticle ||
+        wbAnalyticsState.computed.cogsByArticleRub ||
+        {};
+      wbAnalyticsState.computed = buildWbAnalyticsFromParsed(
+        wbAnalyticsState.parsed,
+        cogsMap,
+        readWbAnalyticsSettingsFromInputs()
+      );
       paintWbAnalyticsDashboard(wbAnalyticsState.computed, wbAnalyticsState.parsed);
     }
   };
-  ['wbReportWithdrawnMonthUz', 'wbReportGoodsSentUz', 'wbOpsTaxPct', 'wbOpsVatPct'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', wbOpsRefreshPaint);
-    document.getElementById(id)?.addEventListener('change', wbOpsRefreshPaint);
+  ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', wbSettingsRefreshPaint);
+    document.getElementById(id)?.addEventListener('change', wbSettingsRefreshPaint);
   });
   document.getElementById('wbAnalyticsSaveReportBtn')?.addEventListener('click', () => {
     const parsed = wbAnalyticsState.parsed;
     const computed = wbAnalyticsState.computed;
-    if (!parsed || !computed) {
+    if (!parsed || !computed?.analytics) {
       alert('Сначала откройте аналитику (себестоимость и кнопка «Показать аналитику»).');
       return;
     }
-    const ops = wbReadOpsFromInputs();
+    const settings = readWbAnalyticsSettingsFromInputs();
+    writeWbAnalyticsSettings(settings);
     const entry = {
       id: String(Date.now()),
       title: wbAnalyticsState.reportTitle || 'Отчёт WB',
@@ -8389,8 +8627,7 @@ function wireWbAnalyticsUiOnce() {
       savedAt: new Date().toISOString(),
       parsed,
       computed,
-      taxPct: ops.taxPct,
-      vatPct: ops.vatPct
+      settings
     };
     const hist = readWbAnalyticsReportsHistory();
     hist.unshift(entry);
