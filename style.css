@@ -1954,6 +1954,67 @@ body.dark-mode .wb-analytics-cogs-error {
   cursor: not-allowed;
   box-shadow: none;
 }
+
+.wb-breakdown-list {
+  display: grid;
+  gap: 12px;
+}
+.wb-breakdown-item {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+}
+.wb-breakdown-item--profit {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: linear-gradient(160deg, rgba(16, 185, 129, 0.08) 0%, var(--surface) 55%);
+}
+body.dark-mode .wb-breakdown-item--profit {
+  border-color: rgba(52, 211, 153, 0.4);
+  background: linear-gradient(160deg, rgba(52, 211, 153, 0.1) 0%, var(--surface) 55%);
+}
+.wb-breakdown-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.wb-breakdown-item-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--text);
+}
+.wb-breakdown-item-title span {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.wb-breakdown-item--profit .wb-breakdown-item-title span {
+  color: var(--good);
+}
+.wb-breakdown-item-sum {
+  font-size: 14px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.wb-breakdown-item-sum--profit {
+  color: var(--good);
+  font-size: 15px;
+}
+.wb-breakdown-item-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.wb-breakdown-info-icon {
+  margin-right: 4px;
+}
 .wb-analytics-calc-btn {
   padding: 14px 28px;
   font-size: 16px;

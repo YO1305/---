@@ -1809,13 +1809,50 @@
 
               <section class="wb-dash-section" aria-labelledby="wbBreakdownHeading">
                 <h3 id="wbBreakdownHeading" class="wb-dash-section-title">Структура расходов (% от факт. выручки)</h3>
-                <div class="dashboard-grid">
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">COGS</span><span class="stat-card__value" id="wbStatBdCogs">0%</span></article>
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Комиссия</span><span class="stat-card__value" id="wbStatBdComm">0%</span></article>
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Логистика</span><span class="stat-card__value" id="wbStatBdLog">0%</span></article>
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Хранение</span><span class="stat-card__value" id="wbStatBdStorage">0%</span></article>
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">НДС</span><span class="stat-card__value" id="wbStatBdVat">0%</span></article>
-                  <article class="stat-card stat-card--compact"><span class="stat-card__label">Прибыль</span><span class="stat-card__value stat-card__value--accent" id="wbStatBdProfit">0%</span></article>
+                <p class="hint wb-dash-hint">Доли считаются от фактической выручки WB (после СПП). НДС — от суммы к перечислению.</p>
+                <div class="wb-breakdown-list">
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Себестоимость товара <span id="wbStatBdCogs">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdCogsSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Закупочная стоимость проданных товаров из вашей базы данных.<br>Расчёт: цена закупки × количество проданных штук</p>
+                  </article>
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Комиссия WB <span id="wbStatBdComm">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdCommSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Итоговое вознаграждение Wildberries после всех взаимозачётов. Базовая ставка 18%, но WB частично компенсирует её через платёжные услуги. В отчёте: колонка «Вознаграждение WB (ВВ) без НДС»</p>
+                  </article>
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Логистика <span id="wbStatBdLog">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdLogSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Доставка товара покупателю и обратная логистика. Из колонки «Услуги по доставке товара покупателю»</p>
+                  </article>
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Хранение <span id="wbStatBdStorage">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdStorageSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Плата за хранение товара на складе WB за период. Из колонки «Хранение»</p>
+                  </article>
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">НДС <span id="wbStatBdVatLabel">12%</span> <span id="wbStatBdVat">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdVatSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint" id="wbStatBdVatHint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Налог на добавленную стоимость Узбекистана. Считается от суммы к перечислению.</p>
+                  </article>
+                  <article class="wb-breakdown-item wb-breakdown-item--profit">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Чистая прибыль <span id="wbStatBdProfit">0%</span></h4>
+                      <span class="wb-breakdown-item-sum wb-breakdown-item-sum--profit" id="wbStatBdProfitSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> К перечислению от WB минус себестоимость минус НДС.<br>Формула: К перечислению − Себестоимость − НДС</p>
+                  </article>
                 </div>
               </section>
 

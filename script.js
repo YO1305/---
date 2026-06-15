@@ -8176,19 +8176,35 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
     revFact > 0.0001
       ? {
           cogs_pct: (cogs / revFact) * 100,
+          cogs_sum: cogs,
           commission_pct: (agg.commission_sum / revFact) * 100,
+          commission_sum: agg.commission_sum,
           logistics_pct: (agg.logistics_sum / revFact) * 100,
+          logistics_sum: agg.logistics_sum,
           storage_pct: (agg.storage_sum / revFact) * 100,
+          storage_sum: agg.storage_sum,
           vat_pct: (vat / revFact) * 100,
-          profit_pct: netMargin
+          vat_sum: vat,
+          profit_pct: netMargin,
+          profit_sum: netProfit,
+          payout_sum: payout,
+          vat_rate_pct: vatRate * 100
         }
       : {
           cogs_pct: 0,
+          cogs_sum: 0,
           commission_pct: 0,
+          commission_sum: 0,
           logistics_pct: 0,
+          logistics_sum: 0,
           storage_pct: 0,
+          storage_sum: 0,
           vat_pct: 0,
-          profit_pct: 0
+          vat_sum: 0,
+          profit_pct: 0,
+          profit_sum: 0,
+          payout_sum: payout,
+          vat_rate_pct: vatRate * 100
         };
 
   const logisticsTotal = agg.logistics_sum;
@@ -8468,6 +8484,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   }
 
   const { analytics } = bundle;
+  if (!analytics) return;
   const s = analytics.summary;
   const bd = s.cost_breakdown || {};
 
@@ -8505,12 +8522,26 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   setTxt('wbStatVat', fmtWbRubLocale(s.vat_sum));
   setTxt('wbStatCogs', fmtWbRubLocale(s.cogs_sum));
 
-  setTxt('wbStatBdCogs', fmtWbPctLocale(bd.cogs_pct));
-  setTxt('wbStatBdComm', fmtWbPctLocale(bd.commission_pct));
-  setTxt('wbStatBdLog', fmtWbPctLocale(bd.logistics_pct));
-  setTxt('wbStatBdStorage', fmtWbPctLocale(bd.storage_pct));
-  setTxt('wbStatBdVat', fmtWbPctLocale(bd.vat_pct));
-  setTxt('wbStatBdProfit', fmtWbPctLocale(bd.profit_pct));
+  setTxt('wbStatBdCogs', `(${fmtWbPctLocale(bd.cogs_pct)})`);
+  setTxt('wbStatBdComm', `(${fmtWbPctLocale(bd.commission_pct)})`);
+  setTxt('wbStatBdLog', `(${fmtWbPctLocale(bd.logistics_pct)})`);
+  setTxt('wbStatBdStorage', `(${fmtWbPctLocale(bd.storage_pct)})`);
+  setTxt('wbStatBdVat', `(${fmtWbPctLocale(bd.vat_pct)})`);
+  setTxt('wbStatBdProfit', `(${fmtWbPctLocale(bd.profit_pct)})`);
+  setTxt('wbStatBdCogsSum', fmtWbRubLocale(bd.cogs_sum ?? s.cogs_sum));
+  setTxt('wbStatBdCommSum', fmtWbRubLocale(bd.commission_sum ?? s.wb_commission_sum));
+  setTxt('wbStatBdLogSum', fmtWbRubLocale(bd.logistics_sum ?? s.wb_logistics_sum));
+  setTxt('wbStatBdStorageSum', fmtWbRubLocale(bd.storage_sum ?? s.wb_storage_sum));
+  setTxt('wbStatBdVatSum', fmtWbRubLocale(bd.vat_sum ?? s.vat_sum));
+  setTxt('wbStatBdProfitSum', fmtWbRubLocale(bd.profit_sum ?? s.net_profit_sum));
+  const vatRatePct = bd.vat_rate_pct ?? (bundle.settings?.vat_rate ?? 0.12) * 100;
+  setTxt('wbStatBdVatLabel', `${Math.round(vatRatePct * 100) / 100}%`);
+  const vatHint = document.getElementById('wbStatBdVatHint');
+  if (vatHint) {
+    const payoutForVat = bd.payout_sum ?? s.payout_sum ?? 0;
+    const rateLabel = Math.round(vatRatePct * 100) / 100;
+    vatHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Налог на добавленную стоимость Узбекистана.<br>Считается от суммы к перечислению: ${escapeHtml(payoutForVat.toLocaleString('ru-RU'))} × ${escapeHtml(String(rateLabel))}%`;
+  }
 
   const warnEl = document.getElementById('wbAnalyticsCostWarnings');
   if (warnEl) {
