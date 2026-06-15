@@ -7742,7 +7742,7 @@ function buildWbProductCostLookup() {
   readProductsSafe().forEach(p => {
     const cost = Number(p.costGross ?? p.costPriceUzs ?? 0);
     if (!Number.isFinite(cost) || cost <= 0) return;
-    [p.article1c, p.name, p.wbSku, p.sku, p.code1c]
+    [p.article1c, p.sku, p.wbSku]
       .map(k => wbNormalizeSku(k))
       .filter(Boolean)
       .forEach(k => {
@@ -7761,10 +7761,104 @@ function findWbProductNameBySkuKey(skuKey) {
   const key = wbNormalizeSku(skuKey);
   if (!key) return '';
   const hit = readProductsSafe().find(p => {
-    return [p.article1c, p.name, p.wbSku, p.sku, p.code1c].some(v => wbNormalizeSku(v) === key);
+    return [p.article1c, p.sku, p.wbSku].some(v => wbNormalizeSku(v) === key);
   });
   if (!hit) return '';
   return String(hit.name || hit.article1c || '').trim();
+}
+
+function wbReportSkuRows(parsed) {
+  return (parsed.skuKeys || [])
+    .map(k => parsed.bySku[k])
+    .filter(r => r && (r.sales_qty > 0 || r.revenue_fact > 0 || r.payout_sales > 0));
+}
+
+/** Себестоимость ед.: ручной ввод или join lower(trim) артикула отчёта ↔ sku в БД. */
+function resolveWbUnitCost(skuKey, displaySku, costOverrides = {}) {
+  const manual = n(costOverrides[displaySku] ?? costOverrides[skuKey]);
+  if (manual > 0) return manual;
+  const fromDb = getWbCostSumFromProductsDb(displaySku || skuKey);
+  return fromDb != null && fromDb > 0 ? fromDb : null;
+}
+
+function findMissingWbCogsSkus(parsed, costOverrides = {}) {
+  const missing = [];
+  wbReportSkuRows(parsed).forEach(row => {
+    const cost = resolveWbUnitCost(row.skuKey, row.displaySku, costOverrides);
+    if (cost == null || !(cost > 0)) missing.push(row.displaySku || row.skuKey);
+  });
+  return [...new Set(missing)].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+function formatWbMissingCogsMessage(missing) {
+  const count = missing.length;
+  if (!count) return '';
+  return `Не найдена себестоимость для ${count} артикулов: ${missing.join(', ')}`;
+}
+
+function updateWbCogsValidationUi(parsed, costOverrides) {
+  const missing = findMissingWbCogsSkus(parsed, costOverrides);
+  const errEl = document.getElementById('wbAnalyticsCogsError');
+  const btn = document.getElementById('wbAnalyticsCalcBtn');
+  if (errEl) {
+    if (missing.length) {
+      errEl.classList.remove('hidden');
+      errEl.textContent = formatWbMissingCogsMessage(missing);
+    } else {
+      errEl.classList.add('hidden');
+      errEl.textContent = '';
+    }
+  }
+  if (btn) {
+    btn.disabled = missing.length > 0;
+    btn.title = missing.length > 0 ? 'Заполните себестоимость по всем артикулам' : '';
+  }
+  document.querySelectorAll('#wbAnalyticsCogsTableBody tr[data-wb-art]').forEach(tr => {
+    const art = tr.getAttribute('data-wb-art') || '';
+    const inp = tr.querySelector('[data-wb-cogs-input]');
+    if (inp) inp.classList.toggle('wb-cogs-input--missing', missing.includes(art));
+  });
+}
+
+function normalizeHeaderKey(str) {
+  return normalizeString(str).replace(/[-‑–—.,:;]/g, '');
+}
+
+
+function wbFindQtyColumn(headerCells) {
+  let best = -1;
+  let bestScore = 0;
+  for (let i = 0; i < headerCells.length; i++) {
+    const raw = String(headerCells[i] ?? '').trim();
+    if (!raw) continue;
+    const n = normalizeHeaderKey(raw);
+    let score = 0;
+    if (n === 'колво') score = 100;
+    else if (n === 'количество') score = 95;
+    else if (n.startsWith('колво') && n.length <= 8) score = 90;
+    else if (n.includes('колво') && !n.includes('возврат')) score = 80;
+    else if (n.includes('количество') && !n.includes('возврат')) score = 70;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Если «Кол-во» пустое, в детализации WB обычно 1 строка = 1 единица. */
+function wbEffectiveRowQty(kind, rawQty, priceFact, toTransfer, priceRetail) {
+  const q = Math.abs(parseWBNumber(rawQty));
+  if (q > 0) return q;
+  if (kind !== 'sale' && kind !== 'return') return 0;
+  if (
+    Math.abs(priceFact) > 0.0001 ||
+    Math.abs(toTransfer) > 0.0001 ||
+    Math.abs(priceRetail) > 0.0001
+  ) {
+    return 1;
+  }
+  return 0;
 }
 
 function wbFindArticleColumn(headerRowArr) {
@@ -7820,10 +7914,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     n => n.includes(WB_REPORT_HEADER_KEYS.commission) && n.includes('ндс')
   );
   const docType = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.docType));
-  const qty = wbFindColByHeaderPredicate(
-    headerCells,
-    n => n === 'колво' || n.startsWith('колво') || n.includes('количество')
-  );
+  const qty = wbFindQtyColumn(headerCells);
   const saleDate = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.saleDate));
   const fines = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.fines));
   const { idx: articleCol, label: articleHeaderUsed } = wbFindArticleColumn(headerCells);
@@ -7934,10 +8025,11 @@ function parseWbReport(arrayBuffer) {
     if (!row?.length) continue;
 
     const kind = wbDocTypeKind(row[C.docType]);
-    const qty = C.qty >= 0 ? cellAt(row, C.qty) : 0;
+    const rawQty = C.qty >= 0 ? row[C.qty] : 0;
     const priceFact = cellAt(row, C.priceFact);
     const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
     const toTransfer = cellAt(row, C.toSeller);
+    const qty = wbEffectiveRowQty(kind, rawQty, priceFact, toTransfer, priceRetail);
     const logistics = cellAt(row, C.logistics);
     const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
     const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
@@ -8023,29 +8115,32 @@ function getWbCostSumFromProductsDb(article) {
  * @param {Record<string, number>} costOverrides — себестоимость ед. в сумах по displaySku
  */
 function enrichWithCosts(raw, costOverrides = {}) {
-  const lookup = buildWbProductCostLookup();
   const costBySku = {};
   const nameBySku = {};
   const skusWithoutCost = [];
   let totalCogsSum = 0;
 
-  Object.values(raw.bySku || {}).forEach(row => {
+  wbReportSkuRows(raw).forEach(row => {
     const key = row.skuKey;
     if (!key) return;
     const display = row.displaySku || key;
-    let unitCost = Math.max(0, n(costOverrides[display] ?? costOverrides[key]));
-    if (!(unitCost > 0)) unitCost = lookup.get(key) || 0;
-    costBySku[key] = unitCost;
+    const unitCost = resolveWbUnitCost(key, display, costOverrides);
     nameBySku[key] = findWbProductNameBySkuKey(key) || display;
-    if (!(unitCost > 0) && row.sales_qty > 0) skusWithoutCost.push(display);
+    if (unitCost == null || !(unitCost > 0)) {
+      skusWithoutCost.push(display);
+      return;
+    }
+    costBySku[key] = unitCost;
     totalCogsSum += unitCost * row.sales_qty;
   });
 
+  const uniqueMissing = [...new Set(skusWithoutCost)].sort((a, b) => a.localeCompare(b, 'ru'));
   return {
     costBySku,
     nameBySku,
     totalCogsSum,
-    skusWithoutCost: [...new Set(skusWithoutCost)].sort((a, b) => a.localeCompare(b, 'ru'))
+    skusWithoutCost: uniqueMissing,
+    costsComplete: uniqueMissing.length === 0
   };
 }
 
@@ -8053,6 +8148,9 @@ function enrichWithCosts(raw, costOverrides = {}) {
  * Расчёт сводки и детализации по артикулам (спецификация WB UZ).
  */
 function calculateWbReportAnalytics(raw, enriched, settings) {
+  if (!enriched.costsComplete) {
+    throw new Error(formatWbMissingCogsMessage(enriched.skusWithoutCost));
+  }
   const s = { ...WB_SETTINGS_DEFAULT, ...settings };
   const agg = raw.aggregates;
   const rate = s.wb_exchange_rate;
@@ -8100,7 +8198,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
     .map(skuKey => {
       const row = raw.bySku[skuKey];
       if (!row) return null;
-      const unitCost = enriched.costBySku[skuKey] || 0;
+      const unitCost = enriched.costBySku[skuKey];
+      if (!(unitCost > 0)) return null;
       const payoutSku = row.payout_sales + row.payout_returns;
       const cogsSku = unitCost * row.sales_qty;
       const vatSku = payoutSku * vatRate;
@@ -8178,8 +8277,23 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
 
 function buildWbAnalyticsFromParsed(parsed, cogsMap, settings) {
   const enriched = enrichWithCosts(parsed, cogsMap);
+  if (!enriched.costsComplete) {
+    return {
+      enriched,
+      costsComplete: false,
+      missingSkus: enriched.skusWithoutCost,
+      cogsByArticle: cogsMap,
+      settings: settings || readWbAnalyticsSettings()
+    };
+  }
   const analytics = calculateWbReportAnalytics(parsed, enriched, settings || readWbAnalyticsSettings());
-  return { analytics, enriched, cogsByArticle: cogsMap, settings: settings || readWbAnalyticsSettings() };
+  return {
+    analytics,
+    enriched,
+    costsComplete: true,
+    cogsByArticle: cogsMap,
+    settings: settings || readWbAnalyticsSettings()
+  };
 }
 
 function isLegacyWbParsed(parsed) {
@@ -8196,6 +8310,13 @@ function resetWbAnalyticsUi() {
   document.getElementById('wbAnalyticsPlaceholder')?.classList.remove('hidden');
   document.getElementById('wbAnalyticsCogsPanel')?.classList.add('hidden');
   document.getElementById('wbAnalyticsResultsPanel')?.classList.add('hidden');
+  const cogsErr = document.getElementById('wbAnalyticsCogsError');
+  if (cogsErr) {
+    cogsErr.classList.add('hidden');
+    cogsErr.textContent = '';
+  }
+  const calcBtn = document.getElementById('wbAnalyticsCalcBtn');
+  if (calcBtn) calcBtn.disabled = false;
 }
 
 function showWbCogsStep(parsed, metaText, title) {
@@ -8210,7 +8331,7 @@ function showWbCogsStep(parsed, metaText, title) {
 
   const arts = (parsed.skuKeys || [])
     .map(k => parsed.bySku[k])
-    .filter(r => r && r.sales_qty > 0)
+    .filter(r => r && (r.sales_qty > 0 || r.revenue_fact > 0 || r.payout_sales > 0))
     .sort((a, b) => a.displaySku.localeCompare(b.displaySku, 'ru'));
   const tb = document.getElementById('wbAnalyticsCogsTableBody');
   if (!tb) return;
@@ -8228,6 +8349,7 @@ function showWbCogsStep(parsed, metaText, title) {
         })
         .join('')
     : '<tr><td colspan="3" class="muted">Нет строк продаж с артикулами.</td></tr>';
+  updateWbCogsValidationUi(parsed, collectWbCogsInputs());
 }
 
 function collectWbCogsInputs() {
@@ -8392,14 +8514,8 @@ function paintWbAnalyticsDashboard(computed, parsed) {
 
   const warnEl = document.getElementById('wbAnalyticsCostWarnings');
   if (warnEl) {
-    const missing = s.skus_without_cost || [];
-    if (missing.length) {
-      warnEl.classList.remove('hidden');
-      warnEl.innerHTML = `<strong>Артикулы без себестоимости в БД (${missing.length}):</strong> ${escapeHtml(missing.join(', '))}`;
-    } else {
-      warnEl.classList.add('hidden');
-      warnEl.textContent = '';
-    }
+    warnEl.classList.add('hidden');
+    warnEl.textContent = '';
   }
 
   const topRows = analytics.by_sku || [];
@@ -8569,20 +8685,33 @@ function wireWbAnalyticsUiOnce() {
     const parsed = wbAnalyticsState.parsed;
     if (!parsed) return;
     const cogsMap = collectWbCogsInputs();
-    const saleSkus = (parsed.skuKeys || [])
-      .map(k => parsed.bySku[k])
-      .filter(r => r && r.sales_qty > 0)
-      .map(r => r.displaySku);
-    const missing = saleSkus.filter(a => !(cogsMap[a] > 0) && !(getWbCostSumFromProductsDb(a) > 0));
+    const missing = findMissingWbCogsSkus(parsed, cogsMap);
     if (missing.length) {
-      if (!confirm(`Не для всех артикулов указана себестоимость > 0. Продолжить? (${missing.length} поз.)`)) return;
+      updateWbCogsValidationUi(parsed, cogsMap);
+      alert(formatWbMissingCogsMessage(missing));
+      return;
     }
     const settings = readWbAnalyticsSettingsFromInputs();
     writeWbAnalyticsSettings(settings);
-    wbAnalyticsState.computed = buildWbAnalyticsFromParsed(parsed, cogsMap, settings);
+    const computed = buildWbAnalyticsFromParsed(parsed, cogsMap, settings);
+    if (!computed.costsComplete || !computed.analytics) {
+      alert(formatWbMissingCogsMessage(computed.missingSkus || missing));
+      return;
+    }
+    wbAnalyticsState.computed = computed;
     document.getElementById('wbAnalyticsCogsPanel')?.classList.add('hidden');
     document.getElementById('wbAnalyticsResultsPanel')?.classList.remove('hidden');
     paintWbAnalyticsDashboard(wbAnalyticsState.computed, parsed);
+  });
+  document.getElementById('wbAnalyticsCogsTableBody')?.addEventListener('input', () => {
+    const parsed = wbAnalyticsState.parsed;
+    if (!parsed) return;
+    updateWbCogsValidationUi(parsed, collectWbCogsInputs());
+  });
+  document.getElementById('wbAnalyticsCogsTableBody')?.addEventListener('change', () => {
+    const parsed = wbAnalyticsState.parsed;
+    if (!parsed) return;
+    updateWbCogsValidationUi(parsed, collectWbCogsInputs());
   });
   document.getElementById('wbAnalyticsNewFileBtn')?.addEventListener('click', () => {
     resetWbAnalyticsUi();
@@ -8594,17 +8723,20 @@ function wireWbAnalyticsUiOnce() {
   });
   const wbSettingsRefreshPaint = () => {
     writeWbAnalyticsSettings(readWbAnalyticsSettingsFromInputs());
-    if (wbAnalyticsState.computed && wbAnalyticsState.parsed) {
+    if (wbAnalyticsState.computed?.costsComplete && wbAnalyticsState.parsed) {
       const cogsMap =
         wbAnalyticsState.computed.cogsByArticle ||
         wbAnalyticsState.computed.cogsByArticleRub ||
         {};
-      wbAnalyticsState.computed = buildWbAnalyticsFromParsed(
+      const next = buildWbAnalyticsFromParsed(
         wbAnalyticsState.parsed,
         cogsMap,
         readWbAnalyticsSettingsFromInputs()
       );
-      paintWbAnalyticsDashboard(wbAnalyticsState.computed, wbAnalyticsState.parsed);
+      if (next.costsComplete && next.analytics) {
+        wbAnalyticsState.computed = next;
+        paintWbAnalyticsDashboard(wbAnalyticsState.computed, wbAnalyticsState.parsed);
+      }
     }
   };
   ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct'].forEach(id => {

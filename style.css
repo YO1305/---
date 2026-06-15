@@ -1936,6 +1936,24 @@ body.dark-mode .wb-analytics-card {
 body.dark-mode .wb-analytics-cogs-table input.wb-cogs-input--missing {
   background: rgba(248, 113, 113, 0.12);
 }
+.wb-analytics-cogs-error {
+  margin: 0 0 14px;
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font-weight: 600;
+  line-height: 1.45;
+}
+body.dark-mode .wb-analytics-cogs-error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(127, 29, 29, 0.35);
+  color: #fca5a5;
+}
+.wb-analytics-calc-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
 .wb-analytics-calc-btn {
   padding: 14px 28px;
   font-size: 16px;
