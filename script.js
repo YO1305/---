@@ -1612,6 +1612,7 @@ function getProductCostFromCalc(calc, defaultVatRate) {
     fabricCost: fabricGross,
     fabricInputVat,
     inboundLogisticsCost: inboundLogisticsCost.gross,
+    transportBoxCost: transportBoxCost.gross,
     purchaseZakupka,
     packagingSum,
     productStorage
@@ -5210,16 +5211,19 @@ function getShipmentLineBreakdown(line, fromDraft) {
   const u = fromDraft ? computeUnitEconomicsForWmsLine(line) : computeUnitEconomicsForShipmentLineReadonly(line);
   let zakupka = pc.purchaseZakupka;
   let logistikaSklad = pc.inboundLogisticsCost;
-  let upakovka = pc.packagingSum;
+  let transportBox = pc.transportBoxCost;
+  let upakovka = Math.max(0, Number(pc.packagingSum || 0) - Number(transportBox || 0));
   if (pc.total < 0.01 && u.cost > 0) {
     zakupka = u.cost;
     logistikaSklad = 0;
+    transportBox = 0;
     upakovka = 0;
   }
   const fulfillment = Number(u.logistics || 0) + Number(u.storagePerDay || 0);
   return {
     zakupka,
     logistikaSklad,
+    transportBox,
     upakovka,
     commission: u.commissionAmount,
     nalog: u.vatPayable,
@@ -5386,6 +5390,7 @@ function fillWmsUnitEconModal(line, fromDraft) {
     rowsEl.innerHTML = `
       <div class="wms-unit-econ-row"><span class="k">Закупка</span><span class="v">${escapeHtml(fmtMoney(b.zakupka))}</span></div>
       <div class="wms-unit-econ-row"><span class="k">Логистика до склада</span><span class="v">${escapeHtml(fmtMoney(b.logistikaSklad))}</span></div>
+      <div class="wms-unit-econ-row"><span class="k">Коробка транспортная</span><span class="v">${escapeHtml(fmtMoney(b.transportBox))}</span></div>
       <div class="wms-unit-econ-row"><span class="k">Комиссия</span><span class="v">${escapeHtml(fmtMoney(b.commission))}</span></div>
       <div class="wms-unit-econ-row"><span class="k">Налог (НДС к уплате)</span><span class="v">${escapeHtml(fmtMoney(b.nalog))}</span></div>
       <div class="wms-unit-econ-row"><span class="k">Фулфилмент</span><span class="v">${escapeHtml(fmtMoney(b.fulfillment))}</span></div>
@@ -5662,6 +5667,7 @@ function renderWmsBoxes() {
       syncWmsLineFinancials(line);
       const calc = ensureWmsLineCalc(line);
       const inboundVal = n(calc.inboundLogisticsCost);
+      const transportBoxVal = n(calc.transportBoxCost);
       const q = Math.max(0, Math.floor(Number(line.qty || 0)));
       const uc = Number(line.unitCost ?? line.financialSnapshot?.costGross ?? 0);
       // Snapshot: fixedUzumPayout (не перезаписывается и не триггерит API при открытии)
@@ -5683,6 +5689,7 @@ function renderWmsBoxes() {
         <td class="sku-cell">${escapeHtml(line.sku || '—')}</td>
         <td><input class="input wms-qty-input" type="number" min="1" step="1" value="${q}" data-wms-qty="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" data-prev-qty="${q}" title="Количество в коробке (остаток на складе пересчитывается сразу)" /></td>
         <td><input class="input wms-inbound-input" type="number" min="0" step="0.01" value="${Number.isFinite(inboundVal) ? inboundVal : 0}" data-wms-inbound="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" title="Логистика до склада (в себестоимость)" /></td>
+        <td><input class="input wms-inbound-input" type="number" min="0" step="0.01" value="${Number.isFinite(transportBoxVal) ? transportBoxVal : 0}" data-wms-transport-box="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" title="Коробка транспортная (в себестоимость)" /></td>
         <td data-wms-cell-unit>${escapeHtml(fmtMoney(uc))}</td>
         <td data-wms-cell-sum>${escapeHtml(fmtMoney(q * uc))}</td>
         ${payoutCell}
@@ -5696,7 +5703,7 @@ function renderWmsBoxes() {
       // ВАЖНО: никаких запросов к API.
     });
     if (!rows) {
-      rows = `<tr><td colspan="${uzumOnly ? 8 : 7}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
+      rows = `<tr><td colspan="${uzumOnly ? 9 : 8}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
     }
     const payoutHead = uzumOnly ? '<th>К ВЫВОДУ (СУМ)</th>' : '';
     card.innerHTML = `
@@ -5715,7 +5722,7 @@ function renderWmsBoxes() {
         <select class="select" data-wms-box-component="${escapeAttr(box.id)}">${opts}</select>
       </div>
       <div class="table-wrap wms-box-items">
-        <table><thead><tr><th>Товар</th><th>SKU</th><th>Шт</th><th>Логистика до склада</th><th>Себест. 1 шт</th><th>Сумма</th>${payoutHead}<th></th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>Товар</th><th>SKU</th><th>Шт</th><th>Логистика до склада</th><th>Коробка трансп.</th><th>Себест. 1 шт</th><th>Сумма</th>${payoutHead}<th></th></tr></thead><tbody>${rows}</tbody></table>
       </div>
     `;
     container.appendChild(card);
@@ -5791,13 +5798,13 @@ function renderWmsBoxes() {
       openWmsProductPickModal();
     });
   });
-  container.querySelectorAll('[data-wms-inbound]').forEach(inp => {
+  function bindWmsLineCostInput(inp, calcField) {
     inp.addEventListener('input', () => {
-      const boxId = inp.getAttribute('data-wms-inbound');
+      const boxId = inp.getAttribute(`data-wms-${calcField === 'inboundLogisticsCost' ? 'inbound' : 'transport-box'}`);
       const lineId = inp.getAttribute('data-line');
       const found = findWmsDraftLine(boxId, lineId);
       if (!found) return;
-      ensureWmsLineCalc(found.line).inboundLogisticsCost = n(inp.value);
+      ensureWmsLineCalc(found.line)[calcField] = n(inp.value);
       syncWmsLineFinancials(found.line);
       const tr = inp.closest('tr');
       const q = Math.max(0, Math.floor(Number(found.line.qty || 0)));
@@ -5809,7 +5816,9 @@ function renderWmsBoxes() {
       renderWmsLiveTotals();
       refreshWmsUnitEconModalIfDraftLine(boxId, lineId);
     });
-  });
+  }
+  container.querySelectorAll('[data-wms-inbound]').forEach(inp => bindWmsLineCostInput(inp, 'inboundLogisticsCost'));
+  container.querySelectorAll('[data-wms-transport-box]').forEach(inp => bindWmsLineCostInput(inp, 'transportBoxCost'));
   container.querySelectorAll('[data-wms-qty]').forEach(inp => {
     inp.addEventListener('change', () => void handleWmsLineQtyCommit(inp));
   });
@@ -7234,7 +7243,7 @@ function exportWmsShipmentDetailCalcXlsx(shipmentId) {
     alert('SheetJS не загрузился.');
     return;
   }
-  const header = ['Артикул 1С', 'SKU', 'Коробка', 'Кол-во', 'Закупка', 'Логистика', 'Упаковка', 'Налог', 'Комиссия', 'Итоговая себестоимость 1 шт', 'Маржа'];
+  const header = ['Артикул 1С', 'SKU', 'Коробка', 'Кол-во', 'Закупка', 'Логистика', 'Коробка трансп.', 'Упаковка', 'Налог', 'Комиссия', 'Итоговая себестоимость 1 шт', 'Маржа'];
   const aoa = [header];
   const pushRow = (it, boxLabel) => {
     const b = getShipmentLineBreakdown(it, false);
@@ -7245,6 +7254,7 @@ function exportWmsShipmentDetailCalcXlsx(shipmentId) {
       Math.max(0, Math.floor(Number(it.qty ?? it.quantity ?? 0))),
       b.zakupka,
       b.logistikaSklad,
+      b.transportBox,
       b.upakovka,
       b.nalog,
       b.commission,
@@ -7267,7 +7277,7 @@ function exportWmsShipmentDetailCalcXlsx(shipmentId) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [
     { wch: 26 }, { wch: 14 }, { wch: 28 }, { wch: 8 },
-    { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
+    { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 },
     { wch: 12 }, { wch: 22 }, { wch: 10 }
   ];
   const wb = XLSX.utils.book_new();
@@ -7306,6 +7316,11 @@ function exportShipmentFinanceToExcel(shipmentId) {
       ?? it?.calc?.inbound_logistics_cost
       ?? 0
     ) || 0;
+    const transportBox = Number(
+      it?.financialSnapshot?.calc?.transportBoxCost
+      ?? it?.calc?.transportBoxCost
+      ?? 0
+    ) || 0;
     const payout = Number(it?.fixedUzumPayout ?? 0) || 0;
     const totalPayout = qty * payout;
     const article1c = String(getShipmentLineArticle1c(it) || '').trim() || '—';
@@ -7316,6 +7331,7 @@ function exportShipmentFinanceToExcel(shipmentId) {
       'Себестоимость': unitCost,
       'Сумма': sum,
       'Логистика': inbound,
+      'Коробка трансп.': transportBox,
       'Сумма к выводу': payout,
       'Общая сумма к выводу': totalPayout
     };
@@ -7329,6 +7345,7 @@ function exportShipmentFinanceToExcel(shipmentId) {
     { wch: 16 },
     { wch: 16 },
     { wch: 14 },
+    { wch: 16 },
     { wch: 16 },
     { wch: 22 }
   ];
