@@ -3104,6 +3104,57 @@ body.dark-mode .finance-warning { background: #3f1515; border-color: #7f1d1d; co
   border-radius: 50%;
   animation: finance-spin 0.8s linear infinite;
 }
+.finance-mini-dash {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.finance-mini-dash-card {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.finance-mini-dash-card--green { background: #f0fdf4; border-color: #bbf7d0; }
+.finance-mini-dash-card--yellow { background: #fefce8; border-color: #fde047; }
+.finance-mini-dash-card--blue { background: #eff6ff; border-color: #bfdbfe; }
+.finance-mini-dash-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.finance-mini-dash-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.finance-mini-dash-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.finance-mini-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+}
+.finance-mini-filter-title { font-weight: 600; font-size: 13px; }
+.finance-mini-filter-field { font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.finance-mini-filter-field input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.finance-stock-snapshots {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+.finance-stock-snapshot-label { display: grid; gap: 6px; font-weight: 600; font-size: 13px; }
+.finance-stock-snapshot-select { max-width: 320px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+.finance-stock-compare {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+}
+.finance-stock-compare-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+@keyframes finance-spin { to { transform: rotate(360deg); } }
 .finance-storage-banner code {
   font-size: 12px;
   background: rgba(0, 0, 0, 0.06);

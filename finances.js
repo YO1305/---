@@ -22,7 +22,12 @@
     loading: true,
     seeded: false,
     importInProgress: false,
-    storageMode: 'unknown' // firebase | local
+    storageMode: 'unknown', // firebase | local
+    filters: {
+      shipments: { from: '', to: '' },
+      payments: { from: '', to: '' }
+    },
+    stockViewDate: '' // пусто = последний актуальный снимок
   };
 
   const FINANCE_LOCAL_KEY = 'yo_finances_uzum_v1';
@@ -216,13 +221,136 @@
     return list[0] || null;
   }
 
-  function getLatestStockRows() {
-    const dates = financeState.stock.map(s => s.snapshot_date).filter(Boolean);
-    if (!dates.length) return [];
-    const latest = dates.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+  function getStockSnapshotDates() {
+    return [...new Set(financeState.stock.map((s) => s.snapshot_date).filter(Boolean))]
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+  }
+
+  function getLatestStockDate() {
+    return getStockSnapshotDates()[0] || null;
+  }
+
+  function getPreviousStockDate(date) {
+    const dates = getStockSnapshotDates();
+    const idx = dates.indexOf(date);
+    return idx >= 0 && idx < dates.length - 1 ? dates[idx + 1] : null;
+  }
+
+  function getActiveStockDate() {
+    if (financeState.stockViewDate && getStockSnapshotDates().includes(financeState.stockViewDate)) {
+      return financeState.stockViewDate;
+    }
+    return getLatestStockDate();
+  }
+
+  function getStockRowsByDate(date) {
+    if (!date) return [];
     return financeState.stock
-      .filter(s => s.snapshot_date === latest)
+      .filter((s) => s.snapshot_date === date)
       .sort((a, b) => (Number(b.total_sale_sum) || 0) - (Number(a.total_sale_sum) || 0));
+  }
+
+  function getLatestStockRows() {
+    return getStockRowsByDate(getActiveStockDate());
+  }
+
+  function getLatestStockRowsForSummary() {
+    return getStockRowsByDate(getLatestStockDate());
+  }
+
+  function calcStockTotals(rows) {
+    const list = rows || [];
+    return {
+      positions: list.length,
+      qtyInSale: list.reduce((s, r) => s + Number(r.qty_in_sale || 0), 0),
+      qtyDispatch: list.reduce((s, r) => s + Number(r.qty_for_dispatch || 0), 0),
+      qtyTotal: list.reduce((s, r) => s + Number(r.total_qty || 0), 0),
+      saleSum: list.reduce((s, r) => s + Number(r.total_sale_sum || 0), 0),
+      costSum: list.reduce((s, r) => s + Number(r.total_cost_sum || 0), 0)
+    };
+  }
+
+  function fmtDelta(n, suffix = '') {
+    const v = Number(n) || 0;
+    if (!v) return 'без изменений';
+    const sign = v > 0 ? '+' : '';
+    return `${sign}${fmtNum(v)}${suffix}`;
+  }
+
+  function inDateRange(dateStr, from, to) {
+    if (!dateStr) return false;
+    const t = new Date(dateStr).getTime();
+    if (Number.isNaN(t)) return false;
+    if (from && t < new Date(from).getTime()) return false;
+    if (to && t > new Date(to).getTime()) return false;
+    return true;
+  }
+
+  function filterByDateRange(items, dateField, from, to) {
+    if (!from && !to) return items;
+    return items.filter((item) => inDateRange(item[dateField], from, to));
+  }
+
+  function calcShipmentsStats(shipments) {
+    const list = shipments || [];
+    return {
+      lines: list.length,
+      qty: list.reduce((s, r) => s + Number(r.quantity || 0), 0),
+      sum: list.reduce((s, r) => s + Number(r.total_amount || 0), 0)
+    };
+  }
+
+  function calcPaymentsStats(payments) {
+    const list = payments || [];
+    const completed = list.filter((p) => p.status === 'completed');
+    const pending = list.filter((p) => p.status === 'pending');
+    return {
+      totalLines: list.length,
+      completedCount: completed.length,
+      completedSum: completed.reduce((s, p) => s + Number(p.amount || 0), 0),
+      pendingCount: pending.length,
+      pendingSum: pending.reduce((s, p) => s + Number(p.amount || 0), 0)
+    };
+  }
+
+  function renderMiniDash(cards) {
+    return `<div class="finance-mini-dash">${cards.map((c) => `
+      <div class="finance-mini-dash-card${c.accent ? ` finance-mini-dash-card--${c.accent}` : ''}">
+        <div class="finance-mini-dash-label">${c.label}</div>
+        <div class="finance-mini-dash-value">${c.value}</div>
+        ${c.sub ? `<div class="finance-mini-dash-sub">${c.sub}</div>` : ''}
+      </div>`).join('')}</div>`;
+  }
+
+  function renderDateFilterBar(tabKey, from, to) {
+    return `<div class="finance-mini-filter card">
+      <span class="finance-mini-filter-title">Период</span>
+      <label class="finance-mini-filter-field">с <input type="date" id="finFilterFrom" value="${escapeAttr(from || '')}" /></label>
+      <label class="finance-mini-filter-field">по <input type="date" id="finFilterTo" value="${escapeAttr(to || '')}" /></label>
+      <button type="button" class="btn-secondary btn-sm" data-fin-filter-apply="${tabKey}">Применить</button>
+      <button type="button" class="btn-secondary btn-sm" data-fin-filter-reset="${tabKey}">Сбросить</button>
+    </div>`;
+  }
+
+  function detectStockSnapshotDate(file, buffer, rows) {
+    const name = String(file?.name || '');
+    const nameMatch = name.match(/(\d{2})\.(\d{2})\.(\d{4})/) || name.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (nameMatch) {
+      if (nameMatch[0].includes('.')) {
+        return `${nameMatch[3]}-${nameMatch[2]}-${nameMatch[1]}`;
+      }
+      return `${nameMatch[1]}-${nameMatch[2]}-${nameMatch[3]}`;
+    }
+    const wb = readFinanceWorkbook(buffer);
+    const sheetName = wb.SheetNames.find((n) => /остаток|Остат/i.test(n)) ?? wb.SheetNames[0];
+    const matrix = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
+    for (let i = 0; i < Math.min(matrix.length, 8); i++) {
+      const rowText = (matrix[i] || []).join(' ');
+      const m = rowText.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+      if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+    }
+    if (rows?.length && rows[0]?.['Дата']) return toIsoDate(rows[0]['Дата']);
+    return new Date().toISOString().slice(0, 10);
   }
 
   function calculateSummary() {
@@ -235,7 +363,7 @@
     const lkRemainingBalance = snap?.remaining_balance != null
       ? Number(snap.remaining_balance)
       : lkTotalBalance - lkNextPayout;
-    const stock = getLatestStockRows();
+    const stock = getLatestStockRowsForSummary();
     const inSale = stock.filter(s => Number(s.qty_in_sale) > 0);
     const stockInSaleQty = inSale.reduce((s, r) => s + Number(r.qty_in_sale || 0), 0);
     const stockInSaleSaleSum = inSale.reduce((s, r) => s + Number(r.total_sale_sum ?? 0), 0);
@@ -249,7 +377,8 @@
       stockForDispatchQty, grandTotal: guaranteed + potential,
       guaranteed, potential,
       paymentsCount: completed.length,
-      lastSnapshotDate: snap?.snapshot_date ?? null
+      lastSnapshotDate: snap?.snapshot_date ?? null,
+      lastStockDate: getLatestStockDate()
     };
   }
 
@@ -634,11 +763,14 @@
   }
 
   async function importStockReport(snapshotDate, rows) {
-    const database = getDb();
-    if (!database) throw new Error('Firebase не подключен');
     const date = toIsoDate(snapshotDate);
-    const existingIds = financeState.stock.filter(s => s.snapshot_date === date).map(s => s.id);
-    const records = rows.filter(r => r['ID']).map(r => ({
+    const existingIds = financeState.stock.filter((s) => s.snapshot_date === date).map((s) => s.id);
+    const oldDates = getStockSnapshotDates();
+    const prevDateBeforeImport = oldDates.includes(date)
+      ? getPreviousStockDate(date)
+      : (oldDates[0] || null);
+    const uploadedAt = new Date().toISOString();
+    const records = rows.filter((r) => r['ID']).map((r) => ({
       id: genId(),
       marketplace_id: MP_ID,
       snapshot_date: date,
@@ -657,14 +789,33 @@
       total_sale_sum: r['Стоимость продажи (сумма) (сумы)'] ? Number(r['Стоимость продажи (сумма) (сумы)']) : null,
       total_cost_sum: r['Себест. (сумма) (сумы)'] ? Number(r['Себест. (сумма) (сумы)']) : null,
       status: r['Статус'] ?? null,
-      created_at: new Date().toISOString()
+      uploaded_at: uploadedAt,
+      created_at: uploadedAt
     }));
 
     setFinanceImportBusy(true, `Загрузка остатков: ${records.length} позиций...`);
     try {
+      const prevTotals = prevDateBeforeImport
+        ? calcStockTotals(getStockRowsByDate(prevDateBeforeImport))
+        : null;
       await bulkWriteFinanceDocs(COL.stock, records, existingIds);
+      financeState.stock = [
+        ...financeState.stock.filter((s) => s.snapshot_date !== date),
+        ...records
+      ];
+      financeState.stockViewDate = '';
       renderFinancesPage();
-      return records.length;
+      const totals = calcStockTotals(records);
+      return {
+        count: records.length,
+        date,
+        prevDate: prevDateBeforeImport,
+        delta: prevTotals ? {
+          qtyInSale: totals.qtyInSale - prevTotals.qtyInSale,
+          saleSum: totals.saleSum - prevTotals.saleSum,
+          costSum: totals.costSum - prevTotals.costSum
+        } : null
+      };
     } finally {
       setFinanceImportBusy(false);
     }
@@ -1376,15 +1527,31 @@
   }
 
   function renderPaymentsTab() {
-    const payments = financeState.payments.slice().sort((a, b) => {
+    const filter = financeState.filters.payments;
+    const allPayments = financeState.payments.slice().sort((a, b) => {
       if (!a.payment_date) return 1;
       if (!b.payment_date) return -1;
       return new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime();
     });
+    const payments = filterByDateRange(allPayments, 'payment_date', filter.from, filter.to);
     const withRT = addRunningTotal(financeState.payments);
-    const completedSum = financeState.payments
-      .filter(p => p.status === 'completed')
-      .reduce((s, p) => s + Number(p.amount || 0), 0);
+    const statsAll = calcPaymentsStats(allPayments);
+    const stats = calcPaymentsStats(payments);
+    const filtered = !!(filter.from || filter.to);
+    const periodLabel = filtered
+      ? `${filter.from || '…'} — ${filter.to || '…'}`
+      : 'за всё время';
+
+    const dashCards = filtered
+      ? [
+          { label: 'Сумма за период', value: fmtSum(stats.completedSum), sub: 'только исполненные', accent: 'green' },
+          { label: 'Выплат в периоде', value: fmtNum(stats.completedCount), sub: periodLabel }
+        ]
+      : [
+          { label: 'Получено всего', value: fmtSum(statsAll.completedSum), sub: `${statsAll.completedCount} исполненных`, accent: 'green' },
+          { label: 'Всего выплат', value: fmtNum(statsAll.totalLines), sub: 'все статусы' },
+          { label: 'Ожидается', value: fmtSum(statsAll.pendingSum), sub: `${statsAll.pendingCount} в ожидании`, accent: 'yellow' }
+        ];
 
     const rows = payments.map((p, i) => {
       const rt = withRT.find(w => w.id === p.id);
@@ -1414,8 +1581,10 @@
 
     return `
       ${renderFinanceStorageBanner()}
+      ${renderMiniDash(dashCards)}
+      ${renderDateFilterBar('payments', filter.from, filter.to)}
       <div class="finance-toolbar">
-        <span class="text-muted text-sm">Всего: ${payments.length} | Исполнено: ${payments.filter(p => p.status === 'completed').length}<br>
+        <span class="text-muted text-sm">Показано: ${payments.length} из ${allPayments.length}<br>
         <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
         <div class="finance-toolbar-actions">
           <button type="button" class="btn-secondary" id="finPaymentsTemplateBtn">📋 Шаблон</button>
@@ -1432,18 +1601,32 @@
           </tr></thead>
           <tbody>${rows || '<tr><td colspan="9" class="empty">Нет выплат</td></tr>'}</tbody>
           <tfoot><tr class="finance-tfoot">
-            <td colspan="2">ИТОГО ПОЛУЧЕНО</td>
-            <td class="text-right">${fmtNum(completedSum)}</td>
-            <td colspan="6" class="text-sm">Только статус «Исполнен»</td>
+            <td colspan="2">${filtered ? 'ИТОГО ЗА ПЕРИОД' : 'ИТОГО ПОЛУЧЕНО'}</td>
+            <td class="text-right">${fmtNum(stats.completedSum)}</td>
+            <td colspan="6" class="text-sm">${filtered ? periodLabel : 'Только статус «Исполнен»'}</td>
           </tr></tfoot>
         </table>
       </div>`;
   }
 
   function renderShipmentsTab() {
-    const shipments = financeState.shipments.slice()
+    const filter = financeState.filters.shipments;
+    const allShipments = financeState.shipments.slice()
       .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime());
-    const totalSum = shipments.reduce((s, r) => s + Number(r.total_amount || 0), 0);
+    const shipments = filterByDateRange(allShipments, 'shipment_date', filter.from, filter.to);
+    const statsAll = calcShipmentsStats(allShipments);
+    const stats = calcShipmentsStats(shipments);
+    const filtered = !!(filter.from || filter.to);
+    const periodLabel = filtered
+      ? `${filter.from || '…'} — ${filter.to || '…'}`
+      : 'за всё время';
+
+    const dashCards = [
+      { label: 'Отгрузок', value: fmtNum(filtered ? stats.lines : statsAll.lines), sub: periodLabel },
+      { label: 'Штук', value: fmtNum(filtered ? stats.qty : statsAll.qty), sub: 'сумма количества' },
+      { label: 'Сумма (отп.цена)', value: fmtSum(filtered ? stats.sum : statsAll.sum), sub: 'отпускные цены', accent: 'blue' }
+    ];
+
     const rows = shipments.map((s, i) => `<tr>
       <td>${i + 1}</td>
       <td>${escapeHtml(s.shipment_date)}</td>
@@ -1462,14 +1645,16 @@
 
     return `
       ${renderFinanceStorageBanner()}
+      ${renderMiniDash(dashCards)}
+      ${renderDateFilterBar('shipments', filter.from, filter.to)}
       <div class="finance-toolbar">
-        <span class="text-muted text-sm">Отгрузок: ${shipments.length} | Сумма (отп.цена): ${fmtSum(totalSum)}<br>
+        <span class="text-muted text-sm">Показано: ${shipments.length} из ${allShipments.length}<br>
         <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
         <div class="finance-toolbar-actions">
           <button type="button" class="btn-secondary" id="finShipmentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
           <button type="button" class="btn-secondary" id="finShipmentsExportBtn">📥 Экспорт</button>
-          ${shipments.length ? '<button type="button" class="btn-danger" id="finClearAllShipmentsBtn" title="Тройное подтверждение">🗑 Очистить всё</button>' : ''}
+          ${allShipments.length ? '<button type="button" class="btn-danger" id="finClearAllShipmentsBtn" title="Тройное подтверждение">🗑 Очистить всё</button>' : ''}
           <button type="button" class="btn-primary" id="finAddShipmentBtn">+ Добавить отгрузку</button>
         </div>
       </div>
@@ -1486,22 +1671,72 @@
   }
 
   function renderStockTab() {
-    const stock = getLatestStockRows();
-    const snapDate = stock[0]?.snapshot_date;
+    const dates = getStockSnapshotDates();
+    const activeDate = getActiveStockDate();
+    const latestDate = getLatestStockDate();
+    const isLatest = !financeState.stockViewDate || activeDate === latestDate;
+    const stock = getStockRowsByDate(activeDate);
+    const totals = calcStockTotals(stock);
+    const prevDate = getPreviousStockDate(activeDate);
+    const prevTotals = prevDate ? calcStockTotals(getStockRowsByDate(prevDate)) : null;
+    const delta = prevTotals ? {
+      qtyInSale: totals.qtyInSale - prevTotals.qtyInSale,
+      saleSum: totals.saleSum - prevTotals.saleSum,
+      costSum: totals.costSum - prevTotals.costSum
+    } : null;
+
+    const dashCards = [
+      {
+        label: 'Снимок',
+        value: activeDate || '—',
+        sub: isLatest ? 'актуальный' : 'архивный',
+        accent: isLatest ? 'green' : 'yellow'
+      },
+      { label: 'Позиций', value: fmtNum(totals.positions), sub: 'SKU в отчёте' },
+      { label: 'В продаже', value: fmtNum(totals.qtyInSale), sub: `${fmtNum(totals.qtyDispatch)} к отправке` },
+      { label: 'Сумма продажи', value: fmtSum(totals.saleSum), sub: 'по ценам Uzum', accent: 'blue' },
+      { label: 'Себестоимость', value: fmtSum(totals.costSum), sub: 'из отчёта Uzum' }
+    ];
+
+    const compareBlock = prevDate && delta ? `
+      <div class="finance-stock-compare card">
+        <strong>Изменение vs снимок ${prevDate}</strong>
+        <div class="finance-stock-compare-grid">
+          <span>В продаже: <strong>${fmtDelta(delta.qtyInSale, ' шт')}</strong></span>
+          <span>Сумма продажи: <strong>${fmtDelta(delta.saleSum, ' сум')}</strong></span>
+          <span>Себестоимость: <strong>${fmtDelta(delta.costSum, ' сум')}</strong></span>
+        </div>
+      </div>` : '';
+
+    const snapshotSelect = dates.length ? `
+      <div class="finance-stock-snapshots card">
+        <label class="finance-stock-snapshot-label">Снимок остатков
+          <select id="finStockSnapshotSelect" class="finance-stock-snapshot-select">
+            <option value="" ${isLatest ? 'selected' : ''}>Актуальный (${latestDate || '—'})</option>
+            ${dates.map((d) => `<option value="${escapeAttr(d)}" ${d === activeDate && !isLatest ? 'selected' : ''}>${escapeHtml(d)}${d === latestDate ? ' — актуальный' : ''}</option>`).join('')}
+          </select>
+        </label>
+        <span class="text-muted text-sm">Снимков: ${dates.length}. Новый файл = новая дата. Повтор за ту же дату заменяет снимок.</span>
+      </div>` : '';
+
     const rows = stock.map(s => `<tr>
       <td>${escapeHtml(s.product_name)}</td>
       <td class="font-mono text-xs">${escapeHtml(s.sku || '—')}</td>
       <td class="text-right">${fmtNum(s.qty_in_sale)}</td>
       <td class="text-right">${fmtNum(s.qty_for_dispatch)}</td>
       <td class="text-right">${s.sale_price != null ? fmtNum(s.sale_price) : '—'}</td>
+      <td class="text-right">${s.total_cost_sum != null ? fmtNum(s.total_cost_sum) : '—'}</td>
       <td class="text-right"><strong>${s.total_sale_sum != null ? fmtNum(s.total_sale_sum) : '—'}</strong></td>
       <td class="text-xs">${escapeHtml(s.status || '')}</td>
     </tr>`).join('');
 
     return `
       ${renderFinanceStorageBanner()}
+      ${snapshotSelect}
+      ${renderMiniDash(dashCards)}
+      ${compareBlock}
       <div class="finance-stock-hint card">
-        <strong>Как получить отчёт:</strong> ЛК Узума → Склад → Остатки → Скачать отчёт (xlsx). Загружайте раз в 1–2 недели.
+        <strong>Как получить отчёт:</strong> ЛК Uzum → Склад → Остатки → Скачать (.xlsx). Можно каждый день — дата из имени файла или сегодня.
         ${stock.length ? `<div class="finance-export-row" style="margin-top:10px">
           <button type="button" class="btn-secondary" id="finStockExportBtn">📥 Экспорт остатков</button>
         </div>` : ''}
@@ -1515,13 +1750,14 @@
       </div>
       <div id="finStockUploadResult" class="hidden"></div>
       ${stock.length ? `
-        <p class="sub">Снимок от <strong>${snapDate}</strong> — ${stock.length} позиций</p>
+        <p class="sub">Снимок <strong>${activeDate}</strong> — ${stock.length} позиций${isLatest ? ' (актуальный)' : ''}</p>
         <div class="finance-table-wrap">
           <table class="finance-table">
             <thead><tr>
               <th>Товар</th><th>SKU</th><th class="text-right">В продаже</th>
-              <th class="text-right">К отправке</th><th class="text-right">Цена прод.</th>
-              <th class="text-right">Итого</th><th>Статус</th>
+              <th class="text-right">К отправке</th>              <th class="text-right">Цена прод.</th>
+              <th class="text-right">Себест.</th>
+              <th class="text-right">Итого прод.</th><th>Статус</th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -1566,6 +1802,29 @@
     document.getElementById('finShipmentsExportBtn')?.addEventListener('click', exportShipmentsToExcel);
     document.getElementById('finClearAllShipmentsBtn')?.addEventListener('click', () => { void clearAllFinanceShipments(); });
     document.getElementById('finRetryFirebaseBtn')?.addEventListener('click', () => { void retryFinanceFirebaseSync(); });
+
+    document.querySelectorAll('[data-fin-filter-apply]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tabKey = btn.getAttribute('data-fin-filter-apply');
+        if (!tabKey || !financeState.filters[tabKey]) return;
+        financeState.filters[tabKey].from = document.getElementById('finFilterFrom')?.value || '';
+        financeState.filters[tabKey].to = document.getElementById('finFilterTo')?.value || '';
+        renderFinancesPage();
+      });
+    });
+    document.querySelectorAll('[data-fin-filter-reset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tabKey = btn.getAttribute('data-fin-filter-reset');
+        if (!tabKey || !financeState.filters[tabKey]) return;
+        financeState.filters[tabKey] = { from: '', to: '' };
+        renderFinancesPage();
+      });
+    });
+
+    document.getElementById('finStockSnapshotSelect')?.addEventListener('change', (e) => {
+      financeState.stockViewDate = e.target.value || '';
+      renderFinancesPage();
+    });
     document.getElementById('finStockExportBtn')?.addEventListener('click', exportStockToExcel);
 
     document.getElementById('finSnapshotImportInput')?.addEventListener('change', async e => {
@@ -1611,14 +1870,20 @@
       try {
         const buffer = await file.arrayBuffer();
         const rows = parseUzumStockReport(buffer);
-        const dateMatch = file.name.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-        const snapshotDate = dateMatch
-          ? `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`
-          : new Date().toISOString().slice(0, 10);
-        const count = await importStockReport(snapshotDate, rows);
+        let snapshotDate = detectStockSnapshotDate(file, buffer, rows);
+        const custom = prompt(
+          `Дата снимка остатков (YYYY-MM-DD):\nМожно менять, если в файле другая дата.`,
+          snapshotDate
+        );
+        if (custom === null) return;
+        if (String(custom).trim()) snapshotDate = toIsoDate(custom);
+        const result = await importStockReport(snapshotDate, rows);
+        const deltaText = result.prevDate && result.delta
+          ? ` Изменение vs ${result.prevDate}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
+          : '';
         if (resultEl) {
           resultEl.className = 'finance-stock-result finance-stock-result--ok';
-          resultEl.textContent = `✅ Загружено ${count} позиций (снимок ${snapshotDate})`;
+          resultEl.textContent = `✅ Загружено ${result.count} позиций. Снимок ${result.date} — актуальный.${deltaText}`;
           resultEl.classList.remove('hidden');
         }
       } catch (err) {
