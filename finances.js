@@ -438,18 +438,17 @@
       ? Number(snap.remaining_balance)
       : lkTotalBalance - lkNextPayout;
     const stock = getLatestStockRowsForSummary();
-    const inSale = stock.filter(s => Number(s.qty_in_sale) > 0);
-    const stockInSaleQty = inSale.reduce((s, r) => s + Number(r.qty_in_sale || 0), 0);
-    const stockInSaleSaleSum = inSale.reduce((s, r) => s + Number(r.total_sale_sum ?? 0), 0);
-    const forDispatch = stock.filter(s => Number(s.qty_for_dispatch) > 0);
+    const stockInSaleQty = stock.filter((s) => Number(s.qty_in_sale) > 0)
+      .reduce((s, r) => s + Number(r.qty_in_sale || 0), 0);
+    const forDispatch = stock.filter((s) => Number(s.qty_for_dispatch) > 0);
     const stockForDispatchQty = forDispatch.reduce((s, r) => s + Number(r.qty_for_dispatch || 0), 0);
-    const guaranteed = totalReceived + lkTotalBalance;
-    const potential = stockInSaleSaleSum;
+    const lkAvailableToWithdraw = lkTotalBalance;
+    const guaranteed = totalReceived + lkAvailableToWithdraw;
     return {
-      totalReceived, lkTotalBalance, lkNextPayout, lkNextPayoutDate,
-      lkRemainingBalance, stockInSaleQty, stockInSaleSaleSum,
-      stockForDispatchQty, grandTotal: guaranteed + potential,
-      guaranteed, potential,
+      totalReceived, lkTotalBalance, lkAvailableToWithdraw, lkNextPayout, lkNextPayoutDate,
+      lkRemainingBalance, stockInSaleQty, stockForDispatchQty,
+      grandTotal: guaranteed,
+      guaranteed,
       paymentsCount: completed.length,
       lastSnapshotDate: snap?.snapshot_date ?? null,
       lastStockDate: getLatestStockDate()
@@ -1396,8 +1395,8 @@
       ['В ЛК Узума (гарантировано)', summary.lkTotalBalance, `снимок от ${summary.lastSnapshotDate || '—'}`],
       ['  → к выплате ближайшей датой', summary.lkNextPayout, summary.lkNextPayoutDate ?? ''],
       ['  → следующие периоды', summary.lkRemainingBalance, ''],
-      ['Остатки склада (потенциал)', summary.stockInSaleSaleSum, `${summary.stockInSaleQty} шт в продаже`],
-      ['ИТОГО ВСЕГО', summary.grandTotal, '= получено + ЛК + потенциал']
+      ['На складе в продаже', summary.stockInSaleQty, 'шт, без суммы — это не выплата'],
+      ['ИТОГО ВСЕГО', summary.grandTotal, '= получено + доступно к выводу в ЛК']
     ];
 
     downloadFinanceWorkbook(`finansy_uzum_${exportDateSuffix()}.xlsx`, [
@@ -1603,28 +1602,30 @@
           <div class="finance-card-meta">${summary.paymentsCount} выплат на расчётный счёт</div>
         </div>
         <div class="finance-card finance-card--yellow">
-          <div class="finance-card-label">⚡ Узум должен сейчас</div>
-          <div class="finance-card-value">${fmtSum(summary.lkTotalBalance)}</div>
+          <div class="finance-card-label">📅 Ближайшая выплата</div>
+          <div class="finance-card-value">${fmtSum(summary.lkNextPayout)}</div>
           <div class="finance-card-meta">${summary.lkNextPayoutDate
-            ? `${fmtSum(summary.lkNextPayout)} → ${fmtDateRu(summary.lkNextPayoutDate)}`
-            : 'Нет данных о выплате'}</div>
+            ? `на ${fmtDateRu(summary.lkNextPayoutDate)}`
+            : 'Обновите снимок баланса ЛК'}</div>
         </div>
         <div class="finance-card finance-card--blue">
-          <div class="finance-card-label">📦 Ещё придёт</div>
-          <div class="finance-card-value">${fmtSum(summary.stockInSaleSaleSum)}</div>
-          <div class="finance-card-meta">${summary.stockInSaleQty} шт «В продаже» на складе</div>
+          <div class="finance-card-label">💳 Доступно к выводу</div>
+          <div class="finance-card-value">${fmtSum(summary.lkAvailableToWithdraw)}</div>
+          <div class="finance-card-meta">${summary.lastSnapshotDate
+            ? `баланс ЛК на ${fmtDateRu(summary.lastSnapshotDate)}`
+            : 'Нет снимка — нажмите «Обновить баланс»'}</div>
         </div>
       </div>
       <div class="finance-grand-total">
         <div>
           <div class="finance-grand-title">ИТОГО ВСЕГО ОТ УЗУМА</div>
-          <div class="finance-grand-sub">= Получено + В ЛК (гарантировано) + Потенциал с остатков</div>
+          <div class="finance-grand-sub">= Уже получено + доступно к выводу в ЛК Uzum</div>
         </div>
         <div class="finance-grand-value">${fmtSum(summary.grandTotal)}</div>
       </div>
       <div class="finance-warning">
-        <strong>Важно:</strong> Сумма отгрузок ≠ сумма выплат. Отгрузки — по <strong>отпускным ценам</strong>.
-        Выплаты = цена продажи минус комиссия Узума ~15–25%. Сравнивать нельзя.
+        <strong>Важно:</strong> Отгрузки и остатки на складе — это учёт товара, <strong>не сумма выплат</strong>.
+        «Доступно к выводу» — из снимка баланса ЛK Uzum (уже проданное, ждёт выплат).
       </div>
       <div class="card finance-balance-block">
         <div class="finance-block-header">
@@ -1650,11 +1651,11 @@
           </tr></thead>
           <tbody>
             <tr><td>Получено на р/с</td><td class="text-right">${fmtSum(summary.totalReceived)}</td><td>${summary.paymentsCount} выплат</td></tr>
-            <tr><td>В ЛК (гарантировано)</td><td class="text-right">${fmtSum(summary.lkTotalBalance)}</td><td>снимок ${summary.lastSnapshotDate ? fmtDateRu(summary.lastSnapshotDate) : '—'}</td></tr>
+            <tr><td>Доступно к выводу (ЛК)</td><td class="text-right"><strong>${fmtSum(summary.lkAvailableToWithdraw)}</strong></td><td>снимок ${summary.lastSnapshotDate ? fmtDateRu(summary.lastSnapshotDate) : '—'}</td></tr>
             <tr><td>→ ближайшая выплата</td><td class="text-right">${fmtSum(summary.lkNextPayout)}</td><td>${summary.lkNextPayoutDate ? fmtDateRu(summary.lkNextPayoutDate) : '—'}</td></tr>
             <tr><td>→ следующие периоды</td><td class="text-right">${fmtSum(summary.lkRemainingBalance)}</td><td></td></tr>
-            <tr><td>Потенциал (в продаже)</td><td class="text-right">${fmtSum(summary.stockInSaleSaleSum)}</td><td>${summary.stockInSaleQty} шт</td></tr>
-            <tr><td>К отправке (не в продаже)</td><td class="text-right">—</td><td>${summary.stockForDispatchQty} шт</td></tr>
+            <tr><td>На складе «в продаже»</td><td class="text-right">—</td><td>${summary.stockInSaleQty} шт (товар, не деньги)</td></tr>
+            <tr><td>К отправке</td><td class="text-right">—</td><td>${summary.stockForDispatchQty} шт</td></tr>
           </tbody>
         </table>
         <div class="finance-export-row">
@@ -1764,8 +1765,7 @@
 
     const dashCards = [
       { label: 'Отгрузок', value: fmtNum(filtered ? stats.lines : statsAll.lines), sub: periodLabel },
-      { label: 'Штук', value: fmtNum(filtered ? stats.qty : statsAll.qty), sub: 'сумма количества' },
-      { label: 'Сумма (отп.цена)', value: fmtSum(filtered ? stats.sum : statsAll.sum), sub: 'отпускные цены', accent: 'blue' }
+      { label: 'Штук отправлено', value: fmtNum(filtered ? stats.qty : statsAll.qty), sub: 'учёт поставок, не выплаты' }
     ];
 
     const rows = shipments.map((s, i) => `<tr>
@@ -1790,7 +1790,7 @@
       ${renderDateFilterBar('shipments', filter.from, filter.to)}
       <div class="finance-toolbar">
         <span class="text-muted text-sm">Показано: ${shipments.length} из ${allShipments.length}<br>
-        <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
+        <span class="text-xs">Журнал поставок на склад Uzum. Суммы в таблице — отпускные цены, <strong>не выплаты</strong>.</span></span>
         <div class="finance-toolbar-actions">
           <button type="button" class="btn-secondary" id="finShipmentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
@@ -1835,7 +1835,6 @@
       },
       { label: 'Позиций', value: fmtNum(totals.positions), sub: 'SKU в отчёте' },
       { label: 'В продаже', value: fmtNum(totals.qtyInSale), sub: `${fmtNum(totals.qtyDispatch)} к отправке` },
-      { label: 'Сумма продажи', value: fmtSum(totals.saleSum), sub: 'по ценам Uzum', accent: 'blue' },
       { label: 'Себестоимость', value: fmtSum(totals.costSum), sub: 'из отчёта Uzum' }
     ];
 

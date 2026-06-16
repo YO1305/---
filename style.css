@@ -2959,6 +2959,7 @@ body.dark-mode .fabric-calc-result--error {
 .finance-card--yellow .finance-card-value { color: #a16207; }
 .finance-card--blue .finance-card-value { color: #1d4ed8; }
 .finance-card-meta { font-size: 13px; opacity: 0.85; }
+.finance-card-note { font-size: 12px; opacity: 0.75; margin-top: 6px; line-height: 1.35; }
 .finance-grand-total {
   display: flex;
   align-items: center;
