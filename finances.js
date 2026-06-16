@@ -21,10 +21,141 @@
     activeTab: 'summary',
     loading: true,
     seeded: false,
-    importInProgress: false
+    importInProgress: false,
+    storageMode: 'unknown' // firebase | local
   };
 
+  const FINANCE_LOCAL_KEY = 'yo_finances_uzum_v1';
+  let financeStoreMode = 'unknown';
+
   let _unsubs = [];
+
+  function colToStateKey(col) {
+    return ({
+      [COL.payments]: 'payments',
+      [COL.shipments]: 'shipments',
+      [COL.snapshots]: 'snapshots',
+      [COL.stock]: 'stock'
+    })[col] || null;
+  }
+
+  function isPermissionError(err) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    return code === 'permission-denied' || /insufficient permissions|missing or insufficient/i.test(msg);
+  }
+
+  function loadLocalFinanceData() {
+    try {
+      const raw = localStorage.getItem(FINANCE_LOCAL_KEY);
+      if (!raw) return { payments: [], shipments: [], snapshots: [], stock: [] };
+      const data = JSON.parse(raw);
+      return {
+        payments: Array.isArray(data.payments) ? data.payments : [],
+        shipments: Array.isArray(data.shipments) ? data.shipments : [],
+        snapshots: Array.isArray(data.snapshots) ? data.snapshots : [],
+        stock: Array.isArray(data.stock) ? data.stock : []
+      };
+    } catch {
+      return { payments: [], shipments: [], snapshots: [], stock: [] };
+    }
+  }
+
+  function persistLocalFinanceData() {
+    try {
+      localStorage.setItem(FINANCE_LOCAL_KEY, JSON.stringify({
+        payments: financeState.payments,
+        shipments: financeState.shipments,
+        snapshots: financeState.snapshots,
+        stock: financeState.stock,
+        updated_at: new Date().toISOString()
+      }));
+    } catch (err) {
+      console.error('finance local save:', err);
+      throw new Error('Не удалось сохранить данные в браузере (localStorage переполнен?)');
+    }
+  }
+
+  function activateLocalFinanceStorage(reason) {
+    financeStoreMode = 'local';
+    financeState.storageMode = 'local';
+    _unsubs.forEach((fn) => { try { fn(); } catch {} });
+    _unsubs = [];
+    const data = loadLocalFinanceData();
+    financeState.payments = data.payments;
+    financeState.shipments = data.shipments;
+    financeState.snapshots = data.snapshots;
+    financeState.stock = data.stock;
+    financeState.loading = false;
+    financeState.seeded = true;
+    if (reason) console.warn('Finance: локальное хранилище —', reason);
+  }
+
+  async function probeFinanceFirebaseWrite() {
+    const database = getDb();
+    if (!database) return false;
+    const testId = `_finance_probe_${Date.now()}`;
+    try {
+      await database.collection(COL.shipments).doc(testId).set({
+        id: testId,
+        marketplace_id: MP_ID,
+        _probe: true,
+        created_at: new Date().toISOString()
+      });
+      await database.collection(COL.shipments).doc(testId).delete();
+      return true;
+    } catch (err) {
+      if (isPermissionError(err)) return false;
+      console.warn('Finance probe:', err);
+      return false;
+    }
+  }
+
+  async function initFinanceStorage() {
+    if (financeStoreMode !== 'unknown') return financeStoreMode;
+    const canWrite = await probeFinanceFirebaseWrite();
+    if (canWrite) {
+      financeStoreMode = 'firebase';
+      financeState.storageMode = 'firebase';
+    } else {
+      activateLocalFinanceStorage('нет прав записи в Firebase (finance_*)');
+    }
+    return financeStoreMode;
+  }
+
+  function bulkWriteFinanceLocal(col, records, deleteIds = []) {
+    const stateKey = colToStateKey(col);
+    if (!stateKey) throw new Error('Неизвестная коллекция');
+    const deleteSet = new Set((deleteIds || []).map(String));
+    const map = new Map();
+    financeState[stateKey].forEach((item) => {
+      if (!deleteSet.has(String(item.id))) map.set(String(item.id), item);
+    });
+    records.forEach((rec) => map.set(String(rec.id), rec));
+    financeState[stateKey] = Array.from(map.values());
+    persistLocalFinanceData();
+    return records.length;
+  }
+
+  function upsertDocLocal(col, doc) {
+    const stateKey = colToStateKey(col);
+    if (!stateKey || !doc?.id) return false;
+    const id = String(doc.id);
+    const list = financeState[stateKey];
+    const idx = list.findIndex((x) => String(x.id) === id);
+    if (idx >= 0) list[idx] = doc;
+    else list.push(doc);
+    persistLocalFinanceData();
+    return true;
+  }
+
+  function deleteDocLocal(col, id) {
+    const stateKey = colToStateKey(col);
+    if (!stateKey || !id) return false;
+    financeState[stateKey] = financeState[stateKey].filter((x) => String(x.id) !== String(id));
+    persistLocalFinanceData();
+    return true;
+  }
 
   function getDb() {
     try {
@@ -136,6 +267,11 @@
   // ── Firestore ────────────────────────────────────────────────
 
   function upsertDoc(col, doc, options = {}) {
+    if (financeStoreMode === 'local') {
+      const ok = upsertDocLocal(col, doc);
+      if (!ok && options.strict) return Promise.reject(new Error('Ошибка локального сохранения'));
+      return Promise.resolve(ok);
+    }
     const database = getDb();
     if (!database || !doc?.id) {
       if (options.strict) return Promise.reject(new Error('Firebase не подключён'));
@@ -145,12 +281,19 @@
       .then(() => true)
       .catch((err) => {
         console.error(`finance upsert ${col}:`, err);
+        if (isPermissionError(err)) {
+          activateLocalFinanceStorage(err.message);
+          return upsertDocLocal(col, doc);
+        }
         if (options.strict) throw err;
         return false;
       });
   }
 
   async function bulkWriteFinanceDocs(col, records, deleteIds = []) {
+    if (financeStoreMode === 'local') {
+      return bulkWriteFinanceLocal(col, records, deleteIds);
+    }
     const database = getDb();
     if (!database) throw new Error('Firebase не подключён');
     const ops = [
@@ -160,16 +303,24 @@
     if (!ops.length) return 0;
 
     const CHUNK = 400;
-    for (let i = 0; i < ops.length; i += CHUNK) {
-      const batch = database.batch();
-      ops.slice(i, i + CHUNK).forEach((op) => {
-        const ref = database.collection(col).doc(op.type === 'delete' ? op.id : String(op.rec.id));
-        if (op.type === 'delete') batch.delete(ref);
-        else batch.set(ref, op.rec, { merge: true });
-      });
-      await batch.commit();
+    try {
+      for (let i = 0; i < ops.length; i += CHUNK) {
+        const batch = database.batch();
+        ops.slice(i, i + CHUNK).forEach((op) => {
+          const ref = database.collection(col).doc(op.type === 'delete' ? op.id : String(op.rec.id));
+          if (op.type === 'delete') batch.delete(ref);
+          else batch.set(ref, op.rec, { merge: true });
+        });
+        await batch.commit();
+      }
+      return records.length;
+    } catch (err) {
+      if (isPermissionError(err)) {
+        activateLocalFinanceStorage(err.message);
+        return bulkWriteFinanceLocal(col, records, deleteIds);
+      }
+      throw err;
     }
-    return records.length;
   }
 
   function setFinanceImportBusy(active, message) {
@@ -193,11 +344,30 @@
   }
 
   function deleteDoc(col, id) {
+    if (financeStoreMode === 'local') {
+      return Promise.resolve(deleteDocLocal(col, id));
+    }
     const database = getDb();
     if (!database || !id) return Promise.resolve(false);
     return database.collection(col).doc(String(id)).delete()
       .then(() => true)
-      .catch(err => { console.error(`finance delete ${col}:`, err); return false; });
+      .catch((err) => {
+        console.error(`finance delete ${col}:`, err);
+        if (isPermissionError(err)) {
+          activateLocalFinanceStorage(err.message);
+          return deleteDocLocal(col, id);
+        }
+        return false;
+      });
+  }
+
+  function renderFinanceStorageBanner() {
+    if (financeState.storageMode !== 'local') return '';
+    return `<div class="finance-warning finance-storage-banner">
+      ⚠️ <strong>Локальный режим.</strong> Firebase не даёт записывать финансы (нет прав на коллекции finance_*).
+      Данные сохраняются в этом браузере. Для облачной синхронизации добавьте правила в Firebase Console
+      (файл <code>firestore.rules</code> в проекте).
+    </div>`;
   }
 
   function startFinanceRealtimeSync() {
@@ -229,7 +399,7 @@
           if (document.getElementById('finances-tab')?.classList.contains('active')) {
             renderFinancesPage();
           }
-          if (!financeState.seeded && stateKey === 'payments' && next.length === 0) {
+          if (!financeState.seeded && stateKey === 'payments' && next.length === 0 && financeStoreMode === 'firebase') {
             financeState.seeded = true;
             void seedFinanceData();
           }
@@ -569,8 +739,7 @@
   }
 
   async function runFinanceImport(kind, buffer) {
-    const database = getDb();
-    if (!database) throw new Error('Firebase не подключён. Обновите страницу (Ctrl+F5) и проверьте интернет.');
+    await initFinanceStorage();
 
     const parsed = kind === 'shipments'
       ? parseShipmentsImport(buffer)
@@ -603,15 +772,21 @@
     }
 
     setFinanceImportBusy(true, `Импорт ${records.length} ${meta.label}...`);
+    let usedLocalFallback = false;
     try {
       await bulkWriteFinanceDocs(meta.col, records);
+      usedLocalFallback = financeStoreMode === 'local';
     } finally {
       setFinanceImportBusy(false);
     }
     renderFinancesPage();
 
     if (errors.length) {
-      alert(`✅ Импортировано: ${records.length} из ${parsed.rows.length}.\n\nПропущено:\n${errors.slice(0, 8).join('\n')}`);
+      alert(`✅ Импортировано: ${records.length} из ${parsed.rows.length}.${usedLocalFallback ? '\n\nСохранено локально в браузере (Firebase без прав).' : ''}\n\nПропущено:\n${errors.slice(0, 8).join('\n')}`);
+    } else if (usedLocalFallback) {
+      alert(`✅ Импортировано ${records.length} ${meta.label}.\n\nСохранено локально в браузере — в Firebase нет прав на запись.`);
+    } else {
+      alert(`✅ Импортировано ${records.length} ${meta.label}`);
     }
     return records.length;
   }
@@ -1040,6 +1215,7 @@
   function renderSummaryTab(summary) {
     const snap = getLatestSnapshot();
     return `
+      ${renderFinanceStorageBanner()}
       <div class="finance-summary-cards">
         <div class="finance-card finance-card--green">
           <div class="finance-card-label">✅ Уже получено</div>
@@ -1148,6 +1324,7 @@
     }).join('');
 
     return `
+      ${renderFinanceStorageBanner()}
       <div class="finance-toolbar">
         <span class="text-muted text-sm">Всего: ${payments.length} | Исполнено: ${payments.filter(p => p.status === 'completed').length}<br>
         <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
@@ -1195,6 +1372,7 @@
     </tr>`).join('');
 
     return `
+      ${renderFinanceStorageBanner()}
       <div class="finance-toolbar">
         <span class="text-muted text-sm">Отгрузок: ${shipments.length} | Сумма (отп.цена): ${fmtSum(totalSum)}<br>
         <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
@@ -1231,6 +1409,7 @@
     </tr>`).join('');
 
     return `
+      ${renderFinanceStorageBanner()}
       <div class="finance-stock-hint card">
         <strong>Как получить отчёт:</strong> ЛК Узума → Склад → Остатки → Скачать отчёт (xlsx). Загружайте раз в 1–2 недели.
         ${stock.length ? `<div class="finance-export-row" style="margin-top:10px">
@@ -1301,8 +1480,7 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const count = await runFinanceImport('snapshots', await file.arrayBuffer());
-        alert(`✅ Импортировано ${count} снимков баланса`);
+        await runFinanceImport('snapshots', await file.arrayBuffer());
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1313,8 +1491,7 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const count = await runFinanceImport('payments', await file.arrayBuffer());
-        alert(`✅ Импортировано ${count} выплат`);
+        await runFinanceImport('payments', await file.arrayBuffer());
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1325,8 +1502,7 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const count = await runFinanceImport('shipments', await file.arrayBuffer());
-        alert(`✅ Импортировано ${count} отгрузок`);
+        await runFinanceImport('shipments', await file.arrayBuffer());
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1373,6 +1549,7 @@
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить выплату?')) return;
         await deleteDoc(COL.payments, btn.dataset.finDelPayment);
+        renderFinancesPage();
       });
     });
     document.querySelectorAll('[data-fin-edit-shipment]').forEach(btn => {
@@ -1385,6 +1562,7 @@
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить отгрузку?')) return;
         await deleteDoc(COL.shipments, btn.dataset.finDelShipment);
+        renderFinancesPage();
       });
     });
   }
@@ -1405,12 +1583,24 @@
     });
   }
 
-  function startFinanceSyncOnce() {
+  async function startFinanceSyncOnce() {
     if (_financeSyncStarted) return;
     const database = getDb();
-    if (!database) return;
+    if (!database) {
+      activateLocalFinanceStorage('Firebase не подключён');
+      _financeSyncStarted = true;
+      if (document.getElementById('finances-tab')?.classList.contains('active')) {
+        renderFinancesPage();
+      }
+      return;
+    }
     _financeSyncStarted = true;
-    startFinanceRealtimeSync();
+    await initFinanceStorage();
+    if (financeStoreMode === 'firebase') {
+      startFinanceRealtimeSync();
+    } else if (document.getElementById('finances-tab')?.classList.contains('active')) {
+      renderFinancesPage();
+    }
   }
 
   function initFinances() {

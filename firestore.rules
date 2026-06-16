@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// Правила Firestore для YO Unit Economics.
+// Опубликуйте в Firebase Console → Firestore → Rules → Publish
+// https://console.firebase.google.com/project/yoa123/firestore/rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Основные коллекции приложения
+    match /products/{id} {
+      allow read, write: if true;
+    }
+    match /components/{id} {
+      allow read, write: if true;
+    }
+    match /shipments/{id} {
+      allow read, write: if true;
+    }
+    match /activity_log/{id} {
+      allow read, write: if true;
+    }
+    match /inventory_history/{id} {
+      allow read, write: if true;
+    }
+    match /system/{id} {
+      allow read, write: if true;
+    }
+
+    // Раздел «Финансы» (обязательно для импорта отгрузок/выплат)
+    match /finance_payments/{id} {
+      allow read, write: if true;
+    }
+    match /finance_shipments/{id} {
+      allow read, write: if true;
+    }
+    match /finance_balance_snapshots/{id} {
+      allow read, write: if true;
+    }
+    match /finance_warehouse_stock/{id} {
+      allow read, write: if true;
+    }
+  }
+}
