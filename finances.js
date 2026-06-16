@@ -906,11 +906,33 @@
     });
   }
 
-  function initFinances() {
-    document.querySelectorAll('[data-finance-tab]').forEach(btn => {
-      btn.addEventListener('click', () => setFinanceTab(btn.dataset.financeTab));
+  let _financeTabNavWired = false;
+  let _financeSyncStarted = false;
+
+  function wireFinanceTabNav() {
+    const nav = document.getElementById('financesTabNav');
+    if (!nav || _financeTabNavWired) return;
+    _financeTabNavWired = true;
+    nav.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-finance-tab]');
+      if (!btn || !nav.contains(btn)) return;
+      e.preventDefault();
+      const tabId = btn.getAttribute('data-finance-tab');
+      if (tabId) setFinanceTab(tabId);
     });
+  }
+
+  function startFinanceSyncOnce() {
+    if (_financeSyncStarted) return;
+    const database = getDb();
+    if (!database) return;
+    _financeSyncStarted = true;
     startFinanceRealtimeSync();
+  }
+
+  function initFinances() {
+    wireFinanceTabNav();
+    startFinanceSyncOnce();
     if (document.getElementById('finances-tab')?.classList.contains('active')) {
       renderFinancesPage();
     }
@@ -918,4 +940,7 @@
 
   window.renderFinancesPage = renderFinancesPage;
   window.initFinances = initFinances;
+  window.setFinanceTab = setFinanceTab;
+
+  initFinances();
 })();
