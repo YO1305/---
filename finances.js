@@ -1765,7 +1765,8 @@
 
     const dashCards = [
       { label: 'Отгрузок', value: fmtNum(filtered ? stats.lines : statsAll.lines), sub: periodLabel },
-      { label: 'Штук отправлено', value: fmtNum(filtered ? stats.qty : statsAll.qty), sub: 'учёт поставок, не выплаты' }
+      { label: 'Штук', value: fmtNum(filtered ? stats.qty : statsAll.qty), sub: 'сумма количества' },
+      { label: 'Сумма (отп.цена)', value: fmtSum(filtered ? stats.sum : statsAll.sum), sub: 'отпускные цены', accent: 'blue' }
     ];
 
     const rows = shipments.map((s, i) => `<tr>
@@ -1790,7 +1791,7 @@
       ${renderDateFilterBar('shipments', filter.from, filter.to)}
       <div class="finance-toolbar">
         <span class="text-muted text-sm">Показано: ${shipments.length} из ${allShipments.length}<br>
-        <span class="text-xs">Журнал поставок на склад Uzum. Суммы в таблице — отпускные цены, <strong>не выплаты</strong>.</span></span>
+        <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
         <div class="finance-toolbar-actions">
           <button type="button" class="btn-secondary" id="finShipmentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
