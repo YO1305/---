@@ -193,6 +193,10 @@
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const dot = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
     if (dot) return `${dot[3]}-${dot[2].padStart(2, '0')}-${dot[1].padStart(2, '0')}`;
+    const digitsOnly = s.replace(/\D/g, '');
+    if (/^\d{8}$/.test(digitsOnly)) {
+      return `${digitsOnly.slice(4, 8)}-${digitsOnly.slice(2, 4)}-${digitsOnly.slice(0, 2)}`;
+    }
     const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (slash) {
       const a = Number(slash[1]);
@@ -225,6 +229,47 @@
 
   function exportDateSuffix() {
     return fmtDateRu(new Date().toISOString().slice(0, 10)).replace(/\./g, '-');
+  }
+
+  function maskDateDigits(value) {
+    const digits = String(value ?? '').replace(/\D/g, '').slice(0, 8);
+    if (digits.length <= 2) return digits;
+    if (digits.length <= 4) return `${digits.slice(0, 2)}.${digits.slice(2)}`;
+    return `${digits.slice(0, 2)}.${digits.slice(2, 4)}.${digits.slice(4)}`;
+  }
+
+  function bindDateInputMask(root = document) {
+    root.querySelectorAll('input.fin-date-input').forEach((input) => {
+      if (input.dataset.dateMaskBound) return;
+      input.dataset.dateMaskBound = '1';
+      input.setAttribute('inputmode', 'numeric');
+      input.setAttribute('autocomplete', 'off');
+      input.setAttribute('maxlength', '10');
+      input.setAttribute('title', 'Вводите только цифры — точки подставятся сами');
+
+      input.addEventListener('input', () => {
+        const pos = input.selectionStart ?? input.value.length;
+        const digitsBefore = input.value.slice(0, pos).replace(/\D/g, '').length;
+        input.value = maskDateDigits(input.value);
+        let nextPos = 0;
+        let seen = 0;
+        for (let i = 0; i < input.value.length && seen < digitsBefore; i += 1) {
+          nextPos = i + 1;
+          if (/\d/.test(input.value[i])) seen += 1;
+        }
+        if (seen === digitsBefore && nextPos < input.value.length && input.value[nextPos] === '.') {
+          nextPos += 1;
+        }
+        try { input.setSelectionRange(nextPos, nextPos); } catch (_) { /* noop */ }
+      });
+
+      input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text').trim();
+        const iso = toIsoDate(text);
+        input.value = iso && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? fmtDateRu(iso) : maskDateDigits(text);
+      });
+    });
   }
 
   function parseFinanceNumber(v) {
@@ -353,10 +398,11 @@
   function renderDateFilterBar(tabKey, from, to) {
     return `<div class="finance-mini-filter card">
       <span class="finance-mini-filter-title">Период</span>
-      <label class="finance-mini-filter-field">с <input type="text" id="finFilterFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(from ? fmtDateRu(from) : '')}" /></label>
-      <label class="finance-mini-filter-field">по <input type="text" id="finFilterTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(to ? fmtDateRu(to) : '')}" /></label>
+      <label class="finance-mini-filter-field">с <input type="text" class="fin-date-input" id="finFilterFrom" placeholder="07062024" value="${escapeAttr(from ? fmtDateRu(from) : '')}" /></label>
+      <label class="finance-mini-filter-field">по <input type="text" class="fin-date-input" id="finFilterTo" placeholder="07062024" value="${escapeAttr(to ? fmtDateRu(to) : '')}" /></label>
       <button type="button" class="btn-secondary btn-sm" data-fin-filter-apply="${tabKey}">Применить</button>
       <button type="button" class="btn-secondary btn-sm" data-fin-filter-reset="${tabKey}">Сбросить</button>
+      <span class="finance-date-hint">даты: только цифры</span>
     </div>`;
   }
 
@@ -1344,6 +1390,7 @@
         </div>
       </div>`;
     overlay.classList.add('active');
+    bindDateInputMask(overlay);
     const close = () => overlay.classList.remove('active');
     overlay.querySelector('.finance-modal-close').onclick = close;
     overlay.querySelector('.finance-modal-cancel').onclick = close;
@@ -1358,11 +1405,56 @@
     };
   }
 
+  function askFinanceDate(title, hint, defaultValue) {
+    return new Promise((resolve) => {
+      let overlay = document.getElementById('financeModalOverlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'financeModalOverlay';
+        overlay.className = 'finance-modal-overlay';
+        document.body.appendChild(overlay);
+      }
+      const defaultRu = defaultValue ? fmtDateRu(defaultValue) : '';
+      overlay.innerHTML = `
+        <div class="finance-modal card" role="dialog" aria-modal="true">
+          <div class="finance-modal-header">
+            <h3>${escapeHtml(title)}</h3>
+            <button type="button" class="finance-modal-close" aria-label="Закрыть">✕</button>
+          </div>
+          <div class="finance-modal-body">
+            <p class="sub">${escapeHtml(hint)}</p>
+            <label class="finance-date-field">Дата
+              <input type="text" class="fin-date-input" id="finPromptDate" placeholder="07062024" value="${escapeAttr(defaultRu)}" />
+            </label>
+            <p class="finance-date-hint">Только цифры — формат дд.мм.гггг подставится сам</p>
+          </div>
+          <div class="finance-modal-footer">
+            <button type="button" class="btn-secondary finance-modal-cancel">Отмена</button>
+            <button type="button" class="btn-primary finance-modal-save">OK</button>
+          </div>
+        </div>`;
+      const close = (result) => {
+        overlay.classList.remove('active');
+        resolve(result);
+      };
+      overlay.querySelector('.finance-modal-close').onclick = () => close(null);
+      overlay.querySelector('.finance-modal-cancel').onclick = () => close(null);
+      overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+      overlay.querySelector('.finance-modal-save').onclick = () => {
+        close(overlay.querySelector('#finPromptDate')?.value?.trim() || null);
+      };
+      bindDateInputMask(overlay);
+      overlay.classList.add('active');
+      overlay.querySelector('#finPromptDate')?.focus();
+    });
+  }
+
   function openPaymentForm(payment) {
     const p = payment || {};
+    const today = fmtDateRu(new Date().toISOString().slice(0, 10));
     showModal(p.id ? 'Редактировать выплату' : 'Добавить выплату', `
       <div class="finance-form-grid">
-        <label>Дата<input type="text" id="finPayDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(p.payment_date) === '—' ? '' : fmtDateRu(p.payment_date))}" /></label>
+        <label>Дата<input type="text" class="fin-date-input" id="finPayDate" placeholder="07062024" value="${escapeAttr(p.payment_date ? fmtDateRu(p.payment_date) : today)}" /></label>
         <label>Сумма, сум<input type="number" id="finPayAmount" value="${escapeAttr(p.amount ?? '')}" min="0" step="1" /></label>
         <label>Номер запроса<input type="text" id="finPayRequest" value="${escapeAttr(p.request_number || '')}" /></label>
         <label>Статус
@@ -1372,8 +1464,9 @@
             <option value="rejected" ${p.status === 'rejected' ? 'selected' : ''}>Отклонён</option>
           </select>
         </label>
-        <label>Период с<input type="text" id="finPayFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(p.period_from ? fmtDateRu(p.period_from) : '')}" /></label>
-        <label>Период по<input type="text" id="finPayTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(p.period_to ? fmtDateRu(p.period_to) : '')}" /></label>
+        <label>Период с<input type="text" class="fin-date-input" id="finPayFrom" placeholder="07062024" value="${escapeAttr(p.period_from ? fmtDateRu(p.period_from) : '')}" /></label>
+        <label>Период по<input type="text" class="fin-date-input" id="finPayTo" placeholder="07062024" value="${escapeAttr(p.period_to ? fmtDateRu(p.period_to) : '')}" /></label>
+        <p class="finance-date-hint finance-form-full">Даты: только цифры, точки подставятся сами</p>
         <label class="finance-form-full">Примечание<textarea id="finPayNotes" rows="2">${escapeHtml(p.notes || '')}</textarea></label>
       </div>`, async () => {
       await savePayment({
@@ -1391,9 +1484,10 @@
 
   function openShipmentForm(shipment) {
     const s = shipment || {};
+    const today = fmtDateRu(new Date().toISOString().slice(0, 10));
     showModal(s.id ? 'Редактировать отгрузку' : 'Добавить отгрузку', `
       <div class="finance-form-grid">
-        <label>Дата<input type="text" id="finShipDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(s.shipment_date) === '—' ? '' : fmtDateRu(s.shipment_date))}" /></label>
+        <label>Дата<input type="text" class="fin-date-input" id="finShipDate" placeholder="07062024" value="${escapeAttr(s.shipment_date ? fmtDateRu(s.shipment_date) : today)}" /></label>
         <label>Артикул<input type="text" id="finShipArticle" value="${escapeAttr(s.article_code || '')}" /></label>
         <label>Кол-во, шт<input type="number" id="finShipQty" value="${escapeAttr(s.quantity ?? '')}" min="0" /></label>
         <label>Отп. цена, сум<input type="number" id="finShipUnit" value="${escapeAttr(s.unit_price ?? '')}" min="0" step="1" /></label>
@@ -1408,6 +1502,7 @@
         </label>
         <label class="finance-form-full">Описание<textarea id="finShipDesc" rows="2">${escapeHtml(s.description || '')}</textarea></label>
         <label class="finance-form-full">Примечание<textarea id="finShipNotes" rows="2">${escapeHtml(s.notes || '')}</textarea></label>
+        <p class="finance-date-hint finance-form-full">Дата: только цифры, точки подставятся сами</p>
       </div>`, async () => {
       await saveShipment({
         shipment_date: toIsoDate(document.getElementById('finShipDate').value),
@@ -1428,12 +1523,13 @@
     showModal('Обновить баланс ЛК Узума', `
       <p class="sub finance-form-hint">Введите данные из личного кабинета Узума. Создаётся новый снимок.</p>
       <div class="finance-form-grid">
-        <label>Дата снимка<input type="text" id="finSnapDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(snap.snapshot_date || new Date().toISOString().slice(0, 10)))}" /></label>
+        <label>Дата снимка<input type="text" class="fin-date-input" id="finSnapDate" placeholder="07062024" value="${escapeAttr(fmtDateRu(snap.snapshot_date || new Date().toISOString().slice(0, 10)))}" /></label>
         <label>Общий баланс ЛК, сум<input type="number" id="finSnapTotal" value="${escapeAttr(snap.total_balance ?? '')}" min="0" /></label>
         <label>К выплате, сум<input type="number" id="finSnapNext" value="${escapeAttr(snap.next_payout_amount ?? '')}" min="0" /></label>
-        <label>Дата выплаты<input type="text" id="finSnapNextDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_date ? fmtDateRu(snap.next_payout_date) : '')}" /></label>
-        <label>Период с<input type="text" id="finSnapFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_period_from ? fmtDateRu(snap.next_payout_period_from) : '')}" /></label>
-        <label>Период по<input type="text" id="finSnapTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_period_to ? fmtDateRu(snap.next_payout_period_to) : '')}" /></label>
+        <label>Дата выплаты<input type="text" class="fin-date-input" id="finSnapNextDate" placeholder="07062024" value="${escapeAttr(snap.next_payout_date ? fmtDateRu(snap.next_payout_date) : '')}" /></label>
+        <label>Период с<input type="text" class="fin-date-input" id="finSnapFrom" placeholder="07062024" value="${escapeAttr(snap.next_payout_period_from ? fmtDateRu(snap.next_payout_period_from) : '')}" /></label>
+        <label>Период по<input type="text" class="fin-date-input" id="finSnapTo" placeholder="07062024" value="${escapeAttr(snap.next_payout_period_to ? fmtDateRu(snap.next_payout_period_to) : '')}" /></label>
+        <p class="finance-date-hint finance-form-full">Даты: только цифры, точки подставятся сами</p>
         <label class="finance-form-full">Примечание<textarea id="finSnapNotes" rows="2">${escapeHtml(snap.notes || '')}</textarea></label>
       </div>`, async () => {
       await saveSnapshot({
@@ -1783,6 +1879,7 @@
 
     root.innerHTML = content;
     wireFinancesEvents();
+    bindDateInputMask(root);
   }
 
   function setFinanceTab(tabId) {
@@ -1876,12 +1973,13 @@
         const buffer = await file.arrayBuffer();
         const rows = parseUzumStockReport(buffer);
         let snapshotDate = detectStockSnapshotDate(file, buffer, rows);
-        const custom = prompt(
-          `Дата снимка (ДД.ММ.ГГГГ):\nМожно изменить, если в файле другая дата.`,
-          fmtDateRu(snapshotDate)
+        const custom = await askFinanceDate(
+          'Дата снимка остатков',
+          'Можно изменить, если в файле другая дата.',
+          snapshotDate
         );
         if (custom === null) return;
-        if (String(custom).trim()) snapshotDate = toIsoDate(custom);
+        if (custom) snapshotDate = toIsoDate(custom);
         const result = await importStockReport(snapshotDate, rows);
         const deltaText = result.prevDate && result.delta
           ? ` Изменение vs ${fmtDateRu(result.prevDate)}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
