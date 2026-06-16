@@ -20,7 +20,6 @@
     stock: [],
     activeTab: 'summary',
     loading: true,
-    seeded: false,
     importInProgress: false,
     storageMode: 'unknown', // firebase | local
     filters: {
@@ -92,7 +91,6 @@
     financeState.snapshots = data.snapshots;
     financeState.stock = data.stock;
     financeState.loading = false;
-    financeState.seeded = true;
     if (reason) console.warn('Finance: локальное хранилище —', reason);
   }
 
@@ -588,6 +586,37 @@
     }
   }
 
+  async function clearAllFinancePayments() {
+    const count = financeState.payments.length;
+    if (!count) {
+      alert('Нет выплат для удаления.');
+      return;
+    }
+
+    if (!confirm(`⚠️ Шаг 1 из 3\n\nУдалить ВСЕ ${count} выплат из раздела «Финансы»?`)) return;
+    if (!confirm(`⚠️ Шаг 2 из 3\n\nВы точно уверены?\nБудут удалены все ${count} записей. Восстановить будет нельзя.`)) return;
+
+    const typed = prompt(`⚠️ Шаг 3 из 3\n\nЧтобы удалить всё, введите слово:\nУДАЛИТЬ`);
+    if (String(typed || '').trim().toUpperCase() !== 'УДАЛИТЬ') {
+      alert('Отменено — слово не совпало.');
+      return;
+    }
+
+    const ids = financeState.payments.map((p) => p.id).filter(Boolean);
+    setFinanceImportBusy(true, `Удаление ${count} выплат...`);
+    try {
+      await bulkWriteFinanceDocs(COL.payments, [], ids);
+      financeState.payments = [];
+      if (financeStoreMode === 'local') persistLocalFinanceData();
+      renderFinancesPage();
+      alert(`✅ Удалено ${count} выплат.`);
+    } catch (err) {
+      alert(err?.message || 'Ошибка удаления');
+    } finally {
+      setFinanceImportBusy(false);
+    }
+  }
+
   function startFinanceRealtimeSync() {
     const database = getDb();
     if (!database) return;
@@ -617,65 +646,9 @@
           if (document.getElementById('finances-tab')?.classList.contains('active')) {
             renderFinancesPage();
           }
-          if (!financeState.seeded && stateKey === 'payments' && next.length === 0 && financeStoreMode === 'firebase') {
-            financeState.seeded = true;
-            void seedFinanceData();
-          }
         }, err => console.error(`finance onSnapshot ${col}:`, err));
       _unsubs.push(unsub);
     });
-  }
-
-  // ── Seed ─────────────────────────────────────────────────────
-
-  async function seedFinanceData() {
-    const payments = [
-      { payment_date: '2026-03-11', amount: 26592220, request_number: '#1556211', status: 'completed' },
-      { payment_date: '2026-03-17', amount: 35576580, request_number: '#1573291', status: 'completed' },
-      { payment_date: '2026-03-24', amount: 33386835, request_number: '#1585534', status: 'completed' },
-      { payment_date: '2026-04-02', amount: 40412310, request_number: '#1615864', status: 'completed' },
-      { payment_date: '2026-04-14', amount: 20274792, request_number: '#5000000404', status: 'completed' },
-      { payment_date: '2026-04-20', amount: 34170000, request_number: '#5000025482', status: 'completed' },
-      { payment_date: '2026-04-21', amount: 4278143, request_number: '#5000031107', status: 'completed' },
-      { payment_date: '2026-05-07', amount: 50120904, request_number: '#5000070348', status: 'completed' },
-      { payment_date: '2026-05-22', amount: 43596514, request_number: '#5000118081', status: 'completed' },
-      { payment_date: '2026-06-01', amount: 28645218, request_number: '#5000147131', status: 'completed', notes: 'Ранее не была записана — добавлена' },
-      { payment_date: '2026-06-09', amount: 18114131, request_number: '#5000169479', status: 'completed' },
-      { payment_date: null, amount: 0, request_number: '#5000154961', status: 'rejected', notes: 'Дубль запроса — деньги не поступали' },
-      { payment_date: '2026-06-21', amount: 31740152, request_number: 'по графику', status: 'pending', period_from: '2026-05-27', period_to: '2026-06-10' }
-    ];
-
-    for (const p of payments) {
-      const rec = {
-        id: genId(),
-        marketplace_id: MP_ID,
-        payment_date: p.payment_date,
-        amount: p.amount || 0,
-        request_number: p.request_number || null,
-        status: p.status,
-        period_from: p.period_from || null,
-        period_to: p.period_to || null,
-        notes: p.notes || null,
-        created_at: new Date().toISOString()
-      };
-      if (p.status === 'rejected') rec.amount = 0;
-      await upsertDoc(COL.payments, rec);
-    }
-
-    const snap = {
-      id: genId(),
-      marketplace_id: MP_ID,
-      snapshot_date: '2026-06-16',
-      total_balance: 98967558,
-      next_payout_amount: 31740152,
-      next_payout_date: '2026-06-21',
-      next_payout_period_from: '2026-05-27',
-      next_payout_period_to: '2026-06-10',
-      remaining_balance: 67227406,
-      notes: null,
-      created_at: new Date().toISOString()
-    };
-    await upsertDoc(COL.snapshots, snap);
   }
 
   // ── CRUD helpers ─────────────────────────────────────────────
@@ -1590,6 +1563,7 @@
           <button type="button" class="btn-secondary" id="finPaymentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finPaymentsImportInput" /></label>
           <button type="button" class="btn-secondary" id="finPaymentsExportBtn">📥 Экспорт</button>
+          ${allPayments.length ? '<button type="button" class="btn-danger" id="finClearAllPaymentsBtn" title="Тройное подтверждение">🗑 Очистить всё</button>' : ''}
           <button type="button" class="btn-primary" id="finAddPaymentBtn">+ Добавить выплату</button>
         </div>
       </div>
@@ -1801,6 +1775,7 @@
     document.getElementById('finShipmentsTemplateBtn')?.addEventListener('click', exportShipmentsTemplate);
     document.getElementById('finShipmentsExportBtn')?.addEventListener('click', exportShipmentsToExcel);
     document.getElementById('finClearAllShipmentsBtn')?.addEventListener('click', () => { void clearAllFinanceShipments(); });
+    document.getElementById('finClearAllPaymentsBtn')?.addEventListener('click', () => { void clearAllFinancePayments(); });
     document.getElementById('finRetryFirebaseBtn')?.addEventListener('click', () => { void retryFinanceFirebaseSync(); });
 
     document.querySelectorAll('[data-fin-filter-apply]').forEach((btn) => {
