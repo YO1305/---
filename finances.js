@@ -49,6 +49,10 @@
 
   function toIsoDate(v) {
     if (!v) return '';
+    if (typeof v === 'number' && v > 20000) {
+      const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+      if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    }
     if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
     const m = String(v).match(/(\d{2})\.(\d{2})\.(\d{4})/);
     if (m) return `${m[3]}-${m[2]}-${m[1]}`;
@@ -268,7 +272,7 @@
     const total = Number(data.total_balance) || 0;
     const next = Number(data.next_payout_amount) || 0;
     const rec = {
-      id: genId(),
+      id: data.id || genId(),
       marketplace_id: MP_ID,
       snapshot_date: toIsoDate(data.snapshot_date),
       total_balance: total,
@@ -276,9 +280,11 @@
       next_payout_date: data.next_payout_date ? toIsoDate(data.next_payout_date) : null,
       next_payout_period_from: data.next_payout_period_from ? toIsoDate(data.next_payout_period_from) : null,
       next_payout_period_to: data.next_payout_period_to ? toIsoDate(data.next_payout_period_to) : null,
-      remaining_balance: total - next,
+      remaining_balance: data.remaining_balance != null && data.remaining_balance !== ''
+        ? Number(data.remaining_balance)
+        : total - next,
       notes: data.notes || null,
-      created_at: new Date().toISOString()
+      created_at: data.created_at || new Date().toISOString()
     };
     await upsertDoc(COL.snapshots, rec);
     renderFinancesPage();
@@ -322,6 +328,90 @@
 
   // ── Import / Export ──────────────────────────────────────────
 
+  const FIN_SHIPMENT_COLS = [
+    'Дата', 'Артикул', 'Описание', 'Кол-во, шт', 'Отп. цена, сум',
+    'Сумма (отп.цена), сум', 'Статус', 'Примечание'
+  ];
+  const FIN_PAYMENT_COLS = [
+    'Дата', 'Сумма, сум', 'Период (с)', 'Период (по)', 'Номер запроса', 'Статус', 'Примечание'
+  ];
+  const FIN_SNAPSHOT_COLS = [
+    'Дата снимка', 'Общий баланс, сум', 'К выплате, сум', 'Дата выплаты',
+    'Период (с)', 'Период (по)', 'Остаток после выплаты, сум', 'Примечание'
+  ];
+
+  function downloadFinanceWorkbook(filename, sheets) {
+    const wb = XLSX.utils.book_new();
+    sheets.forEach(({ name, sheet }) => XLSX.utils.book_append_sheet(wb, sheet, name));
+    XLSX.writeFile(wb, filename);
+  }
+
+  function sheetFromRows(columns, rows, colWidths) {
+    const ws = rows.length
+      ? XLSX.utils.json_to_sheet(rows, { header: columns })
+      : XLSX.utils.aoa_to_sheet([columns]);
+    if (colWidths?.length) ws['!cols'] = colWidths.map(wch => ({ wch }));
+    return ws;
+  }
+
+  function hintsSheet(rows) {
+    const ws = XLSX.utils.aoa_to_sheet([['Столбец', 'Описание', 'Пример / допустимые значения'], ...rows]);
+    ws['!cols'] = [{ wch: 22 }, { wch: 52 }, { wch: 36 }];
+    return ws;
+  }
+
+  function shipmentRowFromRecord(s) {
+    return {
+      'Дата': s.shipment_date || '',
+      'Артикул': s.article_code || '',
+      'Описание': s.description || '',
+      'Кол-во, шт': s.quantity ?? '',
+      'Отп. цена, сум': s.unit_price ?? '',
+      'Сумма (отп.цена), сум': s.total_amount ?? '',
+      'Статус': s.status || 'in_sale',
+      'Примечание': s.notes || ''
+    };
+  }
+
+  function paymentRowFromRecord(p) {
+    return {
+      'Дата': p.payment_date || '',
+      'Сумма, сум': p.amount ?? '',
+      'Период (с)': p.period_from || '',
+      'Период (по)': p.period_to || '',
+      'Номер запроса': p.request_number || '',
+      'Статус': p.status || 'completed',
+      'Примечание': p.notes || ''
+    };
+  }
+
+  function isExampleImportRow(values) {
+    return values.some((v) => {
+      const s = String(v ?? '').trim().toLowerCase();
+      if (!s) return false;
+      return s.startsWith('пример')
+        || s.startsWith('example')
+        || s.includes('удалите эту строк')
+        || s.includes('образец заполн');
+    });
+  }
+
+  function normalizeFinanceStatus(value, kind) {
+    const s = String(value ?? '').trim().toLowerCase();
+    if (!s) return kind === 'payment' ? 'completed' : 'in_sale';
+    if (kind === 'payment') {
+      if (s === 'completed' || s.includes('исполнен')) return 'completed';
+      if (s === 'pending' || s.includes('ожида')) return 'pending';
+      if (s === 'rejected' || s.includes('отклон')) return 'rejected';
+      return s;
+    }
+    if (s === 'in_transit' || s.includes('пути')) return 'in_transit';
+    if (s === 'accepted' || s.includes('принят')) return 'accepted';
+    if (s === 'in_sale' || s.includes('продаже')) return 'in_sale';
+    if (s === 'sold_out' || s.includes('распрод')) return 'sold_out';
+    return s;
+  }
+
   function parseUzumStockReport(buffer) {
     const wb = XLSX.read(buffer, { type: 'array' });
     const sheetName = wb.SheetNames.find(n => /остаток|Остат/i.test(n)) ?? wb.SheetNames[0];
@@ -331,90 +421,258 @@
 
   function parseShipmentsImport(buffer) {
     const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
+    const ws = wb.Sheets[wb.SheetNames.find(n => /отгруз/i.test(n)) ?? wb.SheetNames[0]];
     return XLSX.utils.sheet_to_json(ws)
-      .filter(r => r['Дата'] && r['Артикул'])
+      .filter(r => {
+        const article = String(r['Артикул'] ?? '').trim();
+        const date = r['Дата'];
+        if (!article || !date) return false;
+        if (isExampleImportRow([article, r['Описание'], r['Примечание']])) return false;
+        return true;
+      })
       .map(r => ({
         shipment_date: toIsoDate(r['Дата']),
-        article_code: String(r['Артикул']),
+        article_code: String(r['Артикул']).trim(),
         description: r['Описание'] ?? '',
         quantity: Number(r['Кол-во, шт'] ?? 0),
-        unit_price: r['Отп. цена, сум'] ? Number(r['Отп. цена, сум']) : null,
+        unit_price: r['Отп. цена, сум'] !== '' && r['Отп. цена, сум'] != null ? Number(r['Отп. цена, сум']) : null,
         total_amount: Number(r['Сумма (отп.цена), сум'] ?? 0),
-        status: r['Статус'] ?? 'in_sale',
+        status: normalizeFinanceStatus(r['Статус'], 'shipment'),
         notes: r['Примечание'] ?? null
       }));
   }
 
   function parsePaymentsImport(buffer) {
     const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
+    const ws = wb.Sheets[wb.SheetNames.find(n => /выплат/i.test(n)) ?? wb.SheetNames[0]];
     return XLSX.utils.sheet_to_json(ws)
-      .filter(r => r['Сумма, сум'] != null && r['Сумма, сум'] !== '')
+      .filter(r => {
+        const amount = r['Сумма, сум'];
+        if (amount == null || amount === '') return false;
+        if (isExampleImportRow([r['Дата'], r['Номер запроса'], r['Примечание']])) return false;
+        return true;
+      })
       .map(r => ({
         payment_date: r['Дата'] && r['Дата'] !== '—' ? toIsoDate(r['Дата']) : null,
         amount: Number(r['Сумма, сум']),
         period_from: r['Период (с)'] ? toIsoDate(r['Период (с)']) : null,
         period_to: r['Период (по)'] ? toIsoDate(r['Период (по)']) : null,
         request_number: r['Номер запроса'] || null,
-        status: r['Статус'] ?? 'completed',
+        status: normalizeFinanceStatus(r['Статус'], 'payment'),
         notes: r['Примечание'] ?? null
       }));
   }
 
+  function parseSnapshotsImport(buffer) {
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws)
+      .filter(r => r['Дата снимка'] && r['Общий баланс, сум'] != null && r['Общий баланс, сум'] !== '')
+      .map(r => ({
+        snapshot_date: toIsoDate(r['Дата снимка']),
+        total_balance: Number(r['Общий баланс, сум']),
+        next_payout_amount: Number(r['К выплате, сум'] ?? 0),
+        next_payout_date: r['Дата выплаты'] ? toIsoDate(r['Дата выплаты']) : null,
+        next_payout_period_from: r['Период (с)'] ? toIsoDate(r['Период (с)']) : null,
+        next_payout_period_to: r['Период (по)'] ? toIsoDate(r['Период (по)']) : null,
+        remaining_balance: r['Остаток после выплаты, сум'] != null && r['Остаток после выплаты, сум'] !== ''
+          ? Number(r['Остаток после выплаты, сум'])
+          : null,
+        notes: r['Примечание'] ?? null
+      }));
+  }
+
+  function exportShipmentsTemplate() {
+    const example = [{
+      'Дата': '2026-06-15',
+      'Артикул': 'ПРИМЕР-001',
+      'Описание': 'Удалите эту строку — это образец',
+      'Кол-во, шт': 10,
+      'Отп. цена, сум': 120000,
+      'Сумма (отп.цена), сум': 1200000,
+      'Статус': 'in_sale',
+      'Примечание': ''
+    }];
+    downloadFinanceWorkbook(`shablon_otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      {
+        name: 'Отгрузки',
+        sheet: sheetFromRows(FIN_SHIPMENT_COLS, example, [12, 14, 28, 10, 14, 18, 12, 24])
+      },
+      {
+        name: 'Как заполнять',
+        sheet: hintsSheet([
+          ['Дата', 'Дата отгрузки на склад Uzum', '2026-06-15 или 15.06.2026'],
+          ['Артикул', 'Артикул 1С / внутренний код', 'НВ-50-70-бел'],
+          ['Описание', 'Название товара (необязательно)', 'Наволочка 50×70'],
+          ['Кол-во, шт', 'Количество штук', '24'],
+          ['Отп. цена, сум', 'Отпускная цена за 1 шт', '85000'],
+          ['Сумма (отп.цена), сум', 'Итого по строке', '2040000'],
+          ['Статус', 'in_transit | accepted | in_sale | sold_out', 'in_sale'],
+          ['Примечание', 'Любой комментарий', '']
+        ])
+      }
+    ]);
+  }
+
+  function exportPaymentsTemplate() {
+    const example = [{
+      'Дата': '2026-06-09',
+      'Сумма, сум': 18114131,
+      'Период (с)': '2026-05-27',
+      'Период (по)': '2026-06-10',
+      'Номер запроса': '#5000169479',
+      'Статус': 'completed',
+      'Примечание': 'Удалите эту строку — это образец'
+    }];
+    downloadFinanceWorkbook(`shablon_vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      {
+        name: 'Выплаты',
+        sheet: sheetFromRows(FIN_PAYMENT_COLS, example, [12, 14, 12, 12, 18, 12, 28])
+      },
+      {
+        name: 'Как заполнять',
+        sheet: hintsSheet([
+          ['Дата', 'Дата поступления на р/с (для ожидаемых можно оставить пустым)', '2026-06-09'],
+          ['Сумма, сум', 'Сумма выплаты в сумах', '18114131'],
+          ['Период (с)', 'Начало отчётного периода Uzum', '2026-05-27'],
+          ['Период (по)', 'Конец отчётного периода', '2026-06-10'],
+          ['Номер запроса', 'Номер заявки в ЛК', '#5000169479'],
+          ['Статус', 'completed | pending | rejected (или Исполнен/Ожидается/Отклонён)', 'completed'],
+          ['Примечание', 'Комментарий', '']
+        ])
+      }
+    ]);
+  }
+
+  function exportSnapshotsTemplate() {
+    downloadFinanceWorkbook(`shablon_balans_lk_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      {
+        name: 'Баланс ЛК',
+        sheet: sheetFromRows(FIN_SNAPSHOT_COLS, [{
+          'Дата снимка': '2026-06-16',
+          'Общий баланс, сум': 98967558,
+          'К выплате, сум': 31740152,
+          'Дата выплаты': '2026-06-21',
+          'Период (с)': '2026-05-27',
+          'Период (по)': '2026-06-10',
+          'Остаток после выплаты, сум': 67227406,
+          'Примечание': 'Удалите эту строку — это образец'
+        }], [14, 18, 16, 14, 12, 12, 22, 24])
+      },
+      {
+        name: 'Как заполнять',
+        sheet: hintsSheet([
+          ['Дата снимка', 'Когда смотрели баланс в ЛК Uzum', '2026-06-16'],
+          ['Общий баланс, сум', '«Всего к выплате» в личном кабинете', '98967558'],
+          ['К выплате, сум', 'Сумма ближайшей выплаты', '31740152'],
+          ['Дата выплаты', 'Дата ближайшей выплаты', '2026-06-21'],
+          ['Период (с)', 'Период ближайшей выплаты — начало', '2026-05-27'],
+          ['Период (по)', 'Период ближайшей выплаты — конец', '2026-06-10'],
+          ['Остаток после выплаты, сум', 'Остаток «следующие периоды» (если пусто — посчитается)', '67227406']
+        ])
+      }
+    ]);
+  }
+
   function exportShipmentsToExcel() {
     const rows = financeState.shipments
+      .slice()
       .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime())
-      .map((s, i) => ({
-        '№': i + 1,
-        'Дата': s.shipment_date,
-        'Артикул': s.article_code,
-        'Описание': s.description,
-        'Кол-во, шт': s.quantity,
-        'Отп. цена, сум': s.unit_price,
-        'Сумма (отп.цена), сум': s.total_amount,
-        'Статус': s.status,
-        'Примечание': s.notes ?? ''
-      }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Отгрузки');
-    XLSX.writeFile(wb, `otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      .map(shipmentRowFromRecord);
+    downloadFinanceWorkbook(`otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Отгрузки', sheet: sheetFromRows(FIN_SHIPMENT_COLS, rows, [12, 14, 28, 10, 14, 18, 12, 24]) }
+    ]);
   }
 
   function exportPaymentsToExcel() {
-    let running = 0;
-    const sorted = financeState.payments.slice().sort((a, b) => {
-      if (!a.payment_date) return 1;
-      if (!b.payment_date) return -1;
-      return new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime();
-    });
-    const rows = sorted.map((p, i) => {
-      if (p.status === 'completed') running += Number(p.amount || 0);
-      return {
-        '№': i + 1,
-        'Дата': p.payment_date ?? '—',
-        'Сумма, сум': p.amount,
-        'Накоплено итого, сум': p.status === 'completed' ? running : '—',
-        'Период (с)': p.period_from ?? '',
-        'Период (по)': p.period_to ?? '',
-        'Номер запроса': p.request_number ?? '',
-        'Статус': p.status,
-        'Примечание': p.notes ?? ''
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Выплаты');
-    XLSX.writeFile(wb, `vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const rows = financeState.payments
+      .slice()
+      .sort((a, b) => {
+        if (!a.payment_date) return 1;
+        if (!b.payment_date) return -1;
+        return new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime();
+      })
+      .map(paymentRowFromRecord);
+    downloadFinanceWorkbook(`vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Выплаты', sheet: sheetFromRows(FIN_PAYMENT_COLS, rows, [12, 14, 12, 12, 18, 12, 28]) }
+    ]);
+  }
+
+  function exportSnapshotsToExcel() {
+    const rows = financeState.snapshots
+      .slice()
+      .sort((a, b) => new Date(b.snapshot_date).getTime() - new Date(a.snapshot_date).getTime())
+      .map(s => ({
+        'Дата снимка': s.snapshot_date || '',
+        'Общий баланс, сум': s.total_balance ?? '',
+        'К выплате, сум': s.next_payout_amount ?? '',
+        'Дата выплаты': s.next_payout_date || '',
+        'Период (с)': s.next_payout_period_from || '',
+        'Период (по)': s.next_payout_period_to || '',
+        'Остаток после выплаты, сум': s.remaining_balance ?? '',
+        'Примечание': s.notes || ''
+      }));
+    downloadFinanceWorkbook(`balans_lk_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Баланс ЛК', sheet: sheetFromRows(FIN_SNAPSHOT_COLS, rows, [14, 18, 16, 14, 12, 12, 22, 24]) }
+    ]);
+  }
+
+  function exportStockToExcel() {
+    const stock = getLatestStockRows();
+    const cols = [
+      'ID', 'Наименование', 'SKU', 'Штрихкод', 'ID товара',
+      'К отправке', 'В продаже', 'Возврат', 'Брак',
+      'Себест. (сумы)', 'Стоимость продажи (сумы)',
+      'Общий остаток', 'Стоимость продажи (сумма) (сумы)',
+      'Себест. (сумма) (сумы)', 'Статус'
+    ];
+    const rows = stock.map(s => ({
+      'ID': s.uzum_id || '',
+      'Наименование': s.product_name || '',
+      'SKU': s.sku || '',
+      'Штрихкод': s.barcode || '',
+      'ID товара': s.product_id || '',
+      'К отправке': s.qty_for_dispatch ?? 0,
+      'В продаже': s.qty_in_sale ?? 0,
+      'Возврат': s.qty_return ?? 0,
+      'Брак': s.qty_defect ?? 0,
+      'Себест. (сумы)': s.cost_price ?? '',
+      'Стоимость продажи (сумы)': s.sale_price ?? '',
+      'Общий остаток': s.total_qty ?? 0,
+      'Стоимость продажи (сумма) (сумы)': s.total_sale_sum ?? '',
+      'Себест. (сумма) (сумы)': s.total_cost_sum ?? '',
+      'Статус': s.status || ''
+    }));
+    downloadFinanceWorkbook(`ostatki_${stock[0]?.snapshot_date || new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Остатки', sheet: sheetFromRows(cols, rows, [10, 32, 14, 16, 12, 12, 12, 10, 10, 14, 18, 14, 22, 18, 14]) }
+    ]);
   }
 
   function exportFullReport() {
     const summary = calculateSummary();
     const stock = getLatestStockRows();
-    const shipments = financeState.shipments;
-    const payments = financeState.payments;
-    const wb = XLSX.utils.book_new();
+    const shipmentRows = financeState.shipments
+      .slice()
+      .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime())
+      .map(shipmentRowFromRecord);
+    const paymentRows = financeState.payments
+      .slice()
+      .sort((a, b) => {
+        if (!a.payment_date) return 1;
+        if (!b.payment_date) return -1;
+        return new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime();
+      })
+      .map(paymentRowFromRecord);
+    const stockCols = ['Товар', 'SKU', 'В продаже', 'К отправке', 'Цена прод., сум', 'Итого по цене прод., сум', 'Статус'];
+    const stockRows = stock.map(s => ({
+      'Товар': s.product_name,
+      'SKU': s.sku ?? '',
+      'В продаже': s.qty_in_sale,
+      'К отправке': s.qty_for_dispatch,
+      'Цена прод., сум': s.sale_price ?? '',
+      'Итого по цене прод., сум': s.total_sale_sum ?? '',
+      'Статус': s.status ?? ''
+    }));
 
     const summaryRows = [
       ['Показатель', 'Сумма, сум', 'Примечание'],
@@ -425,22 +683,13 @@
       ['Остатки склада (потенциал)', summary.stockInSaleSaleSum, `${summary.stockInSaleQty} шт в продаже`],
       ['ИТОГО ВСЕГО', summary.grandTotal, '= получено + ЛК + потенциал']
     ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Сводка');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(shipments.map((s, i) => ({
-      '№': i + 1, 'Дата': s.shipment_date, 'Артикул': s.article_code,
-      'Описание': s.description, 'Кол-во': s.quantity,
-      'Сумма (отп.цена)': s.total_amount, 'Статус': s.status, 'Примечание': s.notes ?? ''
-    }))), 'Отгрузки');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(payments.map((p, i) => ({
-      '№': i + 1, 'Дата': p.payment_date ?? '—', 'Сумма': p.amount,
-      'Запрос': p.request_number ?? '', 'Статус': p.status, 'Примечание': p.notes ?? ''
-    }))), 'Выплаты');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stock.map(s => ({
-      'Товар': s.product_name, 'SKU': s.sku ?? '', 'В продаже': s.qty_in_sale,
-      'К отправке': s.qty_for_dispatch, 'Цена прод., сум': s.sale_price ?? '',
-      'Итого по цене прод., сум': s.total_sale_sum ?? '', 'Статус': s.status ?? ''
-    }))), 'Остатки склад');
-    XLSX.writeFile(wb, `finansy_uzum_${new Date().toISOString().slice(0, 10)}.xlsx`);
+
+    downloadFinanceWorkbook(`finansy_uzum_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+      { name: 'Сводка', sheet: XLSX.utils.aoa_to_sheet(summaryRows) },
+      { name: 'Отгрузки', sheet: sheetFromRows(FIN_SHIPMENT_COLS, shipmentRows) },
+      { name: 'Выплаты', sheet: sheetFromRows(FIN_PAYMENT_COLS, paymentRows) },
+      { name: 'Остатки склад', sheet: sheetFromRows(stockCols, stockRows) }
+    ]);
   }
 
   // ── Modals ───────────────────────────────────────────────────
@@ -642,7 +891,10 @@
           </tbody>
         </table>
         <div class="finance-export-row">
-          <button type="button" class="btn-secondary" id="finExportFullBtn">📥 Скачать полный отчёт Excel</button>
+          <button type="button" class="btn-secondary" id="finSnapshotTemplateBtn">📋 Шаблон баланса</button>
+          <label class="btn-secondary finance-file-btn">📤 Импорт баланса<input type="file" accept=".xlsx,.xls" hidden id="finSnapshotImportInput" /></label>
+          <button type="button" class="btn-secondary" id="finSnapshotExportBtn">📥 Экспорт баланса</button>
+          <button type="button" class="btn-secondary" id="finExportFullBtn">📥 Полный отчёт Excel</button>
         </div>
       </div>`;
   }
@@ -686,8 +938,10 @@
 
     return `
       <div class="finance-toolbar">
-        <span class="text-muted text-sm">Всего: ${payments.length} | Исполнено: ${payments.filter(p => p.status === 'completed').length}</span>
+        <span class="text-muted text-sm">Всего: ${payments.length} | Исполнено: ${payments.filter(p => p.status === 'completed').length}<br>
+        <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
         <div class="finance-toolbar-actions">
+          <button type="button" class="btn-secondary" id="finPaymentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finPaymentsImportInput" /></label>
           <button type="button" class="btn-secondary" id="finPaymentsExportBtn">📥 Экспорт</button>
           <button type="button" class="btn-primary" id="finAddPaymentBtn">+ Добавить выплату</button>
@@ -731,8 +985,10 @@
 
     return `
       <div class="finance-toolbar">
-        <span class="text-muted text-sm">Отгрузок: ${shipments.length} | Сумма (отп.цена): ${fmtSum(totalSum)}</span>
+        <span class="text-muted text-sm">Отгрузок: ${shipments.length} | Сумма (отп.цена): ${fmtSum(totalSum)}<br>
+        <span class="text-xs">Шаблон → заполнить → Импорт. Экспорт — текущие данные для дополнения.</span></span>
         <div class="finance-toolbar-actions">
+          <button type="button" class="btn-secondary" id="finShipmentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
           <button type="button" class="btn-secondary" id="finShipmentsExportBtn">📥 Экспорт</button>
           <button type="button" class="btn-primary" id="finAddShipmentBtn">+ Добавить отгрузку</button>
@@ -766,6 +1022,9 @@
     return `
       <div class="finance-stock-hint card">
         <strong>Как получить отчёт:</strong> ЛК Узума → Склад → Остатки → Скачать отчёт (xlsx). Загружайте раз в 1–2 недели.
+        ${stock.length ? `<div class="finance-export-row" style="margin-top:10px">
+          <button type="button" class="btn-secondary" id="finStockExportBtn">📥 Экспорт остатков</button>
+        </div>` : ''}
       </div>
       <div class="finance-stock-upload" id="finStockUploadZone">
         <input type="file" accept=".xlsx,.xls" hidden id="finStockFileInput" />
@@ -817,10 +1076,30 @@
   function wireFinancesEvents() {
     document.getElementById('finUpdateSnapshotBtn')?.addEventListener('click', openSnapshotForm);
     document.getElementById('finExportFullBtn')?.addEventListener('click', exportFullReport);
+    document.getElementById('finSnapshotTemplateBtn')?.addEventListener('click', exportSnapshotsTemplate);
+    document.getElementById('finSnapshotExportBtn')?.addEventListener('click', exportSnapshotsToExcel);
     document.getElementById('finAddPaymentBtn')?.addEventListener('click', () => openPaymentForm());
+    document.getElementById('finPaymentsTemplateBtn')?.addEventListener('click', exportPaymentsTemplate);
     document.getElementById('finPaymentsExportBtn')?.addEventListener('click', exportPaymentsToExcel);
     document.getElementById('finAddShipmentBtn')?.addEventListener('click', () => openShipmentForm());
+    document.getElementById('finShipmentsTemplateBtn')?.addEventListener('click', exportShipmentsTemplate);
     document.getElementById('finShipmentsExportBtn')?.addEventListener('click', exportShipmentsToExcel);
+    document.getElementById('finStockExportBtn')?.addEventListener('click', exportStockToExcel);
+
+    document.getElementById('finSnapshotImportInput')?.addEventListener('change', async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const rows = parseSnapshotsImport(await file.arrayBuffer());
+        for (const r of rows) {
+          await saveSnapshot(r);
+        }
+        alert(`Импортировано ${rows.length} снимков баланса`);
+      } catch (err) {
+        alert(err?.message || 'Ошибка импорта');
+      }
+      e.target.value = '';
+    });
 
     document.getElementById('finPaymentsImportInput')?.addEventListener('change', async e => {
       const file = e.target.files?.[0];
