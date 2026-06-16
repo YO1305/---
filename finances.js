@@ -20,7 +20,8 @@
     stock: [],
     activeTab: 'summary',
     loading: true,
-    seeded: false
+    seeded: false,
+    importInProgress: false
   };
 
   let _unsubs = [];
@@ -48,17 +49,31 @@
   }
 
   function toIsoDate(v) {
-    if (!v) return '';
+    if (v == null || v === '') return '';
+    if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
     if (typeof v === 'number' && v > 20000) {
       const d = new Date(Math.round((v - 25569) * 86400 * 1000));
       if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
     }
     if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
-    const m = String(v).match(/(\d{2})\.(\d{2})\.(\d{4})/);
-    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+    const m = String(v).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
     const d = new Date(v);
     if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-    return String(v).slice(0, 10);
+    return String(v).trim().slice(0, 10);
+  }
+
+  function parseFinanceNumber(v) {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    const cleaned = String(v).replace(/\s/g, '').replace(/,/g, '.');
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function hasCellValue(v) {
+    return v != null && String(v).trim() !== '';
   }
 
   // ── Calculations ─────────────────────────────────────────────
@@ -120,12 +135,61 @@
 
   // ── Firestore ────────────────────────────────────────────────
 
-  function upsertDoc(col, doc) {
+  function upsertDoc(col, doc, options = {}) {
     const database = getDb();
-    if (!database || !doc?.id) return Promise.resolve(false);
+    if (!database || !doc?.id) {
+      if (options.strict) return Promise.reject(new Error('Firebase не подключён'));
+      return Promise.resolve(false);
+    }
     return database.collection(col).doc(String(doc.id)).set(doc, { merge: true })
       .then(() => true)
-      .catch(err => { console.error(`finance upsert ${col}:`, err); return false; });
+      .catch((err) => {
+        console.error(`finance upsert ${col}:`, err);
+        if (options.strict) throw err;
+        return false;
+      });
+  }
+
+  async function bulkWriteFinanceDocs(col, records, deleteIds = []) {
+    const database = getDb();
+    if (!database) throw new Error('Firebase не подключён');
+    const ops = [
+      ...deleteIds.filter(Boolean).map((id) => ({ type: 'delete', id: String(id) })),
+      ...records.filter((r) => r?.id).map((rec) => ({ type: 'set', rec }))
+    ];
+    if (!ops.length) return 0;
+
+    const CHUNK = 400;
+    for (let i = 0; i < ops.length; i += CHUNK) {
+      const batch = database.batch();
+      ops.slice(i, i + CHUNK).forEach((op) => {
+        const ref = database.collection(col).doc(op.type === 'delete' ? op.id : String(op.rec.id));
+        if (op.type === 'delete') batch.delete(ref);
+        else batch.set(ref, op.rec, { merge: true });
+      });
+      await batch.commit();
+    }
+    return records.length;
+  }
+
+  function setFinanceImportBusy(active, message) {
+    financeState.importInProgress = !!active;
+    let el = document.getElementById('financeImportOverlay');
+    if (!active) {
+      el?.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'financeImportOverlay';
+      el.className = 'finance-import-overlay';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = `
+      <div class="finance-import-box card" role="status" aria-live="polite">
+        <div class="finance-import-spinner" aria-hidden="true"></div>
+        <p>${escapeHtml(message || 'Импорт данных...')}</p>
+      </div>`;
   }
 
   function deleteDoc(col, id) {
@@ -161,6 +225,7 @@
           financeState[stateKey] = next;
           readyCount++;
           if (readyCount >= 1) financeState.loading = false;
+          if (financeState.importInProgress) return;
           if (document.getElementById('finances-tab')?.classList.contains('active')) {
             renderFinancesPage();
           }
@@ -227,8 +292,8 @@
 
   // ── CRUD helpers ─────────────────────────────────────────────
 
-  async function savePayment(data, id) {
-    const rec = {
+  function buildPaymentRecord(data, id) {
+    return {
       id: id || genId(),
       marketplace_id: MP_ID,
       payment_date: data.payment_date || null,
@@ -240,21 +305,23 @@
       notes: data.notes || null,
       created_at: data.created_at || new Date().toISOString()
     };
-    await upsertDoc(COL.payments, rec);
-    renderFinancesPage();
   }
 
-  async function saveShipment(data, id) {
+  function buildShipmentRecord(data, id) {
     const qty = Number(data.quantity) || 0;
     const unitPrice = data.unit_price != null && data.unit_price !== '' ? Number(data.unit_price) : null;
     const total = data.total_amount != null && data.total_amount !== ''
       ? Number(data.total_amount)
       : (unitPrice != null ? qty * unitPrice : 0);
-    const rec = {
+    const article = String(data.article_code || '').trim();
+    if (!article) throw new Error('Пустой артикул');
+    const shipmentDate = toIsoDate(data.shipment_date);
+    if (!shipmentDate) throw new Error(`Некорректная дата для «${article}»`);
+    return {
       id: id || genId(),
       marketplace_id: MP_ID,
-      shipment_date: toIsoDate(data.shipment_date),
-      article_code: String(data.article_code || '').trim(),
+      shipment_date: shipmentDate,
+      article_code: article,
       description: data.description || '',
       quantity: qty,
       unit_price: unitPrice,
@@ -264,14 +331,12 @@
       created_at: data.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
-    await upsertDoc(COL.shipments, rec);
-    renderFinancesPage();
   }
 
-  async function saveSnapshot(data) {
+  function buildSnapshotRecord(data) {
     const total = Number(data.total_balance) || 0;
     const next = Number(data.next_payout_amount) || 0;
-    const rec = {
+    return {
       id: data.id || genId(),
       marketplace_id: MP_ID,
       snapshot_date: toIsoDate(data.snapshot_date),
@@ -286,18 +351,34 @@
       notes: data.notes || null,
       created_at: data.created_at || new Date().toISOString()
     };
-    await upsertDoc(COL.snapshots, rec);
-    renderFinancesPage();
+  }
+
+  async function savePayment(data, id, options = {}) {
+    const rec = buildPaymentRecord(data, id);
+    const ok = await upsertDoc(COL.payments, rec, { strict: !!options.strict });
+    if (!options.skipRender) renderFinancesPage();
+    return ok;
+  }
+
+  async function saveShipment(data, id, options = {}) {
+    const rec = buildShipmentRecord(data, id);
+    const ok = await upsertDoc(COL.shipments, rec, { strict: !!options.strict });
+    if (!options.skipRender) renderFinancesPage();
+    return ok;
+  }
+
+  async function saveSnapshot(data, options = {}) {
+    const rec = buildSnapshotRecord(data);
+    const ok = await upsertDoc(COL.snapshots, rec, { strict: !!options.strict });
+    if (!options.skipRender) renderFinancesPage();
+    return ok;
   }
 
   async function importStockReport(snapshotDate, rows) {
     const database = getDb();
     if (!database) throw new Error('Firebase не подключен');
     const date = toIsoDate(snapshotDate);
-    const existing = financeState.stock.filter(s => s.snapshot_date === date);
-    for (const r of existing) {
-      await deleteDoc(COL.stock, r.id);
-    }
+    const existingIds = financeState.stock.filter(s => s.snapshot_date === date).map(s => s.id);
     const records = rows.filter(r => r['ID']).map(r => ({
       id: genId(),
       marketplace_id: MP_ID,
@@ -319,11 +400,15 @@
       status: r['Статус'] ?? null,
       created_at: new Date().toISOString()
     }));
-    for (const rec of records) {
-      await upsertDoc(COL.stock, rec);
+
+    setFinanceImportBusy(true, `Загрузка остатков: ${records.length} позиций...`);
+    try {
+      await bulkWriteFinanceDocs(COL.stock, records, existingIds);
+      renderFinancesPage();
+      return records.length;
+    } finally {
+      setFinanceImportBusy(false);
     }
-    renderFinancesPage();
-    return records.length;
   }
 
   // ── Import / Export ──────────────────────────────────────────
@@ -385,14 +470,12 @@
     };
   }
 
-  function isExampleImportRow(values) {
-    return values.some((v) => {
+  function isExampleImportRow(article, extraValues) {
+    const a = String(article || '').trim().toLowerCase();
+    if (a.startsWith('пример') || a.startsWith('example')) return true;
+    return (extraValues || []).some((v) => {
       const s = String(v ?? '').trim().toLowerCase();
-      if (!s) return false;
-      return s.startsWith('пример')
-        || s.startsWith('example')
-        || s.includes('удалите эту строк')
-        || s.includes('образец заполн');
+      return s.includes('удалите эту строк') || s.includes('образец заполн');
     });
   }
 
@@ -412,91 +495,232 @@
     return s;
   }
 
+  function normalizeHeaderKey(key) {
+    return String(key || '')
+      .replace(/\ufeff/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+      .replace(/ё/g, 'е');
+  }
+
+  function rowLookup(row) {
+    const lookup = Object.create(null);
+    Object.keys(row || {}).forEach((k) => {
+      lookup[normalizeHeaderKey(k)] = row[k];
+    });
+    return lookup;
+  }
+
+  function pickCell(row, aliases) {
+    const lookup = row.__lookup || rowLookup(row);
+    for (const alias of aliases) {
+      const key = normalizeHeaderKey(alias);
+      const val = lookup[key];
+      if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+    }
+    return null;
+  }
+
+  function readFinanceWorkbook(buffer) {
+    return XLSX.read(buffer, { type: 'array', cellDates: true });
+  }
+
+  function findFinanceDataSheet(wb, preferredPatterns) {
+    const skip = /как заполн|подсказ|readme|инструк|сводк/i;
+    const names = (wb.SheetNames || []).filter((n) => !skip.test(String(n)));
+    for (const pattern of preferredPatterns) {
+      const hit = names.find((n) => pattern.test(String(n)));
+      if (hit) return { name: hit, sheet: wb.Sheets[hit] };
+    }
+    const fallbackName = names[0] || wb.SheetNames[0];
+    return { name: fallbackName, sheet: wb.Sheets[fallbackName] };
+  }
+
+  function sheetRowsToObjects(ws) {
+    if (!ws) return { rows: [], headers: [] };
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+    if (!headers.length) {
+      const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      const headerRow = (matrix[0] || []).map((c) => String(c || '').trim()).filter(Boolean);
+      return { rows: [], headers: headerRow };
+    }
+    return { rows, headers };
+  }
+
+  function buildImportFailureMessage(kind, headers, totalRows) {
+    const expected = kind === 'shipments'
+      ? 'Дата, Артикул, Кол-во, шт (обязательные)'
+      : kind === 'payments'
+        ? 'Сумма, сум (обязательная)'
+        : 'Дата снимка, Общий баланс, сум';
+    const found = headers.length ? headers.join(' | ') : 'столбцы не найдены';
+    return [
+      'Не удалось импортировать ни одной строки.',
+      '',
+      `Строк в файле: ${totalRows}`,
+      `Найденные столбцы: ${found}`,
+      `Нужны столбцы: ${expected}`,
+      '',
+      'Скачайте «Шаблон», заполняйте лист с данными (не лист «Как заполнять»).',
+      'Дата: 2026-06-15 или 15.06.2026. Суммы — только числа.'
+    ].join('\n');
+  }
+
+  async function runFinanceImport(kind, buffer) {
+    const database = getDb();
+    if (!database) throw new Error('Firebase не подключён. Обновите страницу (Ctrl+F5) и проверьте интернет.');
+
+    const parsed = kind === 'shipments'
+      ? parseShipmentsImport(buffer)
+      : kind === 'payments'
+        ? parsePaymentsImport(buffer)
+        : parseSnapshotsImport(buffer);
+
+    if (!parsed.rows.length) {
+      throw new Error(buildImportFailureMessage(kind, parsed.headers, parsed.totalRows));
+    }
+
+    const meta = {
+      shipments: { col: COL.shipments, stateKey: 'shipments', build: buildShipmentRecord, label: 'отгрузок' },
+      payments: { col: COL.payments, stateKey: 'payments', build: buildPaymentRecord, label: 'выплат' },
+      snapshots: { col: COL.snapshots, stateKey: 'snapshots', build: buildSnapshotRecord, label: 'снимков баланса' }
+    }[kind];
+
+    const records = [];
+    const errors = [];
+    parsed.rows.forEach((row, i) => {
+      try {
+        records.push(meta.build(row));
+      } catch (err) {
+        errors.push(`Строка ${i + 2}: ${err?.message || err}`);
+      }
+    });
+
+    if (!records.length) {
+      throw new Error(`Ни одна строка не подошла для импорта.\n\n${errors.slice(0, 8).join('\n')}`);
+    }
+
+    setFinanceImportBusy(true, `Импорт ${records.length} ${meta.label}...`);
+    try {
+      await bulkWriteFinanceDocs(meta.col, records);
+    } finally {
+      setFinanceImportBusy(false);
+    }
+    renderFinancesPage();
+
+    if (errors.length) {
+      alert(`✅ Импортировано: ${records.length} из ${parsed.rows.length}.\n\nПропущено:\n${errors.slice(0, 8).join('\n')}`);
+    }
+    return records.length;
+  }
+
   function parseUzumStockReport(buffer) {
-    const wb = XLSX.read(buffer, { type: 'array' });
+    const wb = readFinanceWorkbook(buffer);
     const sheetName = wb.SheetNames.find(n => /остаток|Остат/i.test(n)) ?? wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
     return XLSX.utils.sheet_to_json(ws);
   }
 
   function parseShipmentsImport(buffer) {
-    const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames.find(n => /отгруз/i.test(n)) ?? wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(ws)
-      .filter(r => {
-        const article = String(r['Артикул'] ?? '').trim();
-        const date = r['Дата'];
-        if (!article || !date) return false;
-        if (isExampleImportRow([article, r['Описание'], r['Примечание']])) return false;
-        return true;
-      })
-      .map(r => ({
-        shipment_date: toIsoDate(r['Дата']),
-        article_code: String(r['Артикул']).trim(),
-        description: r['Описание'] ?? '',
-        quantity: Number(r['Кол-во, шт'] ?? 0),
-        unit_price: r['Отп. цена, сум'] !== '' && r['Отп. цена, сум'] != null ? Number(r['Отп. цена, сум']) : null,
-        total_amount: Number(r['Сумма (отп.цена), сум'] ?? 0),
-        status: normalizeFinanceStatus(r['Статус'], 'shipment'),
-        notes: r['Примечание'] ?? null
-      }));
+    const wb = readFinanceWorkbook(buffer);
+    const { sheet } = findFinanceDataSheet(wb, [/отгруз/i, /shipment/i, /data/i]);
+    const { rows: rawRows, headers } = sheetRowsToObjects(sheet);
+    const rows = [];
+
+    rawRows.forEach((row) => {
+      row.__lookup = rowLookup(row);
+      const article = String(pickCell(row, ['Артикул', 'Артикул 1С', 'Код', 'SKU', 'article']) || '').trim();
+      const dateRaw = pickCell(row, ['Дата', 'Дата отгрузки', 'date']);
+      if (!article || !hasCellValue(dateRaw)) return;
+      if (isExampleImportRow(article, [pickCell(row, ['Описание']), pickCell(row, ['Примечание'])])) return;
+
+      const qty = parseFinanceNumber(pickCell(row, ['Кол-во, шт', 'Кол-во', 'Количество', 'Qty', 'Quantity'])) || 0;
+      const unitPrice = parseFinanceNumber(pickCell(row, ['Отп. цена, сум', 'Отп. цена', 'Цена', 'Unit price']));
+      const totalRaw = pickCell(row, ['Сумма (отп.цена), сум', 'Сумма (отп.цена)', 'Сумма', 'Итого']);
+      const total = parseFinanceNumber(totalRaw) ?? (unitPrice != null ? qty * unitPrice : 0);
+
+      rows.push({
+        shipment_date: dateRaw,
+        article_code: article,
+        description: String(pickCell(row, ['Описание', 'Товар', 'Наименование']) || ''),
+        quantity: qty,
+        unit_price: unitPrice,
+        total_amount: total,
+        status: normalizeFinanceStatus(pickCell(row, ['Статус', 'Status']), 'shipment'),
+        notes: pickCell(row, ['Примечание', 'Комментарий']) || null
+      });
+    });
+
+    return { rows, headers, totalRows: rawRows.length };
   }
 
   function parsePaymentsImport(buffer) {
-    const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames.find(n => /выплат/i.test(n)) ?? wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(ws)
-      .filter(r => {
-        const amount = r['Сумма, сум'];
-        if (amount == null || amount === '') return false;
-        if (isExampleImportRow([r['Дата'], r['Номер запроса'], r['Примечание']])) return false;
-        return true;
-      })
-      .map(r => ({
-        payment_date: r['Дата'] && r['Дата'] !== '—' ? toIsoDate(r['Дата']) : null,
-        amount: Number(r['Сумма, сум']),
-        period_from: r['Период (с)'] ? toIsoDate(r['Период (с)']) : null,
-        period_to: r['Период (по)'] ? toIsoDate(r['Период (по)']) : null,
-        request_number: r['Номер запроса'] || null,
-        status: normalizeFinanceStatus(r['Статус'], 'payment'),
-        notes: r['Примечание'] ?? null
-      }));
+    const wb = readFinanceWorkbook(buffer);
+    const { sheet } = findFinanceDataSheet(wb, [/выплат/i, /payment/i, /data/i]);
+    const { rows: rawRows, headers } = sheetRowsToObjects(sheet);
+    const rows = [];
+
+    rawRows.forEach((row) => {
+      row.__lookup = rowLookup(row);
+      const amountRaw = pickCell(row, ['Сумма, сум', 'Сумма', 'Amount', 'amount']);
+      const amount = parseFinanceNumber(amountRaw);
+      if (amount == null) return;
+      if (isExampleImportRow(null, [
+        pickCell(row, ['Дата']),
+        pickCell(row, ['Номер запроса', 'Запрос']),
+        pickCell(row, ['Примечание'])
+      ])) return;
+
+      const dateRaw = pickCell(row, ['Дата', 'Date']);
+      rows.push({
+        payment_date: dateRaw && String(dateRaw).trim() !== '—' ? toIsoDate(dateRaw) : null,
+        amount,
+        period_from: pickCell(row, ['Период (с)', 'Период с', 'Period from']) ? toIsoDate(pickCell(row, ['Период (с)', 'Период с', 'Period from'])) : null,
+        period_to: pickCell(row, ['Период (по)', 'Период по', 'Period to']) ? toIsoDate(pickCell(row, ['Период (по)', 'Период по', 'Period to'])) : null,
+        request_number: pickCell(row, ['Номер запроса', 'Запрос', 'Request']) || null,
+        status: normalizeFinanceStatus(pickCell(row, ['Статус', 'Status']), 'payment'),
+        notes: pickCell(row, ['Примечание', 'Комментарий']) || null
+      });
+    });
+
+    return { rows, headers, totalRows: rawRows.length };
   }
 
   function parseSnapshotsImport(buffer) {
-    const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(ws)
-      .filter(r => r['Дата снимка'] && r['Общий баланс, сум'] != null && r['Общий баланс, сум'] !== '')
-      .map(r => ({
-        snapshot_date: toIsoDate(r['Дата снимка']),
-        total_balance: Number(r['Общий баланс, сум']),
-        next_payout_amount: Number(r['К выплате, сум'] ?? 0),
-        next_payout_date: r['Дата выплаты'] ? toIsoDate(r['Дата выплаты']) : null,
-        next_payout_period_from: r['Период (с)'] ? toIsoDate(r['Период (с)']) : null,
-        next_payout_period_to: r['Период (по)'] ? toIsoDate(r['Период (по)']) : null,
-        remaining_balance: r['Остаток после выплаты, сум'] != null && r['Остаток после выплаты, сум'] !== ''
-          ? Number(r['Остаток после выплаты, сум'])
-          : null,
-        notes: r['Примечание'] ?? null
+    const wb = readFinanceWorkbook(buffer);
+    const { sheet } = findFinanceDataSheet(wb, [/баланс/i, /snapshot/i, /сводк/i]);
+    const { rows: rawRows, headers } = sheetRowsToObjects(sheet);
+    const rows = rawRows
+      .filter((row) => {
+        row.__lookup = rowLookup(row);
+        const date = pickCell(row, ['Дата снимка', 'Дата', 'Snapshot date']);
+        const total = parseFinanceNumber(pickCell(row, ['Общий баланс, сум', 'Общий баланс', 'Баланс']));
+        return hasCellValue(date) && total != null;
+      })
+      .map((row) => ({
+        snapshot_date: toIsoDate(pickCell(row, ['Дата снимка', 'Дата', 'Snapshot date'])),
+        total_balance: parseFinanceNumber(pickCell(row, ['Общий баланс, сум', 'Общий баланс', 'Баланс'])) || 0,
+        next_payout_amount: parseFinanceNumber(pickCell(row, ['К выплате, сум', 'К выплате', 'Next payout'])) || 0,
+        next_payout_date: pickCell(row, ['Дата выплаты', 'Дата следующей выплаты']) ? toIsoDate(pickCell(row, ['Дата выплаты', 'Дата следующей выплаты'])) : null,
+        next_payout_period_from: pickCell(row, ['Период (с)', 'Период с']) ? toIsoDate(pickCell(row, ['Период (с)', 'Период с'])) : null,
+        next_payout_period_to: pickCell(row, ['Период (по)', 'Период по']) ? toIsoDate(pickCell(row, ['Период (по)', 'Период по'])) : null,
+        remaining_balance: parseFinanceNumber(pickCell(row, ['Остаток после выплаты, сум', 'Остаток после выплаты', 'Остаток'])),
+        notes: pickCell(row, ['Примечание', 'Комментарий']) || null
       }));
+
+    return { rows, headers, totalRows: rawRows.length };
   }
 
   function exportShipmentsTemplate() {
-    const example = [{
-      'Дата': '2026-06-15',
-      'Артикул': 'ПРИМЕР-001',
-      'Описание': 'Удалите эту строку — это образец',
-      'Кол-во, шт': 10,
-      'Отп. цена, сум': 120000,
-      'Сумма (отп.цена), сум': 1200000,
-      'Статус': 'in_sale',
-      'Примечание': ''
-    }];
+    const blankRows = Array.from({ length: 5 }, () => (
+      Object.fromEntries(FIN_SHIPMENT_COLS.map((col) => [col, '']))
+    ));
     downloadFinanceWorkbook(`shablon_otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`, [
       {
         name: 'Отгрузки',
-        sheet: sheetFromRows(FIN_SHIPMENT_COLS, example, [12, 14, 28, 10, 14, 18, 12, 24])
+        sheet: sheetFromRows(FIN_SHIPMENT_COLS, blankRows, [12, 14, 28, 10, 14, 18, 12, 24])
       },
       {
         name: 'Как заполнять',
@@ -515,19 +739,13 @@
   }
 
   function exportPaymentsTemplate() {
-    const example = [{
-      'Дата': '2026-06-09',
-      'Сумма, сум': 18114131,
-      'Период (с)': '2026-05-27',
-      'Период (по)': '2026-06-10',
-      'Номер запроса': '#5000169479',
-      'Статус': 'completed',
-      'Примечание': 'Удалите эту строку — это образец'
-    }];
+    const blankRows = Array.from({ length: 5 }, () => (
+      Object.fromEntries(FIN_PAYMENT_COLS.map((col) => [col, '']))
+    ));
     downloadFinanceWorkbook(`shablon_vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`, [
       {
         name: 'Выплаты',
-        sheet: sheetFromRows(FIN_PAYMENT_COLS, example, [12, 14, 12, 12, 18, 12, 28])
+        sheet: sheetFromRows(FIN_PAYMENT_COLS, blankRows, [12, 14, 12, 12, 18, 12, 28])
       },
       {
         name: 'Как заполнять',
@@ -548,16 +766,9 @@
     downloadFinanceWorkbook(`shablon_balans_lk_${new Date().toISOString().slice(0, 10)}.xlsx`, [
       {
         name: 'Баланс ЛК',
-        sheet: sheetFromRows(FIN_SNAPSHOT_COLS, [{
-          'Дата снимка': '2026-06-16',
-          'Общий баланс, сум': 98967558,
-          'К выплате, сум': 31740152,
-          'Дата выплаты': '2026-06-21',
-          'Период (с)': '2026-05-27',
-          'Период (по)': '2026-06-10',
-          'Остаток после выплаты, сум': 67227406,
-          'Примечание': 'Удалите эту строку — это образец'
-        }], [14, 18, 16, 14, 12, 12, 22, 24])
+        sheet: sheetFromRows(FIN_SNAPSHOT_COLS, [
+          Object.fromEntries(FIN_SNAPSHOT_COLS.map((col) => [col, '']))
+        ], [14, 18, 16, 14, 12, 12, 22, 24])
       },
       {
         name: 'Как заполнять',
@@ -1090,11 +1301,8 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const rows = parseSnapshotsImport(await file.arrayBuffer());
-        for (const r of rows) {
-          await saveSnapshot(r);
-        }
-        alert(`Импортировано ${rows.length} снимков баланса`);
+        const count = await runFinanceImport('snapshots', await file.arrayBuffer());
+        alert(`✅ Импортировано ${count} снимков баланса`);
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1105,11 +1313,8 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const rows = parsePaymentsImport(await file.arrayBuffer());
-        for (const r of rows) {
-          await savePayment(r);
-        }
-        alert(`Импортировано ${rows.length} выплат`);
+        const count = await runFinanceImport('payments', await file.arrayBuffer());
+        alert(`✅ Импортировано ${count} выплат`);
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1120,11 +1325,8 @@
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const rows = parseShipmentsImport(await file.arrayBuffer());
-        for (const r of rows) {
-          await saveShipment(r);
-        }
-        alert(`Импортировано ${rows.length} отгрузок`);
+        const count = await runFinanceImport('shipments', await file.arrayBuffer());
+        alert(`✅ Импортировано ${count} отгрузок`);
       } catch (err) {
         alert(err?.message || 'Ошибка импорта');
       }
@@ -1149,11 +1351,13 @@
         if (resultEl) {
           resultEl.className = 'finance-stock-result finance-stock-result--ok';
           resultEl.textContent = `✅ Загружено ${count} позиций (снимок ${snapshotDate})`;
+          resultEl.classList.remove('hidden');
         }
       } catch (err) {
         if (resultEl) {
           resultEl.className = 'finance-stock-result finance-stock-result--err';
           resultEl.textContent = `Ошибка: ${err?.message || err}`;
+          resultEl.classList.remove('hidden');
         }
       }
       e.target.value = '';
