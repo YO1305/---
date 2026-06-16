@@ -819,28 +819,15 @@
       ? getPreviousStockDate(date)
       : (oldDates[0] || null);
     const uploadedAt = new Date().toISOString();
-    const records = rows.filter((r) => r['ID']).map((r) => ({
-      id: genId(),
-      marketplace_id: MP_ID,
-      snapshot_date: date,
-      uzum_id: String(r['ID'] ?? ''),
-      product_name: r['Наименование'] ?? '',
-      sku: r['SKU'] ?? null,
-      barcode: r['Штрихкод'] ?? null,
-      product_id: r['ID товара'] ? String(r['ID товара']) : null,
-      qty_for_dispatch: Number(r['К отправке'] ?? 0),
-      qty_in_sale: Number(r['В продаже'] ?? 0),
-      qty_return: Number(r['Возврат'] ?? 0),
-      qty_defect: Number(r['Брак'] ?? 0),
-      cost_price: r['Себест. (сумы)'] ? Number(r['Себест. (сумы)']) : null,
-      sale_price: r['Стоимость продажи (сумы)'] ? Number(r['Стоимость продажи (сумы)']) : null,
-      total_qty: Number(r['Общий остаток'] ?? 0),
-      total_sale_sum: r['Стоимость продажи (сумма) (сумы)'] ? Number(r['Стоимость продажи (сумма) (сумы)']) : null,
-      total_cost_sum: r['Себест. (сумма) (сумы)'] ? Number(r['Себест. (сумма) (сумы)']) : null,
-      status: r['Статус'] ?? null,
-      uploaded_at: uploadedAt,
-      created_at: uploadedAt
-    }));
+    const records = rows
+      .map((r) => buildStockRecordFromRow(r, date, uploadedAt))
+      .filter(Boolean);
+
+    if (!records.length) {
+      throw new Error(
+        `В файле не найдено товаров для загрузки (0 строк с ID). Строк в отчёте: ${rows.length}.`
+      );
+    }
 
     setFinanceImportBusy(true, `Загрузка остатков: ${records.length} позиций...`);
     try {
@@ -1082,9 +1069,63 @@
 
   function parseUzumStockReport(buffer) {
     const wb = readFinanceWorkbook(buffer);
-    const sheetName = wb.SheetNames.find(n => /остаток|Остат/i.test(n)) ?? wb.SheetNames[0];
+    const sheetName = wb.SheetNames.find((n) => /остаток|остат|left-out|stock/i.test(String(n)))
+      ?? wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
-    return XLSX.utils.sheet_to_json(ws);
+    const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    if (!matrix.length) return [];
+
+    const headerIdx = matrix.findIndex((row) => {
+      const cells = (row || []).map((c) => normalizeHeaderKey(c));
+      return cells.includes('id') && (cells.includes('наименование') || cells.includes('sku'));
+    });
+    if (headerIdx < 0) {
+      throw new Error(
+        'Не найдена строка заголовков (ID, Наименование…) в отчёте Uzum. Скачайте «Остатки» из ЛК → Склад.'
+      );
+    }
+
+    const headers = (matrix[headerIdx] || []).map((h) => String(h || '').trim());
+    const rows = [];
+    for (let i = headerIdx + 1; i < matrix.length; i += 1) {
+      const line = matrix[i];
+      if (!line || !line.some((c) => String(c ?? '').trim() !== '')) continue;
+      const obj = {};
+      headers.forEach((header, idx) => {
+        if (!header) return;
+        obj[header] = line[idx] ?? '';
+      });
+      obj.__lookup = rowLookup(obj);
+      rows.push(obj);
+    }
+    return rows;
+  }
+
+  function buildStockRecordFromRow(r, date, uploadedAt) {
+    const uzumId = pickCell(r, ['ID', 'Id']);
+    if (!hasCellValue(uzumId)) return null;
+    return {
+      id: genId(),
+      marketplace_id: MP_ID,
+      snapshot_date: date,
+      uzum_id: String(uzumId).replace(/\.0$/, ''),
+      product_name: String(pickCell(r, ['Наименование', 'Товар']) || ''),
+      sku: pickCell(r, ['SKU', 'Sku']) || null,
+      barcode: pickCell(r, ['Штрихкод', 'Barcode']) || null,
+      product_id: pickCell(r, ['ID товара', 'Product id']) ? String(pickCell(r, ['ID товара', 'Product id'])).replace(/\.0$/, '') : null,
+      qty_for_dispatch: Number(pickCell(r, ['К отправке']) ?? 0),
+      qty_in_sale: Number(pickCell(r, ['В продаже']) ?? 0),
+      qty_return: Number(pickCell(r, ['Возврат']) ?? 0),
+      qty_defect: Number(pickCell(r, ['Брак']) ?? 0),
+      cost_price: parseFinanceNumber(pickCell(r, ['Себест. (сумы)', 'Себест. (сумы)'])) ,
+      sale_price: parseFinanceNumber(pickCell(r, ['Стоимость продажи (сумы)'])),
+      total_qty: Number(pickCell(r, ['Общий остаток']) ?? 0),
+      total_sale_sum: parseFinanceNumber(pickCell(r, ['Стоимость продажи (сумма) (сумы)'])),
+      total_cost_sum: parseFinanceNumber(pickCell(r, ['Себест. (сумма) (сумы)'])),
+      status: pickCell(r, ['Статус']) || null,
+      uploaded_at: uploadedAt,
+      created_at: uploadedAt
+    };
   }
 
   function parseShipmentsImport(buffer) {
@@ -1890,6 +1931,56 @@
     renderFinancesPage();
   }
 
+  function showStockUploadStatus(kind, text) {
+    const resultEl = document.getElementById('finStockUploadResult');
+    if (!resultEl) return;
+    resultEl.className = `finance-stock-result finance-stock-result--${kind}`;
+    resultEl.textContent = text;
+    resultEl.classList.remove('hidden');
+  }
+
+  async function handleStockFileUpload(fileInput) {
+    const file = fileInput?.files?.[0];
+    if (!file) return;
+    try {
+      showStockUploadStatus('wait', 'Читаю файл…');
+      const buffer = await file.arrayBuffer();
+      const rows = parseUzumStockReport(buffer);
+      if (!rows.length) {
+        throw new Error('Файл пустой или не похож на отчёт «Остатки» Uzum.');
+      }
+
+      let snapshotDate = detectStockSnapshotDate(file, buffer, rows);
+      const dateInFileName = /(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})/.test(file.name);
+      if (!dateInFileName) {
+        const custom = await askFinanceDate(
+          'Дата снимка остатков',
+          'В имени файла нет даты — укажите дату снимка.',
+          snapshotDate
+        );
+        if (custom === null) {
+          showStockUploadStatus('err', 'Загрузка отменена.');
+          return;
+        }
+        if (custom) snapshotDate = toIsoDate(custom);
+      }
+
+      showStockUploadStatus('wait', `Загружаю ${rows.length} позиций за ${fmtDateRu(snapshotDate)}…`);
+      const result = await importStockReport(snapshotDate, rows);
+      const deltaText = result.prevDate && result.delta
+        ? ` Изменение vs ${fmtDateRu(result.prevDate)}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
+        : '';
+      showStockUploadStatus(
+        'ok',
+        `✅ Загружено ${result.count} позиций. Снимок ${fmtDateRu(result.date)} — актуальный.${deltaText}`
+      );
+    } catch (err) {
+      showStockUploadStatus('err', `Ошибка: ${err?.message || err}`);
+    } finally {
+      fileInput.value = '';
+    }
+  }
+
   function wireFinancesEvents() {
     document.getElementById('finUpdateSnapshotBtn')?.addEventListener('click', openSnapshotForm);
     document.getElementById('finExportFullBtn')?.addEventListener('click', exportFullReport);
@@ -1962,43 +2053,6 @@
       e.target.value = '';
     });
 
-    const stockZone = document.getElementById('finStockUploadZone');
-    const stockInput = document.getElementById('finStockFileInput');
-    stockZone?.addEventListener('click', () => stockInput?.click());
-    stockInput?.addEventListener('change', async e => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const resultEl = document.getElementById('finStockUploadResult');
-      try {
-        const buffer = await file.arrayBuffer();
-        const rows = parseUzumStockReport(buffer);
-        let snapshotDate = detectStockSnapshotDate(file, buffer, rows);
-        const custom = await askFinanceDate(
-          'Дата снимка остатков',
-          'Можно изменить, если в файле другая дата.',
-          snapshotDate
-        );
-        if (custom === null) return;
-        if (custom) snapshotDate = toIsoDate(custom);
-        const result = await importStockReport(snapshotDate, rows);
-        const deltaText = result.prevDate && result.delta
-          ? ` Изменение vs ${fmtDateRu(result.prevDate)}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
-          : '';
-        if (resultEl) {
-          resultEl.className = 'finance-stock-result finance-stock-result--ok';
-          resultEl.textContent = `✅ Загружено ${result.count} позиций. Снимок ${fmtDateRu(result.date)} — актуальный.${deltaText}`;
-          resultEl.classList.remove('hidden');
-        }
-      } catch (err) {
-        if (resultEl) {
-          resultEl.className = 'finance-stock-result finance-stock-result--err';
-          resultEl.textContent = `Ошибка: ${err?.message || err}`;
-          resultEl.classList.remove('hidden');
-        }
-      }
-      e.target.value = '';
-    });
-
     document.querySelectorAll('[data-fin-edit-payment]').forEach(btn => {
       btn.addEventListener('click', () => {
         const p = financeState.payments.find(x => x.id === btn.dataset.finEditPayment);
@@ -2063,8 +2117,25 @@
     }
   }
 
+  function wireFinancesStockUploadOnce() {
+    const root = document.getElementById('financesTabContent');
+    if (!root || root.dataset.stockUploadWired) return;
+    root.dataset.stockUploadWired = '1';
+    root.addEventListener('click', (e) => {
+      const zone = e.target.closest('#finStockUploadZone');
+      if (!zone || e.target.closest('#finStockFileInput')) return;
+      zone.querySelector('#finStockFileInput')?.click();
+    });
+    root.addEventListener('change', (e) => {
+      if (e.target?.id === 'finStockFileInput') {
+        void handleStockFileUpload(e.target);
+      }
+    });
+  }
+
   function initFinances() {
     wireFinanceTabNav();
+    wireFinancesStockUploadOnce();
     startFinanceSyncOnce();
     if (document.getElementById('finances-tab')?.classList.contains('active')) {
       renderFinancesPage();

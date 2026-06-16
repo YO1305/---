@@ -3077,6 +3077,7 @@ body.dark-mode .finance-warning { background: #3f1515; border-color: #7f1d1d; co
 .finance-stock-result { padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
 .finance-stock-result--ok { background: #dcfce7; color: #166534; }
 .finance-stock-result--err { background: #fee2e2; color: #991b1b; }
+.finance-stock-result--wait { background: #dbeafe; color: #1e40af; }
 
 .finance-import-overlay {
   position: fixed;
