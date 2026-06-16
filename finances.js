@@ -1,0 +1,921 @@
+/**
+ * Раздел «Финансы — Узум Маркет»
+ * Учёт отгрузок, выплат, баланса ЛК и остатков склада.
+ */
+(function () {
+  'use strict';
+
+  const MP_ID = 'uzum';
+  const COL = {
+    payments: 'finance_payments',
+    shipments: 'finance_shipments',
+    snapshots: 'finance_balance_snapshots',
+    stock: 'finance_warehouse_stock'
+  };
+
+  const financeState = {
+    payments: [],
+    shipments: [],
+    snapshots: [],
+    stock: [],
+    activeTab: 'summary',
+    loading: true,
+    seeded: false
+  };
+
+  let _unsubs = [];
+
+  function getDb() {
+    try {
+      return typeof db !== 'undefined' && db ? db : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function genId() {
+    return `fin_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function fmtSum(n) {
+    if (n == null || Number.isNaN(Number(n))) return '—';
+    return new Intl.NumberFormat('ru-RU').format(Math.round(Number(n))) + ' сум';
+  }
+
+  function fmtNum(n) {
+    if (n == null || Number.isNaN(Number(n))) return '—';
+    return new Intl.NumberFormat('ru-RU').format(Math.round(Number(n)));
+  }
+
+  function toIsoDate(v) {
+    if (!v) return '';
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+    const m = String(v).match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return String(v).slice(0, 10);
+  }
+
+  // ── Calculations ─────────────────────────────────────────────
+
+  function getLatestSnapshot() {
+    const list = financeState.snapshots.slice().sort((a, b) =>
+      new Date(b.snapshot_date).getTime() - new Date(a.snapshot_date).getTime()
+    );
+    return list[0] || null;
+  }
+
+  function getLatestStockRows() {
+    const dates = financeState.stock.map(s => s.snapshot_date).filter(Boolean);
+    if (!dates.length) return [];
+    const latest = dates.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+    return financeState.stock
+      .filter(s => s.snapshot_date === latest)
+      .sort((a, b) => (Number(b.total_sale_sum) || 0) - (Number(a.total_sale_sum) || 0));
+  }
+
+  function calculateSummary() {
+    const completed = financeState.payments.filter(p => p.status === 'completed');
+    const totalReceived = completed.reduce((s, p) => s + Number(p.amount || 0), 0);
+    const snap = getLatestSnapshot();
+    const lkTotalBalance = Number(snap?.total_balance ?? 0);
+    const lkNextPayout = Number(snap?.next_payout_amount ?? 0);
+    const lkNextPayoutDate = snap?.next_payout_date ?? null;
+    const lkRemainingBalance = snap?.remaining_balance != null
+      ? Number(snap.remaining_balance)
+      : lkTotalBalance - lkNextPayout;
+    const stock = getLatestStockRows();
+    const inSale = stock.filter(s => Number(s.qty_in_sale) > 0);
+    const stockInSaleQty = inSale.reduce((s, r) => s + Number(r.qty_in_sale || 0), 0);
+    const stockInSaleSaleSum = inSale.reduce((s, r) => s + Number(r.total_sale_sum ?? 0), 0);
+    const forDispatch = stock.filter(s => Number(s.qty_for_dispatch) > 0);
+    const stockForDispatchQty = forDispatch.reduce((s, r) => s + Number(r.qty_for_dispatch || 0), 0);
+    const guaranteed = totalReceived + lkTotalBalance;
+    const potential = stockInSaleSaleSum;
+    return {
+      totalReceived, lkTotalBalance, lkNextPayout, lkNextPayoutDate,
+      lkRemainingBalance, stockInSaleQty, stockInSaleSaleSum,
+      stockForDispatchQty, grandTotal: guaranteed + potential,
+      guaranteed, potential,
+      paymentsCount: completed.length,
+      lastSnapshotDate: snap?.snapshot_date ?? null
+    };
+  }
+
+  function addRunningTotal(payments) {
+    let running = 0;
+    return payments
+      .filter(p => p.status === 'completed')
+      .sort((a, b) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime())
+      .map(p => {
+        running += Number(p.amount || 0);
+        return { ...p, running_total: running };
+      });
+  }
+
+  // ── Firestore ────────────────────────────────────────────────
+
+  function upsertDoc(col, doc) {
+    const database = getDb();
+    if (!database || !doc?.id) return Promise.resolve(false);
+    return database.collection(col).doc(String(doc.id)).set(doc, { merge: true })
+      .then(() => true)
+      .catch(err => { console.error(`finance upsert ${col}:`, err); return false; });
+  }
+
+  function deleteDoc(col, id) {
+    const database = getDb();
+    if (!database || !id) return Promise.resolve(false);
+    return database.collection(col).doc(String(id)).delete()
+      .then(() => true)
+      .catch(err => { console.error(`finance delete ${col}:`, err); return false; });
+  }
+
+  function startFinanceRealtimeSync() {
+    const database = getDb();
+    if (!database) return;
+    _unsubs.forEach(fn => { try { fn(); } catch {} });
+    _unsubs = [];
+
+    const cols = [
+      { key: 'payments', col: COL.payments, stateKey: 'payments' },
+      { key: 'shipments', col: COL.shipments, stateKey: 'shipments' },
+      { key: 'snapshots', col: COL.snapshots, stateKey: 'snapshots' },
+      { key: 'stock', col: COL.stock, stateKey: 'stock' }
+    ];
+
+    let readyCount = 0;
+    cols.forEach(({ col, stateKey }) => {
+      const unsub = database.collection(col)
+        .onSnapshot(snap => {
+          const next = [];
+          snap.forEach(doc => {
+            const data = doc.data() || {};
+            next.push({ ...data, id: data.id || doc.id });
+          });
+          financeState[stateKey] = next;
+          readyCount++;
+          if (readyCount >= 1) financeState.loading = false;
+          if (document.getElementById('finances-tab')?.classList.contains('active')) {
+            renderFinancesPage();
+          }
+          if (!financeState.seeded && stateKey === 'payments' && next.length === 0) {
+            financeState.seeded = true;
+            void seedFinanceData();
+          }
+        }, err => console.error(`finance onSnapshot ${col}:`, err));
+      _unsubs.push(unsub);
+    });
+  }
+
+  // ── Seed ─────────────────────────────────────────────────────
+
+  async function seedFinanceData() {
+    const payments = [
+      { payment_date: '2026-03-11', amount: 26592220, request_number: '#1556211', status: 'completed' },
+      { payment_date: '2026-03-17', amount: 35576580, request_number: '#1573291', status: 'completed' },
+      { payment_date: '2026-03-24', amount: 33386835, request_number: '#1585534', status: 'completed' },
+      { payment_date: '2026-04-02', amount: 40412310, request_number: '#1615864', status: 'completed' },
+      { payment_date: '2026-04-14', amount: 20274792, request_number: '#5000000404', status: 'completed' },
+      { payment_date: '2026-04-20', amount: 34170000, request_number: '#5000025482', status: 'completed' },
+      { payment_date: '2026-04-21', amount: 4278143, request_number: '#5000031107', status: 'completed' },
+      { payment_date: '2026-05-07', amount: 50120904, request_number: '#5000070348', status: 'completed' },
+      { payment_date: '2026-05-22', amount: 43596514, request_number: '#5000118081', status: 'completed' },
+      { payment_date: '2026-06-01', amount: 28645218, request_number: '#5000147131', status: 'completed', notes: 'Ранее не была записана — добавлена' },
+      { payment_date: '2026-06-09', amount: 18114131, request_number: '#5000169479', status: 'completed' },
+      { payment_date: null, amount: 0, request_number: '#5000154961', status: 'rejected', notes: 'Дубль запроса — деньги не поступали' },
+      { payment_date: '2026-06-21', amount: 31740152, request_number: 'по графику', status: 'pending', period_from: '2026-05-27', period_to: '2026-06-10' }
+    ];
+
+    for (const p of payments) {
+      const rec = {
+        id: genId(),
+        marketplace_id: MP_ID,
+        payment_date: p.payment_date,
+        amount: p.amount || 0,
+        request_number: p.request_number || null,
+        status: p.status,
+        period_from: p.period_from || null,
+        period_to: p.period_to || null,
+        notes: p.notes || null,
+        created_at: new Date().toISOString()
+      };
+      if (p.status === 'rejected') rec.amount = 0;
+      await upsertDoc(COL.payments, rec);
+    }
+
+    const snap = {
+      id: genId(),
+      marketplace_id: MP_ID,
+      snapshot_date: '2026-06-16',
+      total_balance: 98967558,
+      next_payout_amount: 31740152,
+      next_payout_date: '2026-06-21',
+      next_payout_period_from: '2026-05-27',
+      next_payout_period_to: '2026-06-10',
+      remaining_balance: 67227406,
+      notes: null,
+      created_at: new Date().toISOString()
+    };
+    await upsertDoc(COL.snapshots, snap);
+  }
+
+  // ── CRUD helpers ─────────────────────────────────────────────
+
+  async function savePayment(data, id) {
+    const rec = {
+      id: id || genId(),
+      marketplace_id: MP_ID,
+      payment_date: data.payment_date || null,
+      amount: Number(data.amount) || 0,
+      request_number: data.request_number || null,
+      status: data.status || 'completed',
+      period_from: data.period_from || null,
+      period_to: data.period_to || null,
+      notes: data.notes || null,
+      created_at: data.created_at || new Date().toISOString()
+    };
+    await upsertDoc(COL.payments, rec);
+    renderFinancesPage();
+  }
+
+  async function saveShipment(data, id) {
+    const qty = Number(data.quantity) || 0;
+    const unitPrice = data.unit_price != null && data.unit_price !== '' ? Number(data.unit_price) : null;
+    const total = data.total_amount != null && data.total_amount !== ''
+      ? Number(data.total_amount)
+      : (unitPrice != null ? qty * unitPrice : 0);
+    const rec = {
+      id: id || genId(),
+      marketplace_id: MP_ID,
+      shipment_date: toIsoDate(data.shipment_date),
+      article_code: String(data.article_code || '').trim(),
+      description: data.description || '',
+      quantity: qty,
+      unit_price: unitPrice,
+      total_amount: total,
+      status: data.status || 'accepted',
+      notes: data.notes || null,
+      created_at: data.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    await upsertDoc(COL.shipments, rec);
+    renderFinancesPage();
+  }
+
+  async function saveSnapshot(data) {
+    const total = Number(data.total_balance) || 0;
+    const next = Number(data.next_payout_amount) || 0;
+    const rec = {
+      id: genId(),
+      marketplace_id: MP_ID,
+      snapshot_date: toIsoDate(data.snapshot_date),
+      total_balance: total,
+      next_payout_amount: next,
+      next_payout_date: data.next_payout_date ? toIsoDate(data.next_payout_date) : null,
+      next_payout_period_from: data.next_payout_period_from ? toIsoDate(data.next_payout_period_from) : null,
+      next_payout_period_to: data.next_payout_period_to ? toIsoDate(data.next_payout_period_to) : null,
+      remaining_balance: total - next,
+      notes: data.notes || null,
+      created_at: new Date().toISOString()
+    };
+    await upsertDoc(COL.snapshots, rec);
+    renderFinancesPage();
+  }
+
+  async function importStockReport(snapshotDate, rows) {
+    const database = getDb();
+    if (!database) throw new Error('Firebase не подключен');
+    const date = toIsoDate(snapshotDate);
+    const existing = financeState.stock.filter(s => s.snapshot_date === date);
+    for (const r of existing) {
+      await deleteDoc(COL.stock, r.id);
+    }
+    const records = rows.filter(r => r['ID']).map(r => ({
+      id: genId(),
+      marketplace_id: MP_ID,
+      snapshot_date: date,
+      uzum_id: String(r['ID'] ?? ''),
+      product_name: r['Наименование'] ?? '',
+      sku: r['SKU'] ?? null,
+      barcode: r['Штрихкод'] ?? null,
+      product_id: r['ID товара'] ? String(r['ID товара']) : null,
+      qty_for_dispatch: Number(r['К отправке'] ?? 0),
+      qty_in_sale: Number(r['В продаже'] ?? 0),
+      qty_return: Number(r['Возврат'] ?? 0),
+      qty_defect: Number(r['Брак'] ?? 0),
+      cost_price: r['Себест. (сумы)'] ? Number(r['Себест. (сумы)']) : null,
+      sale_price: r['Стоимость продажи (сумы)'] ? Number(r['Стоимость продажи (сумы)']) : null,
+      total_qty: Number(r['Общий остаток'] ?? 0),
+      total_sale_sum: r['Стоимость продажи (сумма) (сумы)'] ? Number(r['Стоимость продажи (сумма) (сумы)']) : null,
+      total_cost_sum: r['Себест. (сумма) (сумы)'] ? Number(r['Себест. (сумма) (сумы)']) : null,
+      status: r['Статус'] ?? null,
+      created_at: new Date().toISOString()
+    }));
+    for (const rec of records) {
+      await upsertDoc(COL.stock, rec);
+    }
+    renderFinancesPage();
+    return records.length;
+  }
+
+  // ── Import / Export ──────────────────────────────────────────
+
+  function parseUzumStockReport(buffer) {
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const sheetName = wb.SheetNames.find(n => /остаток|Остат/i.test(n)) ?? wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    return XLSX.utils.sheet_to_json(ws);
+  }
+
+  function parseShipmentsImport(buffer) {
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws)
+      .filter(r => r['Дата'] && r['Артикул'])
+      .map(r => ({
+        shipment_date: toIsoDate(r['Дата']),
+        article_code: String(r['Артикул']),
+        description: r['Описание'] ?? '',
+        quantity: Number(r['Кол-во, шт'] ?? 0),
+        unit_price: r['Отп. цена, сум'] ? Number(r['Отп. цена, сум']) : null,
+        total_amount: Number(r['Сумма (отп.цена), сум'] ?? 0),
+        status: r['Статус'] ?? 'in_sale',
+        notes: r['Примечание'] ?? null
+      }));
+  }
+
+  function parsePaymentsImport(buffer) {
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws)
+      .filter(r => r['Сумма, сум'] != null && r['Сумма, сум'] !== '')
+      .map(r => ({
+        payment_date: r['Дата'] && r['Дата'] !== '—' ? toIsoDate(r['Дата']) : null,
+        amount: Number(r['Сумма, сум']),
+        period_from: r['Период (с)'] ? toIsoDate(r['Период (с)']) : null,
+        period_to: r['Период (по)'] ? toIsoDate(r['Период (по)']) : null,
+        request_number: r['Номер запроса'] || null,
+        status: r['Статус'] ?? 'completed',
+        notes: r['Примечание'] ?? null
+      }));
+  }
+
+  function exportShipmentsToExcel() {
+    const rows = financeState.shipments
+      .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime())
+      .map((s, i) => ({
+        '№': i + 1,
+        'Дата': s.shipment_date,
+        'Артикул': s.article_code,
+        'Описание': s.description,
+        'Кол-во, шт': s.quantity,
+        'Отп. цена, сум': s.unit_price,
+        'Сумма (отп.цена), сум': s.total_amount,
+        'Статус': s.status,
+        'Примечание': s.notes ?? ''
+      }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Отгрузки');
+    XLSX.writeFile(wb, `otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  function exportPaymentsToExcel() {
+    let running = 0;
+    const sorted = financeState.payments.slice().sort((a, b) => {
+      if (!a.payment_date) return 1;
+      if (!b.payment_date) return -1;
+      return new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime();
+    });
+    const rows = sorted.map((p, i) => {
+      if (p.status === 'completed') running += Number(p.amount || 0);
+      return {
+        '№': i + 1,
+        'Дата': p.payment_date ?? '—',
+        'Сумма, сум': p.amount,
+        'Накоплено итого, сум': p.status === 'completed' ? running : '—',
+        'Период (с)': p.period_from ?? '',
+        'Период (по)': p.period_to ?? '',
+        'Номер запроса': p.request_number ?? '',
+        'Статус': p.status,
+        'Примечание': p.notes ?? ''
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Выплаты');
+    XLSX.writeFile(wb, `vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  function exportFullReport() {
+    const summary = calculateSummary();
+    const stock = getLatestStockRows();
+    const shipments = financeState.shipments;
+    const payments = financeState.payments;
+    const wb = XLSX.utils.book_new();
+
+    const summaryRows = [
+      ['Показатель', 'Сумма, сум', 'Примечание'],
+      ['Получено на расчётный счёт', summary.totalReceived, `${summary.paymentsCount} выплат`],
+      ['В ЛК Узума (гарантировано)', summary.lkTotalBalance, `снимок от ${summary.lastSnapshotDate || '—'}`],
+      ['  → к выплате ближайшей датой', summary.lkNextPayout, summary.lkNextPayoutDate ?? ''],
+      ['  → следующие периоды', summary.lkRemainingBalance, ''],
+      ['Остатки склада (потенциал)', summary.stockInSaleSaleSum, `${summary.stockInSaleQty} шт в продаже`],
+      ['ИТОГО ВСЕГО', summary.grandTotal, '= получено + ЛК + потенциал']
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Сводка');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(shipments.map((s, i) => ({
+      '№': i + 1, 'Дата': s.shipment_date, 'Артикул': s.article_code,
+      'Описание': s.description, 'Кол-во': s.quantity,
+      'Сумма (отп.цена)': s.total_amount, 'Статус': s.status, 'Примечание': s.notes ?? ''
+    }))), 'Отгрузки');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(payments.map((p, i) => ({
+      '№': i + 1, 'Дата': p.payment_date ?? '—', 'Сумма': p.amount,
+      'Запрос': p.request_number ?? '', 'Статус': p.status, 'Примечание': p.notes ?? ''
+    }))), 'Выплаты');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stock.map(s => ({
+      'Товар': s.product_name, 'SKU': s.sku ?? '', 'В продаже': s.qty_in_sale,
+      'К отправке': s.qty_for_dispatch, 'Цена прод., сум': s.sale_price ?? '',
+      'Итого по цене прод., сум': s.total_sale_sum ?? '', 'Статус': s.status ?? ''
+    }))), 'Остатки склад');
+    XLSX.writeFile(wb, `finansy_uzum_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  // ── Modals ───────────────────────────────────────────────────
+
+  function showModal(title, bodyHtml, onSave) {
+    let overlay = document.getElementById('financeModalOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'financeModalOverlay';
+      overlay.className = 'finance-modal-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `
+      <div class="finance-modal card" role="dialog" aria-modal="true">
+        <div class="finance-modal-header">
+          <h3>${escapeHtml(title)}</h3>
+          <button type="button" class="finance-modal-close" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="finance-modal-body">${bodyHtml}</div>
+        <div class="finance-modal-footer">
+          <button type="button" class="btn-secondary finance-modal-cancel">Отмена</button>
+          <button type="button" class="btn-primary finance-modal-save">Сохранить</button>
+        </div>
+      </div>`;
+    overlay.classList.add('active');
+    const close = () => overlay.classList.remove('active');
+    overlay.querySelector('.finance-modal-close').onclick = close;
+    overlay.querySelector('.finance-modal-cancel').onclick = close;
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    overlay.querySelector('.finance-modal-save').onclick = async () => {
+      try {
+        await onSave(overlay);
+        close();
+      } catch (err) {
+        alert(err?.message || 'Ошибка сохранения');
+      }
+    };
+  }
+
+  function openPaymentForm(payment) {
+    const p = payment || {};
+    showModal(p.id ? 'Редактировать выплату' : 'Добавить выплату', `
+      <div class="finance-form-grid">
+        <label>Дата<input type="date" id="finPayDate" value="${escapeAttr(p.payment_date || '')}" /></label>
+        <label>Сумма, сум<input type="number" id="finPayAmount" value="${escapeAttr(p.amount ?? '')}" min="0" step="1" /></label>
+        <label>Номер запроса<input type="text" id="finPayRequest" value="${escapeAttr(p.request_number || '')}" /></label>
+        <label>Статус
+          <select id="finPayStatus">
+            <option value="completed" ${p.status === 'completed' ? 'selected' : ''}>Исполнен</option>
+            <option value="pending" ${p.status === 'pending' ? 'selected' : ''}>Ожидается</option>
+            <option value="rejected" ${p.status === 'rejected' ? 'selected' : ''}>Отклонён</option>
+          </select>
+        </label>
+        <label>Период с<input type="date" id="finPayFrom" value="${escapeAttr(p.period_from || '')}" /></label>
+        <label>Период по<input type="date" id="finPayTo" value="${escapeAttr(p.period_to || '')}" /></label>
+        <label class="finance-form-full">Примечание<textarea id="finPayNotes" rows="2">${escapeHtml(p.notes || '')}</textarea></label>
+      </div>`, async () => {
+      await savePayment({
+        payment_date: document.getElementById('finPayDate').value || null,
+        amount: document.getElementById('finPayAmount').value,
+        request_number: document.getElementById('finPayRequest').value.trim(),
+        status: document.getElementById('finPayStatus').value,
+        period_from: document.getElementById('finPayFrom').value || null,
+        period_to: document.getElementById('finPayTo').value || null,
+        notes: document.getElementById('finPayNotes').value.trim() || null,
+        created_at: p.created_at
+      }, p.id);
+    });
+  }
+
+  function openShipmentForm(shipment) {
+    const s = shipment || {};
+    showModal(s.id ? 'Редактировать отгрузку' : 'Добавить отгрузку', `
+      <div class="finance-form-grid">
+        <label>Дата<input type="date" id="finShipDate" value="${escapeAttr(s.shipment_date || '')}" /></label>
+        <label>Артикул<input type="text" id="finShipArticle" value="${escapeAttr(s.article_code || '')}" /></label>
+        <label>Кол-во, шт<input type="number" id="finShipQty" value="${escapeAttr(s.quantity ?? '')}" min="0" /></label>
+        <label>Отп. цена, сум<input type="number" id="finShipUnit" value="${escapeAttr(s.unit_price ?? '')}" min="0" step="1" /></label>
+        <label>Сумма, сум<input type="number" id="finShipTotal" value="${escapeAttr(s.total_amount ?? '')}" min="0" step="1" /></label>
+        <label>Статус
+          <select id="finShipStatus">
+            <option value="in_transit" ${s.status === 'in_transit' ? 'selected' : ''}>В пути</option>
+            <option value="accepted" ${s.status === 'accepted' ? 'selected' : ''}>Принято</option>
+            <option value="in_sale" ${s.status === 'in_sale' ? 'selected' : ''}>В продаже</option>
+            <option value="sold_out" ${s.status === 'sold_out' ? 'selected' : ''}>Распродано</option>
+          </select>
+        </label>
+        <label class="finance-form-full">Описание<textarea id="finShipDesc" rows="2">${escapeHtml(s.description || '')}</textarea></label>
+        <label class="finance-form-full">Примечание<textarea id="finShipNotes" rows="2">${escapeHtml(s.notes || '')}</textarea></label>
+      </div>`, async () => {
+      await saveShipment({
+        shipment_date: document.getElementById('finShipDate').value,
+        article_code: document.getElementById('finShipArticle').value.trim(),
+        description: document.getElementById('finShipDesc').value.trim(),
+        quantity: document.getElementById('finShipQty').value,
+        unit_price: document.getElementById('finShipUnit').value,
+        total_amount: document.getElementById('finShipTotal').value,
+        status: document.getElementById('finShipStatus').value,
+        notes: document.getElementById('finShipNotes').value.trim() || null,
+        created_at: s.created_at
+      }, s.id);
+    });
+  }
+
+  function openSnapshotForm() {
+    const snap = getLatestSnapshot() || {};
+    showModal('Обновить баланс ЛК Узума', `
+      <p class="sub finance-form-hint">Введите данные из личного кабинета Узума. Создаётся новый снимок.</p>
+      <div class="finance-form-grid">
+        <label>Дата снимка<input type="date" id="finSnapDate" value="${escapeAttr(snap.snapshot_date || new Date().toISOString().slice(0, 10))}" /></label>
+        <label>Общий баланс ЛК, сум<input type="number" id="finSnapTotal" value="${escapeAttr(snap.total_balance ?? '')}" min="0" /></label>
+        <label>К выплате, сум<input type="number" id="finSnapNext" value="${escapeAttr(snap.next_payout_amount ?? '')}" min="0" /></label>
+        <label>Дата выплаты<input type="date" id="finSnapNextDate" value="${escapeAttr(snap.next_payout_date || '')}" /></label>
+        <label>Период с<input type="date" id="finSnapFrom" value="${escapeAttr(snap.next_payout_period_from || '')}" /></label>
+        <label>Период по<input type="date" id="finSnapTo" value="${escapeAttr(snap.next_payout_period_to || '')}" /></label>
+        <label class="finance-form-full">Примечание<textarea id="finSnapNotes" rows="2">${escapeHtml(snap.notes || '')}</textarea></label>
+      </div>`, async () => {
+      await saveSnapshot({
+        snapshot_date: document.getElementById('finSnapDate').value,
+        total_balance: document.getElementById('finSnapTotal').value,
+        next_payout_amount: document.getElementById('finSnapNext').value,
+        next_payout_date: document.getElementById('finSnapNextDate').value || null,
+        next_payout_period_from: document.getElementById('finSnapFrom').value || null,
+        next_payout_period_to: document.getElementById('finSnapTo').value || null,
+        notes: document.getElementById('finSnapNotes').value.trim() || null
+      });
+    });
+  }
+
+  // ── Render ───────────────────────────────────────────────────
+
+  const STATUS_LABELS = {
+    completed: '✅ Исполнен', rejected: '❌ Отклонён', pending: '⏳ Ожидается',
+    in_transit: 'В пути', accepted: 'Принято', in_sale: 'В продаже', sold_out: 'Распродано'
+  };
+
+  function renderSummaryTab(summary) {
+    const snap = getLatestSnapshot();
+    return `
+      <div class="finance-summary-cards">
+        <div class="finance-card finance-card--green">
+          <div class="finance-card-label">✅ Уже получено</div>
+          <div class="finance-card-value">${fmtSum(summary.totalReceived)}</div>
+          <div class="finance-card-meta">${summary.paymentsCount} выплат на расчётный счёт</div>
+        </div>
+        <div class="finance-card finance-card--yellow">
+          <div class="finance-card-label">⚡ Узум должен сейчас</div>
+          <div class="finance-card-value">${fmtSum(summary.lkTotalBalance)}</div>
+          <div class="finance-card-meta">${summary.lkNextPayoutDate
+            ? `${fmtSum(summary.lkNextPayout)} → ${summary.lkNextPayoutDate}`
+            : 'Нет данных о выплате'}</div>
+        </div>
+        <div class="finance-card finance-card--blue">
+          <div class="finance-card-label">📦 Ещё придёт</div>
+          <div class="finance-card-value">${fmtSum(summary.stockInSaleSaleSum)}</div>
+          <div class="finance-card-meta">${summary.stockInSaleQty} шт «В продаже» на складе</div>
+        </div>
+      </div>
+      <div class="finance-grand-total">
+        <div>
+          <div class="finance-grand-title">ИТОГО ВСЕГО ОТ УЗУМА</div>
+          <div class="finance-grand-sub">= Получено + В ЛК (гарантировано) + Потенциал с остатков</div>
+        </div>
+        <div class="finance-grand-value">${fmtSum(summary.grandTotal)}</div>
+      </div>
+      <div class="finance-warning">
+        <strong>Важно:</strong> Сумма отгрузок ≠ сумма выплат. Отгрузки — по <strong>отпускным ценам</strong>.
+        Выплаты = цена продажи минус комиссия Узума ~15–25%. Сравнивать нельзя.
+      </div>
+      <div class="card finance-balance-block">
+        <div class="finance-block-header">
+          <h3>Баланс ЛК Узума</h3>
+          <button type="button" class="btn-primary btn-sm" id="finUpdateSnapshotBtn">Обновить баланс</button>
+        </div>
+        ${snap ? `
+          <p class="sub">Последний снимок: <strong>${snap.snapshot_date}</strong></p>
+          <table class="finance-table finance-table--compact">
+            <tbody>
+              <tr><td>Общий баланс</td><td class="text-right"><strong>${fmtSum(snap.total_balance)}</strong></td></tr>
+              <tr><td>К выплате ${snap.next_payout_date || ''}</td><td class="text-right">${fmtSum(snap.next_payout_amount)}</td></tr>
+              <tr><td>Следующие периоды</td><td class="text-right">${fmtSum(snap.remaining_balance)}</td></tr>
+            </tbody>
+          </table>
+        ` : '<p class="empty">Нет снимка баланса. Нажмите «Обновить баланс».</p>'}
+      </div>
+      <div class="card finance-payout-table-block">
+        <h3>Как придут деньги</h3>
+        <table class="finance-table">
+          <thead><tr>
+            <th>Источник</th><th class="text-right">Сумма</th><th>Примечание</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>Получено на р/с</td><td class="text-right">${fmtSum(summary.totalReceived)}</td><td>${summary.paymentsCount} выплат</td></tr>
+            <tr><td>В ЛК (гарантировано)</td><td class="text-right">${fmtSum(summary.lkTotalBalance)}</td><td>снимок ${summary.lastSnapshotDate || '—'}</td></tr>
+            <tr><td>→ ближайшая выплата</td><td class="text-right">${fmtSum(summary.lkNextPayout)}</td><td>${summary.lkNextPayoutDate || '—'}</td></tr>
+            <tr><td>→ следующие периоды</td><td class="text-right">${fmtSum(summary.lkRemainingBalance)}</td><td></td></tr>
+            <tr><td>Потенциал (в продаже)</td><td class="text-right">${fmtSum(summary.stockInSaleSaleSum)}</td><td>${summary.stockInSaleQty} шт</td></tr>
+            <tr><td>К отправке (не в продаже)</td><td class="text-right">—</td><td>${summary.stockForDispatchQty} шт</td></tr>
+          </tbody>
+        </table>
+        <div class="finance-export-row">
+          <button type="button" class="btn-secondary" id="finExportFullBtn">📥 Скачать полный отчёт Excel</button>
+        </div>
+      </div>`;
+  }
+
+  function renderPaymentsTab() {
+    const payments = financeState.payments.slice().sort((a, b) => {
+      if (!a.payment_date) return 1;
+      if (!b.payment_date) return -1;
+      return new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime();
+    });
+    const withRT = addRunningTotal(financeState.payments);
+    const completedSum = financeState.payments
+      .filter(p => p.status === 'completed')
+      .reduce((s, p) => s + Number(p.amount || 0), 0);
+
+    const rows = payments.map((p, i) => {
+      const rt = withRT.find(w => w.id === p.id);
+      const isAdded = /ДОБАВЛЕНА|пропущена/i.test(p.notes || '');
+      const rowCls = [
+        isAdded ? 'finance-row--added' : '',
+        p.status === 'rejected' ? 'finance-row--rejected' : '',
+        p.status === 'pending' ? 'finance-row--pending' : ''
+      ].filter(Boolean).join(' ');
+      const badgeCls = p.status === 'completed' ? 'finance-badge--ok'
+        : p.status === 'rejected' ? 'finance-badge--bad' : 'finance-badge--wait';
+      return `<tr class="${rowCls}">
+        <td>${i + 1}</td>
+        <td>${escapeHtml(p.payment_date || '—')}</td>
+        <td class="text-right"><strong>${fmtNum(p.amount)}</strong></td>
+        <td class="text-right text-muted">${rt ? fmtNum(rt.running_total) : '—'}</td>
+        <td class="text-xs">${p.period_from && p.period_to ? `${p.period_from} – ${p.period_to}` : '—'}</td>
+        <td class="font-mono text-xs">${escapeHtml(p.request_number || '—')}</td>
+        <td class="text-center"><span class="finance-badge ${badgeCls}">${STATUS_LABELS[p.status] || p.status}</span></td>
+        <td class="text-xs text-muted">${escapeHtml(p.notes || '')}</td>
+        <td>
+          <button type="button" class="finance-icon-btn" data-fin-edit-payment="${escapeAttr(p.id)}" title="Изменить">✏️</button>
+          <button type="button" class="finance-icon-btn finance-icon-btn--danger" data-fin-del-payment="${escapeAttr(p.id)}" title="Удалить">🗑</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div class="finance-toolbar">
+        <span class="text-muted text-sm">Всего: ${payments.length} | Исполнено: ${payments.filter(p => p.status === 'completed').length}</span>
+        <div class="finance-toolbar-actions">
+          <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finPaymentsImportInput" /></label>
+          <button type="button" class="btn-secondary" id="finPaymentsExportBtn">📥 Экспорт</button>
+          <button type="button" class="btn-primary" id="finAddPaymentBtn">+ Добавить выплату</button>
+        </div>
+      </div>
+      <div class="finance-table-wrap">
+        <table class="finance-table finance-table--payments">
+          <thead><tr>
+            <th>№</th><th>Дата</th><th class="text-right">Сумма</th><th class="text-right">Накоплено</th>
+            <th>Период</th><th>Запрос</th><th class="text-center">Статус</th><th>Примечание</th><th></th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="9" class="empty">Нет выплат</td></tr>'}</tbody>
+          <tfoot><tr class="finance-tfoot">
+            <td colspan="2">ИТОГО ПОЛУЧЕНО</td>
+            <td class="text-right">${fmtNum(completedSum)}</td>
+            <td colspan="6" class="text-sm">Только статус «Исполнен»</td>
+          </tr></tfoot>
+        </table>
+      </div>`;
+  }
+
+  function renderShipmentsTab() {
+    const shipments = financeState.shipments.slice()
+      .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime());
+    const totalSum = shipments.reduce((s, r) => s + Number(r.total_amount || 0), 0);
+    const rows = shipments.map((s, i) => `<tr>
+      <td>${i + 1}</td>
+      <td>${escapeHtml(s.shipment_date)}</td>
+      <td><strong>${escapeHtml(s.article_code)}</strong></td>
+      <td>${escapeHtml(s.description || '')}</td>
+      <td class="text-right">${fmtNum(s.quantity)}</td>
+      <td class="text-right">${s.unit_price != null ? fmtNum(s.unit_price) : '—'}</td>
+      <td class="text-right"><strong>${fmtNum(s.total_amount)}</strong></td>
+      <td><span class="finance-badge">${STATUS_LABELS[s.status] || s.status}</span></td>
+      <td class="text-xs">${escapeHtml(s.notes || '')}</td>
+      <td>
+        <button type="button" class="finance-icon-btn" data-fin-edit-shipment="${escapeAttr(s.id)}">✏️</button>
+        <button type="button" class="finance-icon-btn finance-icon-btn--danger" data-fin-del-shipment="${escapeAttr(s.id)}">🗑</button>
+      </td>
+    </tr>`).join('');
+
+    return `
+      <div class="finance-toolbar">
+        <span class="text-muted text-sm">Отгрузок: ${shipments.length} | Сумма (отп.цена): ${fmtSum(totalSum)}</span>
+        <div class="finance-toolbar-actions">
+          <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
+          <button type="button" class="btn-secondary" id="finShipmentsExportBtn">📥 Экспорт</button>
+          <button type="button" class="btn-primary" id="finAddShipmentBtn">+ Добавить отгрузку</button>
+        </div>
+      </div>
+      <div class="finance-table-wrap">
+        <table class="finance-table">
+          <thead><tr>
+            <th>№</th><th>Дата</th><th>Артикул</th><th>Описание</th>
+            <th class="text-right">Кол-во</th><th class="text-right">Отп.цена</th><th class="text-right">Сумма</th>
+            <th>Статус</th><th>Примечание</th><th></th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="10" class="empty">Нет отгрузок</td></tr>'}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function renderStockTab() {
+    const stock = getLatestStockRows();
+    const snapDate = stock[0]?.snapshot_date;
+    const rows = stock.map(s => `<tr>
+      <td>${escapeHtml(s.product_name)}</td>
+      <td class="font-mono text-xs">${escapeHtml(s.sku || '—')}</td>
+      <td class="text-right">${fmtNum(s.qty_in_sale)}</td>
+      <td class="text-right">${fmtNum(s.qty_for_dispatch)}</td>
+      <td class="text-right">${s.sale_price != null ? fmtNum(s.sale_price) : '—'}</td>
+      <td class="text-right"><strong>${s.total_sale_sum != null ? fmtNum(s.total_sale_sum) : '—'}</strong></td>
+      <td class="text-xs">${escapeHtml(s.status || '')}</td>
+    </tr>`).join('');
+
+    return `
+      <div class="finance-stock-hint card">
+        <strong>Как получить отчёт:</strong> ЛК Узума → Склад → Остатки → Скачать отчёт (xlsx). Загружайте раз в 1–2 недели.
+      </div>
+      <div class="finance-stock-upload" id="finStockUploadZone">
+        <input type="file" accept=".xlsx,.xls" hidden id="finStockFileInput" />
+        <div class="finance-stock-upload-inner" id="finStockUploadInner">
+          <div class="finance-stock-upload-icon">📊</div>
+          <div>Нажмите или перетащите отчёт «Остатки» (.xlsx)</div>
+        </div>
+      </div>
+      <div id="finStockUploadResult" class="hidden"></div>
+      ${stock.length ? `
+        <p class="sub">Снимок от <strong>${snapDate}</strong> — ${stock.length} позиций</p>
+        <div class="finance-table-wrap">
+          <table class="finance-table">
+            <thead><tr>
+              <th>Товар</th><th>SKU</th><th class="text-right">В продаже</th>
+              <th class="text-right">К отправке</th><th class="text-right">Цена прод.</th>
+              <th class="text-right">Итого</th><th>Статус</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      ` : '<p class="empty">Остатки не загружены. Загрузите отчёт из ЛК Узума.</p>'}`;
+  }
+
+  function renderFinancesPage() {
+    const root = document.getElementById('financesTabContent');
+    if (!root) return;
+    const summary = calculateSummary();
+    const tab = financeState.activeTab;
+
+    let content = '';
+    if (tab === 'summary') content = renderSummaryTab(summary);
+    else if (tab === 'payments') content = renderPaymentsTab();
+    else if (tab === 'shipments') content = renderShipmentsTab();
+    else if (tab === 'stock') content = renderStockTab();
+
+    root.innerHTML = content;
+    wireFinancesEvents();
+  }
+
+  function setFinanceTab(tabId) {
+    financeState.activeTab = tabId;
+    document.querySelectorAll('[data-finance-tab]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.financeTab === tabId);
+    });
+    renderFinancesPage();
+  }
+
+  function wireFinancesEvents() {
+    document.getElementById('finUpdateSnapshotBtn')?.addEventListener('click', openSnapshotForm);
+    document.getElementById('finExportFullBtn')?.addEventListener('click', exportFullReport);
+    document.getElementById('finAddPaymentBtn')?.addEventListener('click', () => openPaymentForm());
+    document.getElementById('finPaymentsExportBtn')?.addEventListener('click', exportPaymentsToExcel);
+    document.getElementById('finAddShipmentBtn')?.addEventListener('click', () => openShipmentForm());
+    document.getElementById('finShipmentsExportBtn')?.addEventListener('click', exportShipmentsToExcel);
+
+    document.getElementById('finPaymentsImportInput')?.addEventListener('change', async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const rows = parsePaymentsImport(await file.arrayBuffer());
+        for (const r of rows) {
+          await savePayment(r);
+        }
+        alert(`Импортировано ${rows.length} выплат`);
+      } catch (err) {
+        alert(err?.message || 'Ошибка импорта');
+      }
+      e.target.value = '';
+    });
+
+    document.getElementById('finShipmentsImportInput')?.addEventListener('change', async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const rows = parseShipmentsImport(await file.arrayBuffer());
+        for (const r of rows) {
+          await saveShipment(r);
+        }
+        alert(`Импортировано ${rows.length} отгрузок`);
+      } catch (err) {
+        alert(err?.message || 'Ошибка импорта');
+      }
+      e.target.value = '';
+    });
+
+    const stockZone = document.getElementById('finStockUploadZone');
+    const stockInput = document.getElementById('finStockFileInput');
+    stockZone?.addEventListener('click', () => stockInput?.click());
+    stockInput?.addEventListener('change', async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const resultEl = document.getElementById('finStockUploadResult');
+      try {
+        const buffer = await file.arrayBuffer();
+        const rows = parseUzumStockReport(buffer);
+        const dateMatch = file.name.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+        const snapshotDate = dateMatch
+          ? `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`
+          : new Date().toISOString().slice(0, 10);
+        const count = await importStockReport(snapshotDate, rows);
+        if (resultEl) {
+          resultEl.className = 'finance-stock-result finance-stock-result--ok';
+          resultEl.textContent = `✅ Загружено ${count} позиций (снимок ${snapshotDate})`;
+        }
+      } catch (err) {
+        if (resultEl) {
+          resultEl.className = 'finance-stock-result finance-stock-result--err';
+          resultEl.textContent = `Ошибка: ${err?.message || err}`;
+        }
+      }
+      e.target.value = '';
+    });
+
+    document.querySelectorAll('[data-fin-edit-payment]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const p = financeState.payments.find(x => x.id === btn.dataset.finEditPayment);
+        if (p) openPaymentForm(p);
+      });
+    });
+    document.querySelectorAll('[data-fin-del-payment]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить выплату?')) return;
+        await deleteDoc(COL.payments, btn.dataset.finDelPayment);
+      });
+    });
+    document.querySelectorAll('[data-fin-edit-shipment]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const s = financeState.shipments.find(x => x.id === btn.dataset.finEditShipment);
+        if (s) openShipmentForm(s);
+      });
+    });
+    document.querySelectorAll('[data-fin-del-shipment]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить отгрузку?')) return;
+        await deleteDoc(COL.shipments, btn.dataset.finDelShipment);
+      });
+    });
+  }
+
+  function initFinances() {
+    document.querySelectorAll('[data-finance-tab]').forEach(btn => {
+      btn.addEventListener('click', () => setFinanceTab(btn.dataset.financeTab));
+    });
+    startFinanceRealtimeSync();
+    if (document.getElementById('finances-tab')?.classList.contains('active')) {
+      renderFinancesPage();
+    }
+  }
+
+  window.renderFinancesPage = renderFinancesPage;
+  window.initFinances = initFinances;
+})();

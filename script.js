@@ -398,6 +398,7 @@ function renderEverything() {
   if (activeId === 'products-tab' || activeId === 'dashboard-page') filterProducts();
   if (activeId === 'shipments-tab') renderWmsHistory();
   if (activeId === 'stock-analytics-tab') void renderStockAnalyticsPage();
+  if (activeId === 'finances-tab' && typeof renderFinancesPage === 'function') renderFinancesPage();
   if (activeId === 'components-tab') renderComponentsList();
   if (currentDetailRecordId != null && String(currentDetailRecordId) !== '') {
     const p = findProductByRecordId(readProductsSafe(), currentDetailRecordId);
@@ -997,6 +998,8 @@ function applyMarketplaceSectionVisibility() {
   document.getElementById('shipmentsTabMpStub')?.classList.toggle('hidden', uzumOnly);
   document.getElementById('stockAnalyticsUzumBody')?.classList.toggle('hidden', !uzumOnly);
   document.getElementById('stockAnalyticsMpStub')?.classList.toggle('hidden', uzumOnly);
+  document.getElementById('financesUzumBody')?.classList.toggle('hidden', !uzumOnly);
+  document.getElementById('financesMpStub')?.classList.toggle('hidden', uzumOnly);
   document.getElementById('analyticsTabMpBody')?.classList.toggle('hidden', !analyticsEnabled);
   document.getElementById('analyticsTabMpStub')?.classList.toggle('hidden', analyticsEnabled);
   applyAnalyticsTabMarketplaceLayout();
@@ -1015,6 +1018,9 @@ function applyMarketplaceSectionVisibility() {
   }
   if (activeId === 'stock-analytics-tab' && uzumOnly && typeof renderStockAnalyticsPage === 'function') {
     void renderStockAnalyticsPage();
+  }
+  if (activeId === 'finances-tab' && uzumOnly && typeof renderFinancesPage === 'function') {
+    renderFinancesPage();
   }
 }
 
@@ -2039,6 +2045,7 @@ function openPage(pageId) {
   applyUnitTabMarketplaceLayout();
   updateMpContextHint();
   if (pageId === 'unit-tab') renderUnit();
+  if (pageId === 'finances-tab' && typeof renderFinancesPage === 'function') renderFinancesPage();
   renderEverything();
 }
 
@@ -9538,6 +9545,7 @@ document.getElementById('stockAnalyticsRefreshBtn')?.addEventListener('click', (
   if (getCurrentMarketplace() === 'uzum') void renderStockAnalyticsPage();
 });
 wireWbAnalyticsUiOnce();
+if (typeof initFinances === 'function') initFinances();
 // Первичный рендер
 updateCostSaveToolbar();
 renderProductCost();

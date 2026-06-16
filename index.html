@@ -66,6 +66,10 @@
             <span class="nav-icon">📉</span>
             <span>Склад</span>
           </button>
+          <button class="nav-btn" data-page="finances-tab">
+            <span class="nav-icon">💰</span>
+            <span>Финансы</span>
+          </button>
           <button class="nav-btn" data-page="analytics-tab">
             <span class="nav-icon">📈</span>
             <span>Аналитика</span>
@@ -143,6 +147,18 @@
               </div>
               <div class="dashboard-meta">
                 <span class="chip">Flow</span>
+                <span class="dashboard-link">Открыть раздел →</span>
+              </div>
+            </article>
+
+            <article class="dashboard-card" data-open-page="finances-tab">
+              <div class="dash-icon">💰</div>
+              <div>
+                <h3>Финансы Uzum</h3>
+                <p>Учёт выплат, баланса ЛК, отгрузок по отпускным ценам и остатков склада маркетплейса.</p>
+              </div>
+              <div class="dashboard-meta">
+                <span class="chip">P&L</span>
                 <span class="dashboard-link">Открыть раздел →</span>
               </div>
             </article>
@@ -1569,6 +1585,29 @@
       </article>
     </section>
 
+    <section class="page-panel" id="finances-tab">
+      <div id="financesUzumBody" class="finances-mp-wrap">
+        <header class="finances-header card">
+          <div>
+            <h2>Финансы — Узум Маркет</h2>
+            <p class="sub">Учёт отгрузок, выплат и дебиторки. Баланс ЛК — источник истины для «что Узум должен».</p>
+          </div>
+        </header>
+        <nav class="finances-tabs" aria-label="Вкладки финансов">
+          <button type="button" class="finances-tab-btn active" data-finance-tab="summary">📊 Сводка</button>
+          <button type="button" class="finances-tab-btn" data-finance-tab="shipments">🚚 Отгрузки</button>
+          <button type="button" class="finances-tab-btn" data-finance-tab="payments">💳 Выплаты</button>
+          <button type="button" class="finances-tab-btn" data-finance-tab="stock">📦 Остатки</button>
+        </nav>
+        <div id="financesTabContent" class="finances-content" aria-live="polite">
+          <p class="empty">Загрузка данных…</p>
+        </div>
+      </div>
+      <div id="financesMpStub" class="mp-tab-stub card hidden" role="status">
+        <p class="mp-tab-stub-text">Раздел «Финансы» доступен для Uzum</p>
+      </div>
+    </section>
+
 <section class="page-panel" id="analytics-tab">
       <div id="analyticsTabMpBody" class="analytics-tab-mp-wrap">
       <div id="analyticsUzumRoot" class="analytics-mp-root">
@@ -1993,5 +2032,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="script.js?v=wb-nosov-2026-04e-uzs"></script>
+  <script src="finances.js?v=2026-06-16"></script>
 </body>
 </html>
