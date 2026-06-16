@@ -3110,6 +3110,26 @@ body.dark-mode .finance-warning { background: #3f1515; border-color: #7f1d1d; co
   padding: 1px 5px;
   border-radius: 4px;
 }
+.finance-storage-banner-steps {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.finance-storage-banner-steps ol {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+.finance-storage-banner-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.finance-storage-banner-actions .btn-secondary {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
 .finance-modal-overlay {
   position: fixed;
   inset: 0;

@@ -365,9 +365,98 @@
     if (financeState.storageMode !== 'local') return '';
     return `<div class="finance-warning finance-storage-banner">
       ⚠️ <strong>Локальный режим.</strong> Firebase не даёт записывать финансы (нет прав на коллекции finance_*).
-      Данные сохраняются в этом браузере. Для облачной синхронизации добавьте правила в Firebase Console
-      (файл <code>firestore.rules</code> в проекте).
+      Данные сохраняются только в этом браузере.
+      <div class="finance-storage-banner-steps">
+        <strong>Как включить облако:</strong>
+        <ol>
+          <li>Нажмите «Правила Firebase» → вставьте текст из файла <code>firestore.rules</code> → <strong>Publish</strong></li>
+          <li>Вернитесь сюда → нажмите «Проверить Firebase»</li>
+        </ol>
+      </div>
+      <div class="finance-export-row finance-storage-banner-actions">
+        <button type="button" class="btn-primary" id="finRetryFirebaseBtn">🔄 Проверить Firebase</button>
+        <a class="btn-secondary" href="https://console.firebase.google.com/project/yoa123/firestore/rules" target="_blank" rel="noopener noreferrer">📋 Правила Firebase</a>
+      </div>
     </div>`;
+  }
+
+  async function retryFinanceFirebaseSync() {
+    const canWrite = await probeFinanceFirebaseWrite();
+    if (!canWrite) {
+      alert(
+        'Firebase ещё не даёт записывать финансы.\n\n' +
+        '1. Откройте «Правила Firebase»\n' +
+        '2. Скопируйте весь файл firestore.rules из проекта\n' +
+        '3. Вставьте в редактор правил → Publish\n' +
+        '4. Снова нажмите «Проверить Firebase»'
+      );
+      return;
+    }
+
+    const local = loadLocalFinanceData();
+    const localCount = local.shipments.length + local.payments.length + local.snapshots.length + local.stock.length;
+
+    financeStoreMode = 'firebase';
+    financeState.storageMode = 'firebase';
+
+    if (localCount > 0) {
+      const parts = [];
+      if (local.shipments.length) parts.push(`${local.shipments.length} отгрузок`);
+      if (local.payments.length) parts.push(`${local.payments.length} выплат`);
+      if (local.snapshots.length) parts.push(`${local.snapshots.length} снимков баланса`);
+      if (local.stock.length) parts.push(`${local.stock.length} остатков`);
+      const merge = confirm(`Найдены локальные данные: ${parts.join(', ')}.\n\nПеренести их в Firebase?`);
+      if (merge) {
+        setFinanceImportBusy(true, 'Перенос данных в Firebase...');
+        try {
+          if (local.payments.length) await bulkWriteFinanceDocs(COL.payments, local.payments);
+          if (local.shipments.length) await bulkWriteFinanceDocs(COL.shipments, local.shipments);
+          if (local.snapshots.length) await bulkWriteFinanceDocs(COL.snapshots, local.snapshots);
+          if (local.stock.length) await bulkWriteFinanceDocs(COL.stock, local.stock);
+          localStorage.removeItem(FINANCE_LOCAL_KEY);
+        } finally {
+          setFinanceImportBusy(false);
+        }
+      }
+    }
+
+    _unsubs.forEach((fn) => { try { fn(); } catch {} });
+    _unsubs = [];
+    _financeSyncStarted = false;
+    await startFinanceSyncOnce();
+    renderFinancesPage();
+    alert('✅ Firebase подключён. Финансы синхронизируются в облаке.');
+  }
+
+  async function clearAllFinanceShipments() {
+    const count = financeState.shipments.length;
+    if (!count) {
+      alert('Нет отгрузок для удаления.');
+      return;
+    }
+
+    if (!confirm(`⚠️ Шаг 1 из 3\n\nУдалить ВСЕ ${count} отгрузок из раздела «Финансы»?`)) return;
+    if (!confirm(`⚠️ Шаг 2 из 3\n\nВы точно уверены?\nБудут удалены все ${count} записей. Восстановить будет нельзя.`)) return;
+
+    const typed = prompt(`⚠️ Шаг 3 из 3\n\nЧтобы удалить всё, введите слово:\nУДАЛИТЬ`);
+    if (String(typed || '').trim().toUpperCase() !== 'УДАЛИТЬ') {
+      alert('Отменено — слово не совпало.');
+      return;
+    }
+
+    const ids = financeState.shipments.map((s) => s.id).filter(Boolean);
+    setFinanceImportBusy(true, `Удаление ${count} отгрузок...`);
+    try {
+      await bulkWriteFinanceDocs(COL.shipments, [], ids);
+      financeState.shipments = [];
+      if (financeStoreMode === 'local') persistLocalFinanceData();
+      renderFinancesPage();
+      alert(`✅ Удалено ${count} отгрузок.`);
+    } catch (err) {
+      alert(err?.message || 'Ошибка удаления');
+    } finally {
+      setFinanceImportBusy(false);
+    }
   }
 
   function startFinanceRealtimeSync() {
@@ -1380,6 +1469,7 @@
           <button type="button" class="btn-secondary" id="finShipmentsTemplateBtn">📋 Шаблон</button>
           <label class="btn-secondary finance-file-btn">📤 Импорт<input type="file" accept=".xlsx,.xls" hidden id="finShipmentsImportInput" /></label>
           <button type="button" class="btn-secondary" id="finShipmentsExportBtn">📥 Экспорт</button>
+          ${shipments.length ? '<button type="button" class="btn-danger" id="finClearAllShipmentsBtn" title="Тройное подтверждение">🗑 Очистить всё</button>' : ''}
           <button type="button" class="btn-primary" id="finAddShipmentBtn">+ Добавить отгрузку</button>
         </div>
       </div>
@@ -1474,6 +1564,8 @@
     document.getElementById('finAddShipmentBtn')?.addEventListener('click', () => openShipmentForm());
     document.getElementById('finShipmentsTemplateBtn')?.addEventListener('click', exportShipmentsTemplate);
     document.getElementById('finShipmentsExportBtn')?.addEventListener('click', exportShipmentsToExcel);
+    document.getElementById('finClearAllShipmentsBtn')?.addEventListener('click', () => { void clearAllFinanceShipments(); });
+    document.getElementById('finRetryFirebaseBtn')?.addEventListener('click', () => { void retryFinanceFirebaseSync(); });
     document.getElementById('finStockExportBtn')?.addEventListener('click', exportStockToExcel);
 
     document.getElementById('finSnapshotImportInput')?.addEventListener('change', async e => {
