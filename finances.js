@@ -189,12 +189,42 @@
       const d = new Date(Math.round((v - 25569) * 86400 * 1000));
       if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
     }
-    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
-    const m = String(v).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const dot = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (dot) return `${dot[3]}-${dot[2].padStart(2, '0')}-${dot[1].padStart(2, '0')}`;
+    const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (slash) {
+      const a = Number(slash[1]);
+      const b = Number(slash[2]);
+      const y = slash[3];
+      let day;
+      let month;
+      if (a > 12) { day = a; month = b; }
+      else if (b > 12) { day = b; month = a; }
+      else { day = a; month = b; }
+      return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
     const d = new Date(v);
     if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-    return String(v).trim().slice(0, 10);
+    return s.slice(0, 10);
+  }
+
+  function fmtDateRu(v) {
+    const iso = toIsoDate(v);
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return v ? String(v) : '—';
+    const [y, m, d] = iso.split('-');
+    return `${d}.${m}.${y}`;
+  }
+
+  function fmtPeriodRu(from, to) {
+    if (!from && !to) return '—';
+    if (from && to) return `${fmtDateRu(from)} – ${fmtDateRu(to)}`;
+    return fmtDateRu(from || to);
+  }
+
+  function exportDateSuffix() {
+    return fmtDateRu(new Date().toISOString().slice(0, 10)).replace(/\./g, '-');
   }
 
   function parseFinanceNumber(v) {
@@ -323,8 +353,8 @@
   function renderDateFilterBar(tabKey, from, to) {
     return `<div class="finance-mini-filter card">
       <span class="finance-mini-filter-title">Период</span>
-      <label class="finance-mini-filter-field">с <input type="date" id="finFilterFrom" value="${escapeAttr(from || '')}" /></label>
-      <label class="finance-mini-filter-field">по <input type="date" id="finFilterTo" value="${escapeAttr(to || '')}" /></label>
+      <label class="finance-mini-filter-field">с <input type="text" id="finFilterFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(from ? fmtDateRu(from) : '')}" /></label>
+      <label class="finance-mini-filter-field">по <input type="text" id="finFilterTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(to ? fmtDateRu(to) : '')}" /></label>
       <button type="button" class="btn-secondary btn-sm" data-fin-filter-apply="${tabKey}">Применить</button>
       <button type="button" class="btn-secondary btn-sm" data-fin-filter-reset="${tabKey}">Сбросить</button>
     </div>`;
@@ -830,7 +860,7 @@
 
   function shipmentRowFromRecord(s) {
     return {
-      'Дата': s.shipment_date || '',
+      'Дата': fmtDateRu(s.shipment_date) || '',
       'Артикул': s.article_code || '',
       'Описание': s.description || '',
       'Кол-во, шт': s.quantity ?? '',
@@ -843,10 +873,10 @@
 
   function paymentRowFromRecord(p) {
     return {
-      'Дата': p.payment_date || '',
+      'Дата': p.payment_date ? fmtDateRu(p.payment_date) : '',
       'Сумма, сум': p.amount ?? '',
-      'Период (с)': p.period_from || '',
-      'Период (по)': p.period_to || '',
+      'Период (с)': p.period_from ? fmtDateRu(p.period_from) : '',
+      'Период (по)': p.period_to ? fmtDateRu(p.period_to) : '',
       'Номер запроса': p.request_number || '',
       'Статус': p.status || 'completed',
       'Примечание': p.notes || ''
@@ -947,7 +977,7 @@
       `Нужны столбцы: ${expected}`,
       '',
       'Скачайте «Шаблон», заполняйте лист с данными (не лист «Как заполнять»).',
-      'Дата: 2026-06-15 или 15.06.2026. Суммы — только числа.'
+      'Дата: 15.06.2026 (день.месяц.год). Суммы — только числа.'
     ].join('\n');
   }
 
@@ -1030,7 +1060,7 @@
       const total = parseFinanceNumber(totalRaw) ?? (unitPrice != null ? qty * unitPrice : 0);
 
       rows.push({
-        shipment_date: dateRaw,
+        shipment_date: toIsoDate(dateRaw),
         article_code: article,
         description: String(pickCell(row, ['Описание', 'Товар', 'Наименование']) || ''),
         quantity: qty,
@@ -1105,7 +1135,7 @@
     const blankRows = Array.from({ length: 5 }, () => (
       Object.fromEntries(FIN_SHIPMENT_COLS.map((col) => [col, '']))
     ));
-    downloadFinanceWorkbook(`shablon_otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`shablon_otgruzki_${exportDateSuffix()}.xlsx`, [
       {
         name: 'Отгрузки',
         sheet: sheetFromRows(FIN_SHIPMENT_COLS, blankRows, [12, 14, 28, 10, 14, 18, 12, 24])
@@ -1113,7 +1143,7 @@
       {
         name: 'Как заполнять',
         sheet: hintsSheet([
-          ['Дата', 'Дата отгрузки на склад Uzum', '2026-06-15 или 15.06.2026'],
+          ['Дата', 'Дата отгрузки на склад Uzum', '15.06.2026'],
           ['Артикул', 'Артикул 1С / внутренний код', 'НВ-50-70-бел'],
           ['Описание', 'Название товара (необязательно)', 'Наволочка 50×70'],
           ['Кол-во, шт', 'Количество штук', '24'],
@@ -1130,7 +1160,7 @@
     const blankRows = Array.from({ length: 5 }, () => (
       Object.fromEntries(FIN_PAYMENT_COLS.map((col) => [col, '']))
     ));
-    downloadFinanceWorkbook(`shablon_vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`shablon_vyplaty_${exportDateSuffix()}.xlsx`, [
       {
         name: 'Выплаты',
         sheet: sheetFromRows(FIN_PAYMENT_COLS, blankRows, [12, 14, 12, 12, 18, 12, 28])
@@ -1138,10 +1168,10 @@
       {
         name: 'Как заполнять',
         sheet: hintsSheet([
-          ['Дата', 'Дата поступления на р/с (для ожидаемых можно оставить пустым)', '2026-06-09'],
+          ['Дата', 'Дата поступления на р/с', '09.06.2026'],
           ['Сумма, сум', 'Сумма выплаты в сумах', '18114131'],
-          ['Период (с)', 'Начало отчётного периода Uzum', '2026-05-27'],
-          ['Период (по)', 'Конец отчётного периода', '2026-06-10'],
+          ['Период (с)', 'Начало отчётного периода Uzum', '27.05.2026'],
+          ['Период (по)', 'Конец отчётного периода', '10.06.2026'],
           ['Номер запроса', 'Номер заявки в ЛК', '#5000169479'],
           ['Статус', 'completed | pending | rejected (или Исполнен/Ожидается/Отклонён)', 'completed'],
           ['Примечание', 'Комментарий', '']
@@ -1151,7 +1181,7 @@
   }
 
   function exportSnapshotsTemplate() {
-    downloadFinanceWorkbook(`shablon_balans_lk_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`shablon_balans_lk_${exportDateSuffix()}.xlsx`, [
       {
         name: 'Баланс ЛК',
         sheet: sheetFromRows(FIN_SNAPSHOT_COLS, [
@@ -1161,12 +1191,12 @@
       {
         name: 'Как заполнять',
         sheet: hintsSheet([
-          ['Дата снимка', 'Когда смотрели баланс в ЛК Uzum', '2026-06-16'],
+          ['Дата снимка', 'Когда смотрели баланс в ЛК Uzum', '16.06.2026'],
           ['Общий баланс, сум', '«Всего к выплате» в личном кабинете', '98967558'],
           ['К выплате, сум', 'Сумма ближайшей выплаты', '31740152'],
-          ['Дата выплаты', 'Дата ближайшей выплаты', '2026-06-21'],
-          ['Период (с)', 'Период ближайшей выплаты — начало', '2026-05-27'],
-          ['Период (по)', 'Период ближайшей выплаты — конец', '2026-06-10'],
+          ['Дата выплаты', 'Дата ближайшей выплаты', '21.06.2026'],
+          ['Период (с)', 'Период ближайшей выплаты — начало', '27.05.2026'],
+          ['Период (по)', 'Период ближайшей выплаты — конец', '10.06.2026'],
           ['Остаток после выплаты, сум', 'Остаток «следующие периоды» (если пусто — посчитается)', '67227406']
         ])
       }
@@ -1178,7 +1208,7 @@
       .slice()
       .sort((a, b) => new Date(b.shipment_date).getTime() - new Date(a.shipment_date).getTime())
       .map(shipmentRowFromRecord);
-    downloadFinanceWorkbook(`otgruzki_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`otgruzki_${exportDateSuffix()}.xlsx`, [
       { name: 'Отгрузки', sheet: sheetFromRows(FIN_SHIPMENT_COLS, rows, [12, 14, 28, 10, 14, 18, 12, 24]) }
     ]);
   }
@@ -1192,7 +1222,7 @@
         return new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime();
       })
       .map(paymentRowFromRecord);
-    downloadFinanceWorkbook(`vyplaty_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`vyplaty_${exportDateSuffix()}.xlsx`, [
       { name: 'Выплаты', sheet: sheetFromRows(FIN_PAYMENT_COLS, rows, [12, 14, 12, 12, 18, 12, 28]) }
     ]);
   }
@@ -1202,16 +1232,16 @@
       .slice()
       .sort((a, b) => new Date(b.snapshot_date).getTime() - new Date(a.snapshot_date).getTime())
       .map(s => ({
-        'Дата снимка': s.snapshot_date || '',
+        'Дата снимка': fmtDateRu(s.snapshot_date) || '',
         'Общий баланс, сум': s.total_balance ?? '',
         'К выплате, сум': s.next_payout_amount ?? '',
-        'Дата выплаты': s.next_payout_date || '',
-        'Период (с)': s.next_payout_period_from || '',
-        'Период (по)': s.next_payout_period_to || '',
+        'Дата выплаты': s.next_payout_date ? fmtDateRu(s.next_payout_date) : '',
+        'Период (с)': s.next_payout_period_from ? fmtDateRu(s.next_payout_period_from) : '',
+        'Период (по)': s.next_payout_period_to ? fmtDateRu(s.next_payout_period_to) : '',
         'Остаток после выплаты, сум': s.remaining_balance ?? '',
         'Примечание': s.notes || ''
       }));
-    downloadFinanceWorkbook(`balans_lk_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`balans_lk_${exportDateSuffix()}.xlsx`, [
       { name: 'Баланс ЛК', sheet: sheetFromRows(FIN_SNAPSHOT_COLS, rows, [14, 18, 16, 14, 12, 12, 22, 24]) }
     ]);
   }
@@ -1242,7 +1272,7 @@
       'Себест. (сумма) (сумы)': s.total_cost_sum ?? '',
       'Статус': s.status || ''
     }));
-    downloadFinanceWorkbook(`ostatki_${stock[0]?.snapshot_date || new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`ostatki_${fmtDateRu(stock[0]?.snapshot_date || new Date().toISOString().slice(0, 10)).replace(/\./g, '-')}.xlsx`, [
       { name: 'Остатки', sheet: sheetFromRows(cols, rows, [10, 32, 14, 16, 12, 12, 12, 10, 10, 14, 18, 14, 22, 18, 14]) }
     ]);
   }
@@ -1283,7 +1313,7 @@
       ['ИТОГО ВСЕГО', summary.grandTotal, '= получено + ЛК + потенциал']
     ];
 
-    downloadFinanceWorkbook(`finansy_uzum_${new Date().toISOString().slice(0, 10)}.xlsx`, [
+    downloadFinanceWorkbook(`finansy_uzum_${exportDateSuffix()}.xlsx`, [
       { name: 'Сводка', sheet: XLSX.utils.aoa_to_sheet(summaryRows) },
       { name: 'Отгрузки', sheet: sheetFromRows(FIN_SHIPMENT_COLS, shipmentRows) },
       { name: 'Выплаты', sheet: sheetFromRows(FIN_PAYMENT_COLS, paymentRows) },
@@ -1332,7 +1362,7 @@
     const p = payment || {};
     showModal(p.id ? 'Редактировать выплату' : 'Добавить выплату', `
       <div class="finance-form-grid">
-        <label>Дата<input type="date" id="finPayDate" value="${escapeAttr(p.payment_date || '')}" /></label>
+        <label>Дата<input type="text" id="finPayDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(p.payment_date) === '—' ? '' : fmtDateRu(p.payment_date))}" /></label>
         <label>Сумма, сум<input type="number" id="finPayAmount" value="${escapeAttr(p.amount ?? '')}" min="0" step="1" /></label>
         <label>Номер запроса<input type="text" id="finPayRequest" value="${escapeAttr(p.request_number || '')}" /></label>
         <label>Статус
@@ -1342,17 +1372,17 @@
             <option value="rejected" ${p.status === 'rejected' ? 'selected' : ''}>Отклонён</option>
           </select>
         </label>
-        <label>Период с<input type="date" id="finPayFrom" value="${escapeAttr(p.period_from || '')}" /></label>
-        <label>Период по<input type="date" id="finPayTo" value="${escapeAttr(p.period_to || '')}" /></label>
+        <label>Период с<input type="text" id="finPayFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(p.period_from ? fmtDateRu(p.period_from) : '')}" /></label>
+        <label>Период по<input type="text" id="finPayTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(p.period_to ? fmtDateRu(p.period_to) : '')}" /></label>
         <label class="finance-form-full">Примечание<textarea id="finPayNotes" rows="2">${escapeHtml(p.notes || '')}</textarea></label>
       </div>`, async () => {
       await savePayment({
-        payment_date: document.getElementById('finPayDate').value || null,
+        payment_date: toIsoDate(document.getElementById('finPayDate').value) || null,
         amount: document.getElementById('finPayAmount').value,
         request_number: document.getElementById('finPayRequest').value.trim(),
         status: document.getElementById('finPayStatus').value,
-        period_from: document.getElementById('finPayFrom').value || null,
-        period_to: document.getElementById('finPayTo').value || null,
+        period_from: toIsoDate(document.getElementById('finPayFrom').value) || null,
+        period_to: toIsoDate(document.getElementById('finPayTo').value) || null,
         notes: document.getElementById('finPayNotes').value.trim() || null,
         created_at: p.created_at
       }, p.id);
@@ -1363,7 +1393,7 @@
     const s = shipment || {};
     showModal(s.id ? 'Редактировать отгрузку' : 'Добавить отгрузку', `
       <div class="finance-form-grid">
-        <label>Дата<input type="date" id="finShipDate" value="${escapeAttr(s.shipment_date || '')}" /></label>
+        <label>Дата<input type="text" id="finShipDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(s.shipment_date) === '—' ? '' : fmtDateRu(s.shipment_date))}" /></label>
         <label>Артикул<input type="text" id="finShipArticle" value="${escapeAttr(s.article_code || '')}" /></label>
         <label>Кол-во, шт<input type="number" id="finShipQty" value="${escapeAttr(s.quantity ?? '')}" min="0" /></label>
         <label>Отп. цена, сум<input type="number" id="finShipUnit" value="${escapeAttr(s.unit_price ?? '')}" min="0" step="1" /></label>
@@ -1380,7 +1410,7 @@
         <label class="finance-form-full">Примечание<textarea id="finShipNotes" rows="2">${escapeHtml(s.notes || '')}</textarea></label>
       </div>`, async () => {
       await saveShipment({
-        shipment_date: document.getElementById('finShipDate').value,
+        shipment_date: toIsoDate(document.getElementById('finShipDate').value),
         article_code: document.getElementById('finShipArticle').value.trim(),
         description: document.getElementById('finShipDesc').value.trim(),
         quantity: document.getElementById('finShipQty').value,
@@ -1398,21 +1428,21 @@
     showModal('Обновить баланс ЛК Узума', `
       <p class="sub finance-form-hint">Введите данные из личного кабинета Узума. Создаётся новый снимок.</p>
       <div class="finance-form-grid">
-        <label>Дата снимка<input type="date" id="finSnapDate" value="${escapeAttr(snap.snapshot_date || new Date().toISOString().slice(0, 10))}" /></label>
+        <label>Дата снимка<input type="text" id="finSnapDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(fmtDateRu(snap.snapshot_date || new Date().toISOString().slice(0, 10)))}" /></label>
         <label>Общий баланс ЛК, сум<input type="number" id="finSnapTotal" value="${escapeAttr(snap.total_balance ?? '')}" min="0" /></label>
         <label>К выплате, сум<input type="number" id="finSnapNext" value="${escapeAttr(snap.next_payout_amount ?? '')}" min="0" /></label>
-        <label>Дата выплаты<input type="date" id="finSnapNextDate" value="${escapeAttr(snap.next_payout_date || '')}" /></label>
-        <label>Период с<input type="date" id="finSnapFrom" value="${escapeAttr(snap.next_payout_period_from || '')}" /></label>
-        <label>Период по<input type="date" id="finSnapTo" value="${escapeAttr(snap.next_payout_period_to || '')}" /></label>
+        <label>Дата выплаты<input type="text" id="finSnapNextDate" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_date ? fmtDateRu(snap.next_payout_date) : '')}" /></label>
+        <label>Период с<input type="text" id="finSnapFrom" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_period_from ? fmtDateRu(snap.next_payout_period_from) : '')}" /></label>
+        <label>Период по<input type="text" id="finSnapTo" placeholder="ДД.ММ.ГГГГ" value="${escapeAttr(snap.next_payout_period_to ? fmtDateRu(snap.next_payout_period_to) : '')}" /></label>
         <label class="finance-form-full">Примечание<textarea id="finSnapNotes" rows="2">${escapeHtml(snap.notes || '')}</textarea></label>
       </div>`, async () => {
       await saveSnapshot({
-        snapshot_date: document.getElementById('finSnapDate').value,
+        snapshot_date: toIsoDate(document.getElementById('finSnapDate').value),
         total_balance: document.getElementById('finSnapTotal').value,
         next_payout_amount: document.getElementById('finSnapNext').value,
-        next_payout_date: document.getElementById('finSnapNextDate').value || null,
-        next_payout_period_from: document.getElementById('finSnapFrom').value || null,
-        next_payout_period_to: document.getElementById('finSnapTo').value || null,
+        next_payout_date: toIsoDate(document.getElementById('finSnapNextDate').value) || null,
+        next_payout_period_from: toIsoDate(document.getElementById('finSnapFrom').value) || null,
+        next_payout_period_to: toIsoDate(document.getElementById('finSnapTo').value) || null,
         notes: document.getElementById('finSnapNotes').value.trim() || null
       });
     });
@@ -1439,7 +1469,7 @@
           <div class="finance-card-label">⚡ Узум должен сейчас</div>
           <div class="finance-card-value">${fmtSum(summary.lkTotalBalance)}</div>
           <div class="finance-card-meta">${summary.lkNextPayoutDate
-            ? `${fmtSum(summary.lkNextPayout)} → ${summary.lkNextPayoutDate}`
+            ? `${fmtSum(summary.lkNextPayout)} → ${fmtDateRu(summary.lkNextPayoutDate)}`
             : 'Нет данных о выплате'}</div>
         </div>
         <div class="finance-card finance-card--blue">
@@ -1465,11 +1495,11 @@
           <button type="button" class="btn-primary btn-sm" id="finUpdateSnapshotBtn">Обновить баланс</button>
         </div>
         ${snap ? `
-          <p class="sub">Последний снимок: <strong>${snap.snapshot_date}</strong></p>
+          <p class="sub">Последний снимок: <strong>${fmtDateRu(snap.snapshot_date)}</strong></p>
           <table class="finance-table finance-table--compact">
             <tbody>
               <tr><td>Общий баланс</td><td class="text-right"><strong>${fmtSum(snap.total_balance)}</strong></td></tr>
-              <tr><td>К выплате ${snap.next_payout_date || ''}</td><td class="text-right">${fmtSum(snap.next_payout_amount)}</td></tr>
+              <tr><td>К выплате ${snap.next_payout_date ? fmtDateRu(snap.next_payout_date) : ''}</td><td class="text-right">${fmtSum(snap.next_payout_amount)}</td></tr>
               <tr><td>Следующие периоды</td><td class="text-right">${fmtSum(snap.remaining_balance)}</td></tr>
             </tbody>
           </table>
@@ -1483,8 +1513,8 @@
           </tr></thead>
           <tbody>
             <tr><td>Получено на р/с</td><td class="text-right">${fmtSum(summary.totalReceived)}</td><td>${summary.paymentsCount} выплат</td></tr>
-            <tr><td>В ЛК (гарантировано)</td><td class="text-right">${fmtSum(summary.lkTotalBalance)}</td><td>снимок ${summary.lastSnapshotDate || '—'}</td></tr>
-            <tr><td>→ ближайшая выплата</td><td class="text-right">${fmtSum(summary.lkNextPayout)}</td><td>${summary.lkNextPayoutDate || '—'}</td></tr>
+            <tr><td>В ЛК (гарантировано)</td><td class="text-right">${fmtSum(summary.lkTotalBalance)}</td><td>снимок ${summary.lastSnapshotDate ? fmtDateRu(summary.lastSnapshotDate) : '—'}</td></tr>
+            <tr><td>→ ближайшая выплата</td><td class="text-right">${fmtSum(summary.lkNextPayout)}</td><td>${summary.lkNextPayoutDate ? fmtDateRu(summary.lkNextPayoutDate) : '—'}</td></tr>
             <tr><td>→ следующие периоды</td><td class="text-right">${fmtSum(summary.lkRemainingBalance)}</td><td></td></tr>
             <tr><td>Потенциал (в продаже)</td><td class="text-right">${fmtSum(summary.stockInSaleSaleSum)}</td><td>${summary.stockInSaleQty} шт</td></tr>
             <tr><td>К отправке (не в продаже)</td><td class="text-right">—</td><td>${summary.stockForDispatchQty} шт</td></tr>
@@ -1512,7 +1542,7 @@
     const stats = calcPaymentsStats(payments);
     const filtered = !!(filter.from || filter.to);
     const periodLabel = filtered
-      ? `${filter.from || '…'} — ${filter.to || '…'}`
+      ? `${filter.from ? fmtDateRu(filter.from) : '…'} — ${filter.to ? fmtDateRu(filter.to) : '…'}`
       : 'за всё время';
 
     const dashCards = filtered
@@ -1538,10 +1568,10 @@
         : p.status === 'rejected' ? 'finance-badge--bad' : 'finance-badge--wait';
       return `<tr class="${rowCls}">
         <td>${i + 1}</td>
-        <td>${escapeHtml(p.payment_date || '—')}</td>
+        <td>${escapeHtml(fmtDateRu(p.payment_date))}</td>
         <td class="text-right"><strong>${fmtNum(p.amount)}</strong></td>
         <td class="text-right text-muted">${rt ? fmtNum(rt.running_total) : '—'}</td>
-        <td class="text-xs">${p.period_from && p.period_to ? `${p.period_from} – ${p.period_to}` : '—'}</td>
+        <td class="text-xs">${fmtPeriodRu(p.period_from, p.period_to)}</td>
         <td class="font-mono text-xs">${escapeHtml(p.request_number || '—')}</td>
         <td class="text-center"><span class="finance-badge ${badgeCls}">${STATUS_LABELS[p.status] || p.status}</span></td>
         <td class="text-xs text-muted">${escapeHtml(p.notes || '')}</td>
@@ -1592,7 +1622,7 @@
     const stats = calcShipmentsStats(shipments);
     const filtered = !!(filter.from || filter.to);
     const periodLabel = filtered
-      ? `${filter.from || '…'} — ${filter.to || '…'}`
+      ? `${filter.from ? fmtDateRu(filter.from) : '…'} — ${filter.to ? fmtDateRu(filter.to) : '…'}`
       : 'за всё время';
 
     const dashCards = [
@@ -1603,7 +1633,7 @@
 
     const rows = shipments.map((s, i) => `<tr>
       <td>${i + 1}</td>
-      <td>${escapeHtml(s.shipment_date)}</td>
+      <td>${escapeHtml(fmtDateRu(s.shipment_date))}</td>
       <td><strong>${escapeHtml(s.article_code)}</strong></td>
       <td>${escapeHtml(s.description || '')}</td>
       <td class="text-right">${fmtNum(s.quantity)}</td>
@@ -1662,7 +1692,7 @@
     const dashCards = [
       {
         label: 'Снимок',
-        value: activeDate || '—',
+        value: activeDate ? fmtDateRu(activeDate) : '—',
         sub: isLatest ? 'актуальный' : 'архивный',
         accent: isLatest ? 'green' : 'yellow'
       },
@@ -1674,7 +1704,7 @@
 
     const compareBlock = prevDate && delta ? `
       <div class="finance-stock-compare card">
-        <strong>Изменение vs снимок ${prevDate}</strong>
+        <strong>Изменение vs снимок ${fmtDateRu(prevDate)}</strong>
         <div class="finance-stock-compare-grid">
           <span>В продаже: <strong>${fmtDelta(delta.qtyInSale, ' шт')}</strong></span>
           <span>Сумма продажи: <strong>${fmtDelta(delta.saleSum, ' сум')}</strong></span>
@@ -1686,8 +1716,8 @@
       <div class="finance-stock-snapshots card">
         <label class="finance-stock-snapshot-label">Снимок остатков
           <select id="finStockSnapshotSelect" class="finance-stock-snapshot-select">
-            <option value="" ${isLatest ? 'selected' : ''}>Актуальный (${latestDate || '—'})</option>
-            ${dates.map((d) => `<option value="${escapeAttr(d)}" ${d === activeDate && !isLatest ? 'selected' : ''}>${escapeHtml(d)}${d === latestDate ? ' — актуальный' : ''}</option>`).join('')}
+            <option value="" ${isLatest ? 'selected' : ''}>Актуальный (${latestDate ? fmtDateRu(latestDate) : '—'})</option>
+            ${dates.map((d) => `<option value="${escapeAttr(d)}" ${d === activeDate && !isLatest ? 'selected' : ''}>${escapeHtml(fmtDateRu(d))}${d === latestDate ? ' — актуальный' : ''}</option>`).join('')}
           </select>
         </label>
         <span class="text-muted text-sm">Снимков: ${dates.length}. Новый файл = новая дата. Повтор за ту же дату заменяет снимок.</span>
@@ -1724,7 +1754,7 @@
       </div>
       <div id="finStockUploadResult" class="hidden"></div>
       ${stock.length ? `
-        <p class="sub">Снимок <strong>${activeDate}</strong> — ${stock.length} позиций${isLatest ? ' (актуальный)' : ''}</p>
+        <p class="sub">Снимок <strong>${fmtDateRu(activeDate)}</strong> — ${stock.length} позиций${isLatest ? ' (актуальный)' : ''}</p>
         <div class="finance-table-wrap">
           <table class="finance-table">
             <thead><tr>
@@ -1782,8 +1812,8 @@
       btn.addEventListener('click', () => {
         const tabKey = btn.getAttribute('data-fin-filter-apply');
         if (!tabKey || !financeState.filters[tabKey]) return;
-        financeState.filters[tabKey].from = document.getElementById('finFilterFrom')?.value || '';
-        financeState.filters[tabKey].to = document.getElementById('finFilterTo')?.value || '';
+        financeState.filters[tabKey].from = toIsoDate(document.getElementById('finFilterFrom')?.value || '') || '';
+        financeState.filters[tabKey].to = toIsoDate(document.getElementById('finFilterTo')?.value || '') || '';
         renderFinancesPage();
       });
     });
@@ -1847,18 +1877,18 @@
         const rows = parseUzumStockReport(buffer);
         let snapshotDate = detectStockSnapshotDate(file, buffer, rows);
         const custom = prompt(
-          `Дата снимка остатков (YYYY-MM-DD):\nМожно менять, если в файле другая дата.`,
-          snapshotDate
+          `Дата снимка (ДД.ММ.ГГГГ):\nМожно изменить, если в файле другая дата.`,
+          fmtDateRu(snapshotDate)
         );
         if (custom === null) return;
         if (String(custom).trim()) snapshotDate = toIsoDate(custom);
         const result = await importStockReport(snapshotDate, rows);
         const deltaText = result.prevDate && result.delta
-          ? ` Изменение vs ${result.prevDate}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
+          ? ` Изменение vs ${fmtDateRu(result.prevDate)}: в продаже ${fmtDelta(result.delta.qtyInSale, ' шт')}, продажа ${fmtDelta(result.delta.saleSum, ' сум')}.`
           : '';
         if (resultEl) {
           resultEl.className = 'finance-stock-result finance-stock-result--ok';
-          resultEl.textContent = `✅ Загружено ${result.count} позиций. Снимок ${result.date} — актуальный.${deltaText}`;
+          resultEl.textContent = `✅ Загружено ${result.count} позиций. Снимок ${fmtDateRu(result.date)} — актуальный.${deltaText}`;
           resultEl.classList.remove('hidden');
         }
       } catch (err) {
