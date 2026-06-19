@@ -7699,6 +7699,7 @@ const WB_REPORT_HEADER_KEYS = {
   commission: 'вознаграждениевайлдберриз',
   commissionVatOnVv: 'ндссвознаграждения',
   platformDiscountPct: 'платформенныескидки',
+  paymentCompensation: 'компенсацияплат',
   logistics: 'услугиподоставкетоварапокупателю',
   storage: 'хранение',
   deductions: 'удержания',
@@ -7954,6 +7955,10 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     headerCells,
     n => n.includes('платформенн') && n.includes('скидк')
   );
+  const paymentCompensation = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n.includes('компенсац') && (n.includes('плат') || n.includes('интеграц') || n.includes('сервис'))
+  );
   const docType = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.docType));
   const qty = wbFindQtyColumn(headerCells);
   const saleDate = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.saleDate));
@@ -7970,6 +7975,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     commissionVv: commissionVvCol >= 0 ? commissionVvCol : -1,
     commissionVatOnVv: commissionVatOnVv >= 0 ? commissionVatOnVv : -1,
     platformDiscountPct: platformDiscountPct >= 0 ? platformDiscountPct : -1,
+    paymentCompensation: paymentCompensation >= 0 ? paymentCompensation : -1,
     fines: fines >= 0 ? fines : -1,
     qty: qty >= 0 ? qty : -1,
     saleDate: saleDate >= 0 ? saleDate : -1,
@@ -7997,6 +8003,33 @@ function wbWorksheetToMatrix(ws) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
 }
 
+/**
+ * Формула WB: К перечислению = Факт.цена − (ВВ + НДС с ВВ + Компенсация платёжных).
+ * Компоненты берутся как в файле (ВВ и НДС обычно отрицательные).
+ */
+function calculateWbRowPayout(priceFact, commissionVv, commissionVatOnVv, compensation) {
+  return priceFact - (commissionVv + commissionVatOnVv + compensation);
+}
+
+function assertWbPayoutFormulaExamples() {
+  const cases = [
+    { fact: 29504, vv: -1859, vat: -223, comp: 1180, expected: 30405.26 },
+    { fact: 30401, vv: -3263, vat: -392, comp: 1216, expected: 32840.06 }
+  ];
+  cases.forEach((c, i) => {
+    const got = calculateWbRowPayout(c.fact, c.vv, c.vat, c.comp);
+    if (Math.abs(got - c.expected) > 1) {
+      throw new Error(`WB payout formula test #${i + 1}: got ${got}, expected ${c.expected}`);
+    }
+  });
+}
+
+try {
+  assertWbPayoutFormulaExamples();
+} catch (e) {
+  console.warn('WB payout formula self-test:', e);
+}
+
 function wbCalcSppPct(priceRetail, priceFact, platformPctCell) {
   const fromCol = parseWBNumber(platformPctCell);
   if (Number.isFinite(fromCol) && fromCol > 0) return fromCol;
@@ -8019,6 +8052,7 @@ function touchWbSkuBucket(bySku, skuKey, displaySku) {
       payout_returns: 0,
       commission_vv: 0,
       commission_vat_on_vv: 0,
+      compensation: 0,
       spp_retail_weight: 0,
       spp_pct_weighted_sum: 0
     };
@@ -8067,6 +8101,7 @@ function parseWbReport(arrayBuffer) {
     commission_vv_sum: 0,
     commission_vat_on_vv_sum: 0,
     commission_sum: 0,
+    compensation_sum: 0,
     logistics_sum: 0,
     storage_sum: 0,
     deductions_sum: 0,
@@ -8077,8 +8112,17 @@ function parseWbReport(arrayBuffer) {
 
   let commissionVvRawSum = 0;
   let commissionVatOnVvRawSum = 0;
+  let compensationRawSum = 0;
   let sppWeightedSum = 0;
   let sppRetailWeight = 0;
+  const payoutRecon = {
+    sales_payout_column: 0,
+    sales_payout_formula: 0,
+    sales_revenue_fact: 0,
+    sales_vv: 0,
+    sales_vat_vv: 0,
+    sales_compensation: 0
+  };
 
   for (let r = hRow + 1; r < matrix.length; r++) {
     const row = matrix[r];
@@ -8096,14 +8140,26 @@ function parseWbReport(arrayBuffer) {
     const fines = C.fines >= 0 ? cellAt(row, C.fines) : 0;
     const commissionVv = C.commissionVv >= 0 ? cellAt(row, C.commissionVv) : 0;
     const commissionVatOnVv = C.commissionVatOnVv >= 0 ? cellAt(row, C.commissionVatOnVv) : 0;
+    const compensation = C.paymentCompensation >= 0 ? cellAt(row, C.paymentCompensation) : 0;
     const platformPctCell = C.platformDiscountPct >= 0 ? row[C.platformDiscountPct] : '';
+    const payoutCalc = calculateWbRowPayout(priceFact, commissionVv, commissionVatOnVv, compensation);
 
     aggregates.logistics_sum += logistics;
     aggregates.storage_sum += storage;
     aggregates.deductions_sum += deductions;
     aggregates.fines_sum += fines;
-    commissionVvRawSum += commissionVv;
-    commissionVatOnVvRawSum += commissionVatOnVv;
+
+    if (kind === 'sale') {
+      commissionVvRawSum += commissionVv;
+      commissionVatOnVvRawSum += commissionVatOnVv;
+      compensationRawSum += compensation;
+      payoutRecon.sales_payout_column += toTransfer;
+      payoutRecon.sales_payout_formula += payoutCalc;
+      payoutRecon.sales_revenue_fact += priceFact;
+      payoutRecon.sales_vv += commissionVv;
+      payoutRecon.sales_vat_vv += commissionVatOnVv;
+      payoutRecon.sales_compensation += compensation;
+    }
 
     if (C.saleDate >= 0) {
       const d = parseWbSaleDateCell(row[C.saleDate]);
@@ -8117,15 +8173,16 @@ function parseWbReport(arrayBuffer) {
       aggregates.revenue_fact_sum += priceFact;
       aggregates.revenue_retail_sum += priceRetail;
       aggregates.sales_qty += qty;
-      aggregates.payout_sum += toTransfer;
+      aggregates.payout_sum += payoutCalc;
       if (skuKey) {
         const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
         bucket.sales_qty += qty;
         bucket.revenue_fact += priceFact;
         bucket.revenue_retail += priceRetail;
-        bucket.payout_sales += toTransfer;
+        bucket.payout_sales += payoutCalc;
         bucket.commission_vv += commissionVv;
         bucket.commission_vat_on_vv += commissionVatOnVv;
+        bucket.compensation += compensation;
         const sppRow = wbCalcSppPct(priceRetail, priceFact, platformPctCell);
         const sppWeight = priceRetail > 0.0001 ? priceRetail : priceFact;
         if (sppWeight > 0.0001) {
@@ -8137,11 +8194,11 @@ function parseWbReport(arrayBuffer) {
       }
     } else if (kind === 'return') {
       aggregates.returns_qty += qty;
-      aggregates.payout_sum += toTransfer;
+      aggregates.payout_sum += payoutCalc;
       if (skuKey) {
         const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
         bucket.returns_qty += qty;
-        bucket.payout_returns += toTransfer;
+        bucket.payout_returns += payoutCalc;
       }
     }
   }
@@ -8149,6 +8206,7 @@ function parseWbReport(arrayBuffer) {
   aggregates.commission_vv_sum = Math.abs(commissionVvRawSum);
   aggregates.commission_vat_on_vv_sum = Math.abs(commissionVatOnVvRawSum);
   aggregates.commission_sum = aggregates.commission_vv_sum + aggregates.commission_vat_on_vv_sum;
+  aggregates.compensation_sum = compensationRawSum;
   aggregates.spp_pct =
     sppRetailWeight > 0.0001
       ? sppWeightedSum / sppRetailWeight
@@ -8159,6 +8217,23 @@ function parseWbReport(arrayBuffer) {
     aggregates.revenue_fact_sum > 0.0001
       ? ((aggregates.revenue_fact_sum - aggregates.payout_sum) / aggregates.revenue_fact_sum) * 100
       : 0;
+
+  const reconExpected = calculateWbRowPayout(
+    payoutRecon.sales_revenue_fact,
+    payoutRecon.sales_vv,
+    payoutRecon.sales_vat_vv,
+    payoutRecon.sales_compensation
+  );
+  const reconDelta = Math.abs(payoutRecon.sales_payout_formula - reconExpected);
+  const columnDelta = Math.abs(payoutRecon.sales_payout_column - payoutRecon.sales_payout_formula);
+  aggregates.payout_reconciliation = {
+    sales_formula_sum: payoutRecon.sales_payout_formula,
+    sales_column_sum: payoutRecon.sales_payout_column,
+    sales_expected_from_totals: reconExpected,
+    formula_vs_totals_delta: reconDelta,
+    column_vs_formula_delta: columnDelta,
+    ok: reconDelta <= 1 && columnDelta <= 1
+  };
 
   const period = { date_from: '', date_to: '' };
   if (saleDates.length) {
@@ -8261,6 +8336,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const wbCommissionPct = revFact > 0.0001 ? (wbCommissionSum / revFact) * 100 : 0;
   const wbCommissionVvPct = revFact > 0.0001 ? (wbCommissionVvSum / revFact) * 100 : 0;
   const wbCommissionVatOnVvPct = revFact > 0.0001 ? (wbCommissionVatOnVvSum / revFact) * 100 : 0;
+  const wbCompensationSum = agg.compensation_sum || 0;
   const sppPct = agg.spp_pct || 0;
   const wbWithheldPct = agg.wb_withheld_pct || 0;
 
@@ -8330,6 +8406,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       const vatVvSku = Math.abs(row.commission_vat_on_vv || 0);
       const wbCommSku = vvSku + vatVvSku;
       const wbCommPct = revSku > 0.0001 ? (wbCommSku / revSku) * 100 : 0;
+      const compensationSku = row.compensation || 0;
       const sppSku =
         row.spp_retail_weight > 0.0001
           ? row.spp_pct_weighted_sum / row.spp_retail_weight
@@ -8352,7 +8429,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         net_margin_pct: marginSku,
         spp_pct: sppSku,
         wb_commission_sum: wbCommSku,
-        wb_commission_pct: wbCommPct
+        wb_commission_pct: wbCommPct,
+        wb_compensation_sum: compensationSku
       };
     })
     .filter(Boolean)
@@ -8391,6 +8469,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       wb_commission_vv_pct: wbCommissionVvPct,
       wb_commission_vat_on_vv_pct: wbCommissionVatOnVvPct,
       spp_pct: sppPct,
+      wb_compensation_sum: wbCompensationSum,
       wb_withheld_pct: wbWithheldPct,
       wb_logistics_sum: agg.logistics_sum,
       wb_storage_sum: agg.storage_sum,
@@ -8642,6 +8721,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   setTxt('wbStatCommVatVvPct', `${fmtWbPctLocale(s.wb_commission_vat_on_vv_pct)} от факт. выручки`);
   setTxt('wbStatCommTotal', fmtWbRubLocale(s.wb_commission_sum));
   setTxt('wbStatCommTotalPct', `${fmtWbPctLocale(s.wb_commission_pct)} от факт. выручки`);
+  setTxt('wbStatCompensation', fmtWbRubLocale(s.wb_compensation_sum));
   setTxt('wbStatWithheldPct', fmtWbPctLocale(s.wb_withheld_pct));
   const sppHint = document.getElementById('wbStatSppHint');
   if (sppHint) {
@@ -8684,8 +8764,18 @@ function paintWbAnalyticsDashboard(computed, parsed) {
 
   const warnEl = document.getElementById('wbAnalyticsCostWarnings');
   if (warnEl) {
-    warnEl.classList.add('hidden');
-    warnEl.textContent = '';
+    const recon = parsed?.aggregates?.payout_reconciliation;
+    const reconWarn =
+      recon && !recon.ok
+        ? `⚠️ Сверка «К перечислению»: расхождение формулы и колонки отчёта ${Math.round(recon.column_vs_formula_delta).toLocaleString('ru-RU')} сум. Проверьте формат файла WB.`
+        : '';
+    if (reconWarn) {
+      warnEl.classList.remove('hidden');
+      warnEl.textContent = reconWarn;
+    } else {
+      warnEl.classList.add('hidden');
+      warnEl.textContent = '';
+    }
   }
 
   const topRows = analytics.by_sku || [];
@@ -8727,8 +8817,9 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Комиссия WB (ВВ без НДС), сум', fmtWbRubLocale(s.wb_commission_vv_sum)],
       ['НДС с ВВ, сум', fmtWbRubLocale(s.wb_commission_vat_on_vv_sum)],
       ['Итого комиссия WB, сум', fmtWbRubLocale(s.wb_commission_sum)],
+      ['Компенсация платёжных услуг, сум', fmtWbRubLocale(s.wb_compensation_sum)],
       ['Комиссия WB, % от факт. выручки', fmtWbPctLocale(s.wb_commission_pct)],
-      ['Удержано WB (справочно), %', fmtWbPctLocale(s.wb_withheld_pct)],
+      ['Удержано WB (справочно, не комиссия), %', fmtWbPctLocale(s.wb_withheld_pct)],
       ['Логистика, сум', fmtWbRubLocale(s.wb_logistics_sum)],
       ['Хранение, сум', fmtWbRubLocale(s.wb_storage_sum)],
       ['Удержания, сум', fmtWbRubLocale(s.wb_deductions_sum)],
