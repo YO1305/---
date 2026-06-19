@@ -1720,7 +1720,7 @@
         <div class="analytics-layout wb-analytics-layout">
           <aside class="analytics-sidebar card wb-analytics-sidebar">
             <h2>WB — еженедельная аналитика</h2>
-            <p class="sub">Детализированный отчёт WB: выручка по фактической цене (после СПП), к перечислению, комиссия, логистика, НДС 12% от выплаты. Себестоимость подтягивается из базы товаров по артикулу поставщика.</p>
+            <p class="sub">Детализированный отчёт WB: «К перечислению» по официальной формуле (розничная × (1−кВВ%) − компенсация), затем «Итого к оплате» после логистики/хранения/удержаний. Себестоимость — из базы товаров.</p>
             <div class="analytics-sidebar-actions">
               <label class="btn-primary analytics-file-btn">
                 Загрузить детализацию WB (Excel)
@@ -1772,7 +1772,7 @@
 
               <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
                 <h3 id="wbInputsHeading" class="wb-dash-section-title">Настройки расчёта</h3>
-                <p class="hint wb-dash-hint">НДС считается от суммы «к перечислению». Курс — только для справочного пересчёта прибыли в ₽.</p>
+                <p class="hint wb-dash-hint">НДС Узбекистана — настраиваемая база (к перечислению или итого к оплате). Уточните с бухгалтером. Курс — только для пересчёта в ₽.</p>
                 <div class="inputs-grid">
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Курс WB (сум за 1 ₽)</span>
@@ -1781,6 +1781,13 @@
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">НДС (%)</span>
                     <input type="number" id="wbAnalyticsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="12" />
+                  </article>
+                  <article class="stat-card stat-card--input">
+                    <span class="stat-card__label">База для НДС</span>
+                    <select id="wbAnalyticsVatBase" class="stat-card__input">
+                      <option value="payout">К перечислению (до логистики)</option>
+                      <option value="after_direct_costs">Итого к оплате (после расходов WB)</option>
+                    </select>
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Выведено денег (сум)</span>
@@ -1810,8 +1817,14 @@
                     <span class="stat-card__meta">Возвратов: <span id="wbStatReturnsQty">0</span> · выкуп <span id="wbStatBuyout">0%</span></span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">К перечислению от WB (сум)</span>
+                    <span class="stat-card__label">К перечислению за товар (сум)</span>
                     <span class="stat-card__value" id="wbStatToTransfer">0 сум</span>
+                    <span class="stat-card__meta">До вычета логистики, хранения и удержаний</span>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-card__label">Итого к оплате (сум)</span>
+                    <span class="stat-card__value" id="wbStatAfterDirect">0 сум</span>
+                    <span class="stat-card__meta">После логистики, хранения, удержаний и штрафов WB</span>
                   </article>
                   <article class="stat-card stat-card--hero-net">
                     <span class="stat-card__label">Чистая прибыль (сум)</span>
@@ -1834,46 +1847,41 @@
               </section>
 
               <section class="wb-dash-section" aria-labelledby="wbCommissionRefHeading">
-                <h3 id="wbCommissionRefHeading" class="wb-dash-section-title">Комиссия WB и СПП (справочно)</h3>
-                <p class="hint wb-dash-hint">Справочные показатели — уже учтены внутри «К перечислению», повторно из прибыли не вычитаются.</p>
+                <h3 id="wbCommissionRefHeading" class="wb-dash-section-title">СПП и комиссия (справочно)</h3>
+                <p class="hint wb-dash-hint">Уже учтены в «К перечислению» — повторно из прибыли не вычитаются.</p>
                 <div class="dashboard-grid">
                   <article class="stat-card">
                     <span class="stat-card__label">СПП (скидка платформы)</span>
                     <span class="stat-card__value stat-card__value--accent" id="wbStatSppPct">0%</span>
-                    <span class="stat-card__meta" id="wbStatSppHint">Скидка WB покупателю из бюджета маркетплейса</span>
+                    <span class="stat-card__meta" id="wbStatSppHint">Скидка WB покупателю — платит сам WB, не вы</span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">ВВ без НДС</span>
-                    <span class="stat-card__value" id="wbStatCommVv">0 сум</span>
-                    <span class="stat-card__meta" id="wbStatCommVvPct">0% от факт. выручки</span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">НДС с ВВ</span>
-                    <span class="stat-card__value" id="wbStatCommVatVv">0 сум</span>
-                    <span class="stat-card__meta" id="wbStatCommVatVvPct">0% от факт. выручки</span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">Итого комиссия WB</span>
-                    <span class="stat-card__value" id="wbStatCommTotal">0 сум</span>
-                    <span class="stat-card__meta" id="wbStatCommTotalPct">0% от факт. выручки</span>
+                    <span class="stat-card__label">Базовая комиссия кВВ</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatBaseKvvPct">0%</span>
+                    <span class="stat-card__meta">Ставка категории из колонки «Размер кВВ, %»</span>
                   </article>
                   <article class="stat-card">
                     <span class="stat-card__label">Компенсация платёжных</span>
                     <span class="stat-card__value" id="wbStatCompensation">0 сум</span>
-                    <span class="stat-card__meta">Доплата WB продавцу — отдельно от комиссии, уже в «К перечислению»</span>
+                    <span class="stat-card__meta">Зависит от способа оплаты покупателя — уже в «К перечислению»</span>
+                  </article>
+                  <article class="stat-card hidden" aria-hidden="true">
+                    <span class="stat-card__value" id="wbStatCommVv">0</span>
+                    <span class="stat-card__value" id="wbStatCommVatVv">0</span>
+                    <span class="stat-card__value" id="wbStatCommTotal">0</span>
+                    <span id="wbStatCommVvPct"></span><span id="wbStatCommVatVvPct"></span><span id="wbStatCommTotalPct"></span>
                   </article>
                   <article class="stat-card">
                     <span class="stat-card__label">Разница факт. − к перечислению</span>
                     <span class="stat-card__value" id="wbStatWithheldPct">0%</span>
-                    <span class="stat-card__meta">Справочно: смешивает СПП и комиссию — не использовать как «комиссию WB»</span>
+                    <span class="stat-card__meta">Не использовать как «комиссию» — смешивает СПП и кВВ</span>
                   </article>
                 </div>
               </section>
 
               <section class="wb-dash-section" aria-labelledby="wbExtraKpiHeading">
-                <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Расходы WB</h3>
+                <h3 id="wbExtraKpiHeading" class="wb-dash-section-title">Расходы WB и налоги</h3>
                 <div class="dashboard-grid">
-                  <article class="stat-card"><span class="stat-card__label">Комиссия WB (сум)</span><span class="stat-card__value" id="wbStatComm">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Логистика (сум)</span><span class="stat-card__value" id="wbStatLog">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Хранение (сум)</span><span class="stat-card__value" id="wbStatStorage">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Удержания (сум)</span><span class="stat-card__value" id="wbStatDeductions">0 сум</span></article>
@@ -1885,35 +1893,35 @@
 
               <section class="wb-dash-section" aria-labelledby="wbBreakdownHeading">
                 <h3 id="wbBreakdownHeading" class="wb-dash-section-title">Структура расходов (% от факт. выручки)</h3>
-                <p class="hint wb-dash-hint">Доли считаются от фактической выручки WB (после СПП). НДС — от суммы к перечислению.</p>
+                <p class="hint wb-dash-hint">Доли от фактической выручки. Чистая прибыль = итого к оплате − себестоимость − НДС УЗ.</p>
                 <div class="wb-breakdown-list">
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">
                       <h4 class="wb-breakdown-item-title">Себестоимость товара <span id="wbStatBdCogs">0%</span></h4>
                       <span class="wb-breakdown-item-sum" id="wbStatBdCogsSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Закупочная стоимость проданных товаров из вашей базы данных.<br>Расчёт: цена закупки × количество проданных штук</p>
-                  </article>
-                  <article class="wb-breakdown-item">
-                    <div class="wb-breakdown-item-head">
-                      <h4 class="wb-breakdown-item-title">Комиссия WB <span id="wbStatBdComm">0%</span></h4>
-                      <span class="wb-breakdown-item-sum" id="wbStatBdCommSum">0 сум</span>
-                    </div>
-                    <p class="wb-breakdown-item-hint" id="wbStatBdCommHint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Реальное вознаграждение WB: ВВ без НДС + НДС с ВВ. Уже вычтено в «К перечислению» — повторно не вычитается. Источник: колонки «Вознаграждение ВВ» и «НДС с Вознаграждения Вайлдберриз».</p>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Закупочная стоимость проданных товаров из вашей базы данных.</p>
                   </article>
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">
                       <h4 class="wb-breakdown-item-title">Логистика <span id="wbStatBdLog">0%</span></h4>
                       <span class="wb-breakdown-item-sum" id="wbStatBdLogSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Доставка товара покупателю и обратная логистика. Из колонки «Услуги по доставке товара покупателю»</p>
+                    <p class="wb-breakdown-item-hint" id="wbStatBdCommHint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Доставка и обратная логистика WB.</p>
                   </article>
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">
                       <h4 class="wb-breakdown-item-title">Хранение <span id="wbStatBdStorage">0%</span></h4>
                       <span class="wb-breakdown-item-sum" id="wbStatBdStorageSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Плата за хранение товара на складе WB за период. Из колонки «Хранение»</p>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Плата за хранение на складе WB за период.</p>
+                  </article>
+                  <article class="wb-breakdown-item">
+                    <div class="wb-breakdown-item-head">
+                      <h4 class="wb-breakdown-item-title">Удержания <span id="wbStatBdHoldbacks">0%</span></h4>
+                      <span class="wb-breakdown-item-sum" id="wbStatBdHoldbacksSum">0 сум</span>
+                    </div>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Подписки, продвижение, минимальный платёж тарифных опций.</p>
                   </article>
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">
@@ -1927,7 +1935,7 @@
                       <h4 class="wb-breakdown-item-title">Чистая прибыль <span id="wbStatBdProfit">0%</span></h4>
                       <span class="wb-breakdown-item-sum wb-breakdown-item-sum--profit" id="wbStatBdProfitSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> К перечислению от WB минус себестоимость минус НДС.<br>Формула: К перечислению − Себестоимость − НДС</p>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Итого к оплате − себестоимость − НДС Узбекистана.</p>
                   </article>
                 </div>
               </section>
@@ -1945,8 +1953,9 @@
                         <th>Выкуп %</th>
                         <th>Выручка факт.</th>
                         <th>СПП %</th>
-                        <th>Комиссия WB %</th>
+                        <th>кВВ %</th>
                         <th>К перечислению</th>
+                        <th>Итого к оплате</th>
                         <th>COGS</th>
                         <th>Чистая прибыль</th>
                         <th>Маржа %</th>
