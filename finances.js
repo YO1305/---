@@ -294,6 +294,12 @@
     return list[0] || null;
   }
 
+  function getSnapshotByDate(isoDate) {
+    const date = toIsoDate(isoDate);
+    if (!date) return null;
+    return financeState.snapshots.find((s) => s.snapshot_date === date) || null;
+  }
+
   function getStockSnapshotDates() {
     return [...new Set(financeState.stock.map((s) => s.snapshot_date).filter(Boolean))]
       .sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
@@ -804,7 +810,46 @@
   }
 
   async function saveSnapshot(data, options = {}) {
-    const rec = buildSnapshotRecord(data);
+    const isoDate = toIsoDate(data.snapshot_date);
+    if (!isoDate) throw new Error('Укажите дату снимка');
+
+    const sourceId = data.id || options.editFromId || null;
+    const sourceSnap = sourceId
+      ? financeState.snapshots.find((s) => String(s.id) === String(sourceId))
+      : null;
+    const existingByDate = getSnapshotByDate(isoDate);
+
+    let targetId;
+    let createdAt;
+
+    if (existingByDate) {
+      targetId = existingByDate.id;
+      createdAt = existingByDate.created_at;
+    } else if (sourceSnap && isoDate <= String(sourceSnap.snapshot_date || '')) {
+      targetId = sourceSnap.id;
+      createdAt = sourceSnap.created_at;
+    } else {
+      targetId = genId();
+      createdAt = new Date().toISOString();
+    }
+
+    const rec = buildSnapshotRecord({
+      ...data,
+      id: targetId,
+      snapshot_date: isoDate,
+      created_at: createdAt || data.created_at || new Date().toISOString()
+    });
+
+    const idsToDelete = new Set();
+    if (sourceId && String(sourceId) !== String(targetId)) idsToDelete.add(String(sourceId));
+    financeState.snapshots
+      .filter((s) => s.snapshot_date === isoDate && String(s.id) !== String(targetId))
+      .forEach((s) => idsToDelete.add(String(s.id)));
+
+    for (const id of idsToDelete) {
+      await deleteDoc(COL.snapshots, id);
+    }
+
     const ok = await upsertDoc(COL.snapshots, rec, { strict: !!options.strict });
     if (!options.skipRender) renderFinancesPage();
     return ok;
@@ -1561,7 +1606,7 @@
   function openSnapshotForm() {
     const snap = getLatestSnapshot() || {};
     showModal('Обновить баланс ЛК Узума', `
-      <p class="sub finance-form-hint">Введите данные из личного кабинета Узума. Создаётся новый снимок.</p>
+      <p class="sub finance-form-hint">Введите данные из личного кабинета Узума. Снимок за ту же дату обновится; более поздняя дата добавит новый снимок; исправление даты заменит ошибочный снимок.</p>
       <div class="finance-form-grid">
         <label>Дата снимка<input type="text" class="fin-date-input" id="finSnapDate" placeholder="07062024" value="${escapeAttr(fmtDateRu(snap.snapshot_date || new Date().toISOString().slice(0, 10)))}" /></label>
         <label>Общий баланс ЛК, сум<input type="number" id="finSnapTotal" value="${escapeAttr(snap.total_balance ?? '')}" min="0" /></label>
@@ -1573,6 +1618,8 @@
         <label class="finance-form-full">Примечание<textarea id="finSnapNotes" rows="2">${escapeHtml(snap.notes || '')}</textarea></label>
       </div>`, async () => {
       await saveSnapshot({
+        id: snap.id,
+        created_at: snap.created_at,
         snapshot_date: toIsoDate(document.getElementById('finSnapDate').value),
         total_balance: document.getElementById('finSnapTotal').value,
         next_payout_amount: document.getElementById('finSnapNext').value,
