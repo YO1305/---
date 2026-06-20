@@ -1774,7 +1774,7 @@
 
               <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
                 <h3 id="wbInputsHeading" class="wb-dash-section-title">Настройки расчёта</h3>
-                <p class="hint wb-dash-hint">НДС к уплате = исходящий (от факт. выручки) − входящий (COGS и услуги WB). Курс — только для пересчёта в ₽.</p>
+                <p class="hint wb-dash-hint">НДС Узбекистана — настраиваемая база (к перечислению или итого к оплате). Уточните с бухгалтером. Курс — только для пересчёта в ₽.</p>
                 <div class="inputs-grid">
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Курс WB (сум за 1 ₽)</span>
@@ -1784,9 +1784,12 @@
                     <span class="stat-card__label">НДС (%)</span>
                     <input type="number" id="wbAnalyticsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="12" />
                   </article>
-                  <article class="stat-card stat-card--input stat-card--readonly-hint">
+                  <article class="stat-card stat-card--input">
                     <span class="stat-card__label">База для НДС</span>
-                    <span class="stat-card__value stat-card__value--sm">Факт. выручка (после СПП)</span>
+                    <select id="wbAnalyticsVatBase" class="stat-card__input">
+                      <option value="payout">К перечислению (до логистики)</option>
+                      <option value="after_direct_costs">Итого к оплате (после расходов WB)</option>
+                    </select>
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Выведено денег (сум)</span>
