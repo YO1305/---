@@ -238,7 +238,7 @@
                 <div class="field">
                   <label for="wbVatPct">НДС, %</label>
                   <input type="number" id="wbVatPct" class="input" value="12" min="0" max="50" step="1" />
-                  <p class="hint">Выделяется из суммы вывода: × 12 ÷ 112</p>
+                  <p class="hint">Исходящий НДС от цены продажи; входящий — от себестоимости (и услуг WB после подтверждения бухгалтером)</p>
                 </div>
 
                 <div class="field">
@@ -313,7 +313,9 @@
                 <div class="row"><div class="key">Логистика (Узбекистан)</div><div class="val" id="wbUnitLogisticsVal">0 сум</div></div>
                 <div class="row"><div class="key">Хранение</div><div class="val" id="wbUnitStorageVal">0 сум</div></div>
                 <div class="row"><div class="key">К перечислению (сумма вывода)</div><div class="val" id="wbUnitToSellerVal">—</div></div>
-                <div class="row"><div class="key">НДС 12% (из суммы вывода)</div><div class="val" id="wbUnitVatVal">—</div></div>
+                <div class="row"><div class="key">Исходящий НДС</div><div class="val" id="wbUnitOutputVatVal">—</div></div>
+                <div class="row"><div class="key">Входящий НДС</div><div class="val" id="wbUnitInputVatVal">—</div></div>
+                <div class="row"><div class="key">НДС к оплате</div><div class="val" id="wbUnitVatPayableVal">—</div></div>
                 <div class="row"><div class="key">Себестоимость</div><div class="val" id="wbUnitCostLineVal">0 сум</div></div>
               </div>
             </div>
@@ -1772,7 +1774,7 @@
 
               <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
                 <h3 id="wbInputsHeading" class="wb-dash-section-title">Настройки расчёта</h3>
-                <p class="hint wb-dash-hint">НДС Узбекистана — настраиваемая база (к перечислению или итого к оплате). Уточните с бухгалтером. Курс — только для пересчёта в ₽.</p>
+                <p class="hint wb-dash-hint">НДС к уплате = исходящий (от факт. выручки) − входящий (COGS и услуги WB). Курс — только для пересчёта в ₽.</p>
                 <div class="inputs-grid">
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Курс WB (сум за 1 ₽)</span>
@@ -1782,12 +1784,9 @@
                     <span class="stat-card__label">НДС (%)</span>
                     <input type="number" id="wbAnalyticsVatPct" class="stat-card__input" min="0" max="100" step="0.01" value="12" />
                   </article>
-                  <article class="stat-card stat-card--input">
+                  <article class="stat-card stat-card--input stat-card--readonly-hint">
                     <span class="stat-card__label">База для НДС</span>
-                    <select id="wbAnalyticsVatBase" class="stat-card__input">
-                      <option value="payout">К перечислению (до логистики)</option>
-                      <option value="after_direct_costs">Итого к оплате (после расходов WB)</option>
-                    </select>
+                    <span class="stat-card__value stat-card__value--sm">Факт. выручка (после СПП)</span>
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Выведено денег (сум)</span>

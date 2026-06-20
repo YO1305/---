@@ -706,6 +706,16 @@ function vatFromAmount(amount, rate, mode) {
     ? amount * rate / (100 + rate)
     : amount * rate / 100;
 }
+
+/** Зачёт входящего НДС по услугам WB/Uzum — включить после подтверждения бухгалтером (счёт-фактура с НДС). */
+const CREDIT_VAT_ON_PLATFORM_SERVICES = { wb: false, uzum: true };
+
+/** Выделение НДС из суммы «с НДС»; rate — доля (0.12) или проценты (12). */
+function vatExtractFromGross(amount, rate) {
+  if (amount <= 0 || rate <= 0) return 0;
+  const pct = rate < 1 ? rate * 100 : rate;
+  return Math.round(amount * pct / (100 + pct));
+}
 function purchaseInputVat(amount, rate, mode) {
   if (rate <= 0 || amount <= 0) return 0;
   return mode === 'with' ? amount * rate / (100 + rate) : 0;
@@ -1628,7 +1638,11 @@ function getProductCostFromCalc(calc, defaultVatRate) {
 function getProfitByPrice(testPrice, base) {
   const commissionAmount = testPrice * base.commissionPct / 100;
   const outputVat = vatFromAmount(testPrice, base.vatRate, base.saleVatMode);
-  const vatPayable = outputVat - base.inputVat;
+  const inputVatCost = base.inputVatCost ?? base.inputVat ?? 0;
+  const inputVatServices = CREDIT_VAT_ON_PLATFORM_SERVICES.uzum
+    ? vatFromAmount(commissionAmount + base.logistics + base.storage, base.vatRate, 'with')
+    : 0;
+  const vatPayable = outputVat - inputVatCost - inputVatServices;
   const totalCosts = base.cost + commissionAmount + base.logistics + base.storage + vatPayable;
   return testPrice - totalCosts;
 }
@@ -1783,14 +1797,23 @@ function computeWbUnitEconomics() {
   // --- К перечислению (сумма вывода) ---
   const toSeller = priceUzs - fee - acquiring - ads - totalLogUzs - storageTotal - acceptanceUzs;
 
-  // --- НДС (выделяется из суммы вывода: × 12/112) ---
-  const vatPayable = toSeller > 0
-    ? Math.round(toSeller * vatPct / (100 + vatPct))
+  // --- НДС: исходящий от цены продажи − входящий (себестоимость [+ услуги WB]) ---
+  const saleVatMode = 'with';
+  const outputVat = Math.round(vatFromAmount(priceUzs, vatPct, saleVatMode));
+  const useProductCost = document.getElementById('useProductCost')?.checked;
+  const linkedMode = useProductCost && state.linkedProduct.active;
+  const inputVatCost = linkedMode
+    ? state.linkedProduct.inputVat
+    : Math.round(vatFromAmount(costUzs, vatPct, 'with'));
+  const wbServicesTotal = fee + acquiring + ads + totalLogUzs + storageTotal + acceptanceUzs;
+  const inputVatServices = CREDIT_VAT_ON_PLATFORM_SERVICES.wb
+    ? Math.round(vatFromAmount(wbServicesTotal, vatPct, 'with'))
     : 0;
+  const inputVat = inputVatCost + inputVatServices;
+  const vatPayable = outputVat - inputVat;
 
   // --- Итог ---
-  const afterVat = toSeller - vatPayable;
-  const netProfit = afterVat - costUzs;
+  const netProfit = toSeller - costUzs - vatPayable;
   const marginPct = priceUzs > 0 ? (netProfit / priceUzs) * 100 : 0;
   const roiPct = costUzs > 0 ? (netProfit / costUzs) * 100 : 0;
   const buyerPrice = priceUzs > 0 ? Math.round(priceUzs * (1 - sppPct / 100)) : 0;
@@ -1799,7 +1822,8 @@ function computeWbUnitEconomics() {
     priceUzs, sppPct, acquiPct, buyerPrice,
     fee, acquiring, ads,
     totalLogUzs, storageTotal, acceptanceUzs,
-    toSeller, vatPayable, afterVat,
+    toSeller,
+    outputVat, inputVatCost, inputVatServices, inputVat, vatPayable,
     costUzs, costRubRaw,
     netProfit, marginPct, roiPct,
     liters, buyoutPct, turnoverDays,
@@ -1847,7 +1871,9 @@ function renderWbUnitEconomics() {
   set('wbUnitAdsVal', fmt(u.ads));
   set('wbUnitLogisticsVal', fmt(u.totalLogUzs));
   set('wbUnitStorageVal', fmt(u.storageTotal));
-  set('wbUnitVatVal', fmt(u.vatPayable));
+  set('wbUnitOutputVatVal', fmt(u.outputVat));
+  set('wbUnitInputVatVal', fmt(u.inputVat));
+  set('wbUnitVatPayableVal', fmt(u.vatPayable));
   set('wbUnitToSellerVal', fmt(u.toSeller));
   set('wbUnitCostLineVal', fmt(u.costUzs));
 
@@ -1972,16 +1998,20 @@ function renderUnit() {
   const commissionAmount = price * commissionPct / 100;
   const outputVat = vatFromAmount(price, vatRate, saleVatMode);
   const linkedMode = useProductCost && state.linkedProduct.active;
-  const inputVat = linkedMode
+  const inputVatCost = linkedMode
     ? state.linkedProduct.inputVat
     : vatFromAmount(cost, vatRate, costVatMode);
+  const inputVatServices = CREDIT_VAT_ON_PLATFORM_SERVICES.uzum
+    ? vatFromAmount(commissionAmount + logistics + storage.amount, vatRate, 'with')
+    : 0;
+  const inputVat = inputVatCost + inputVatServices;
   const vatPayable = outputVat - inputVat;
   const totalCosts = cost + commissionAmount + logistics + storage.amount + vatPayable;
   const profit = price - totalCosts;
   const margin = price > 0 ? (profit / price) * 100 : 0;
   const markup = cost > 0 ? (profit / cost) * 100 : 0;
   const roi = cost > 0 ? (profit / cost) * 100 : 0;
-  const bep = calcBreakEven({ cost, commissionPct, logistics, storage: storage.amount, vatRate, saleVatMode, inputVat });
+  const bep = calcBreakEven({ cost, commissionPct, logistics, storage: storage.amount, vatRate, saleVatMode, inputVatCost });
 
   const profitEl = document.getElementById('profitMain');
   profitEl.textContent = fmtMoney(profit);
@@ -2007,9 +2037,16 @@ function renderUnit() {
     ? `Юнит-экономика считает товар по артикулу 1С: ${linkLabel}. Себестоимость и входящий НДС подтягиваются из вкладки «Себестоимость».`
     : 'Сейчас можно считать юнит отдельно, без привязки к вкладке себестоимости.';
   document.getElementById('productCostSyncText').textContent = syncText;
-  document.getElementById('inputVatSourceVal').textContent = useProductCost && state.linkedProduct.active
-    ? `из себестоимости (артикул 1С: ${linkLabel}) = ${fmtMoney(inputVat)}`
-    : 'ручной режим';
+  const inputVatSourceParts = [];
+  if (useProductCost && state.linkedProduct.active) {
+    inputVatSourceParts.push(`себестоимость (артикул 1С: ${linkLabel}) = ${fmtMoney(inputVatCost)}`);
+  } else {
+    inputVatSourceParts.push(`ручной режим = ${fmtMoney(inputVatCost)}`);
+  }
+  if (inputVatServices > 0.0001) {
+    inputVatSourceParts.push(`услуги Uzum = ${fmtMoney(inputVatServices)}`);
+  }
+  document.getElementById('inputVatSourceVal').textContent = inputVatSourceParts.join(' + ');
   document.getElementById('linkedProductVal').textContent = useProductCost && state.linkedProduct.active
     ? `связано с артикулом 1С: ${linkLabel}`
     : 'нет связи';
@@ -7664,7 +7701,7 @@ function wbFindColByHeaderPredicate(headerRowArr, predicate) {
 const WB_SETTINGS_DEFAULT = {
   wb_exchange_rate: 168.54789,
   vat_rate: 0.12,
-  vat_base: 'payout',
+  vat_base: 'revenue_fact',
   currency: 'UZS',
   abc_thresholds: [0.8, 0.95]
 };
@@ -7673,11 +7710,10 @@ function readWbAnalyticsSettings() {
   const o = readStore(STORAGE_KEYS.wbAnalyticsSettings, {}) || {};
   const rate = Number(o.wb_exchange_rate);
   const vat = Number(o.vat_rate);
-  const vatBase = o.vat_base === 'after_direct_costs' ? 'after_direct_costs' : 'payout';
   return {
     wb_exchange_rate: Number.isFinite(rate) && rate > 0 ? rate : WB_SETTINGS_DEFAULT.wb_exchange_rate,
     vat_rate: Number.isFinite(vat) && vat >= 0 ? vat : WB_SETTINGS_DEFAULT.vat_rate,
-    vat_base: vatBase,
+    vat_base: 'revenue_fact',
     currency: 'UZS',
     abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
   };
@@ -7685,11 +7721,10 @@ function readWbAnalyticsSettings() {
 
 function writeWbAnalyticsSettings(patch) {
   const cur = readWbAnalyticsSettings();
-  const vatBase = patch.vat_base === 'after_direct_costs' ? 'after_direct_costs' : 'payout';
   writeStore(STORAGE_KEYS.wbAnalyticsSettings, {
     wb_exchange_rate: Math.max(0.0001, Number(patch.wb_exchange_rate ?? cur.wb_exchange_rate) || cur.wb_exchange_rate),
     vat_rate: Math.max(0, Math.min(1, Number(patch.vat_rate ?? cur.vat_rate) || cur.vat_rate)),
-    vat_base: patch.vat_base != null ? vatBase : cur.vat_base
+    vat_base: 'revenue_fact'
   });
 }
 
@@ -8313,6 +8348,17 @@ function getWbCostSumFromProductsDb(article) {
   return cost != null && cost > 0 ? cost : null;
 }
 
+function resolveWbInputVat(skuKey, displaySku) {
+  const key = wbNormalizeSku(displaySku || skuKey);
+  if (!key) return 0;
+  const hit = readProductsSafe().find(p => {
+    return [p.article1c, p.sku, p.wbSku].some(v => wbNormalizeSku(v) === key);
+  });
+  if (!hit) return 0;
+  const v = Number(hit.inputVat ?? 0);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
 /**
  * Join с БД себестоимостей + ручные значения из шага COGS.
  * @param {ReturnType<typeof parseWbReport>} raw
@@ -8320,9 +8366,11 @@ function getWbCostSumFromProductsDb(article) {
  */
 function enrichWithCosts(raw, costOverrides = {}) {
   const costBySku = {};
+  const inputVatBySku = {};
   const nameBySku = {};
   const skusWithoutCost = [];
   let totalCogsSum = 0;
+  let totalCogsInputVatSum = 0;
 
   wbReportSkuRows(raw).forEach(row => {
     const key = row.skuKey;
@@ -8336,13 +8384,18 @@ function enrichWithCosts(raw, costOverrides = {}) {
     }
     costBySku[key] = unitCost;
     totalCogsSum += unitCost * row.sales_qty;
+    const unitInputVat = resolveWbInputVat(key, display);
+    inputVatBySku[key] = unitInputVat;
+    totalCogsInputVatSum += unitInputVat * row.sales_qty;
   });
 
   const uniqueMissing = [...new Set(skusWithoutCost)].sort((a, b) => a.localeCompare(b, 'ru'));
   return {
     costBySku,
+    inputVatBySku,
     nameBySku,
     totalCogsSum,
+    totalCogsInputVatSum,
     skusWithoutCost: uniqueMissing,
     costsComplete: uniqueMissing.length === 0
   };
@@ -8356,7 +8409,6 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const agg = raw.aggregates;
   const rate = s.wb_exchange_rate;
   const vatRate = s.vat_rate;
-  const vatBase = s.vat_base === 'after_direct_costs' ? 'after_direct_costs' : 'payout';
   const [abcA, abcB] = s.abc_thresholds;
   const isPartial = !enriched.costsComplete;
 
@@ -8366,12 +8418,17 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const holdbacks = agg.deductions_sum;
   const fines = agg.fines_sum;
   const afterDirect = payout - logistics - storage - holdbacks - fines;
-  const vatBaseAmount = vatBase === 'after_direct_costs' ? afterDirect : payout;
-  const vat = vatBaseAmount * vatRate;
-  const cogs = enriched.totalCogsSum;
-  const netProfit = afterDirect - cogs - vat;
   const revFact = agg.revenue_fact_sum;
   const revRetail = agg.revenue_retail_sum;
+  const outputVat = vatExtractFromGross(revFact, vatRate);
+  const wbServicesTotal = logistics + storage + holdbacks + fines;
+  const inputVatServices = CREDIT_VAT_ON_PLATFORM_SERVICES.wb
+    ? vatExtractFromGross(wbServicesTotal, vatRate)
+    : 0;
+  const inputVatCogs = enriched.totalCogsInputVatSum || 0;
+  const vat = outputVat - inputVatServices - inputVatCogs;
+  const cogs = enriched.totalCogsSum;
+  const netProfit = afterDirect - cogs - vat;
   const salesQty = agg.sales_qty;
   const returnsQty = agg.returns_qty;
   const buyoutDenom = salesQty + returnsQty;
@@ -8408,12 +8465,15 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
           fines_sum: fines,
           vat_pct: (vat / revFact) * 100,
           vat_sum: vat,
+          output_vat_sum: outputVat,
+          input_vat_services_sum: inputVatServices,
+          input_vat_cogs_sum: inputVatCogs,
           profit_pct: netMargin,
           profit_sum: netProfit,
           payout_sum: payout,
           after_direct_costs_sum: afterDirect,
           vat_rate_pct: vatRate * 100,
-          vat_base_used: vatBase
+          vat_base_used: 'revenue_fact'
         }
       : {
           cogs_pct: 0,
@@ -8428,12 +8488,15 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
           fines_sum: 0,
           vat_pct: 0,
           vat_sum: 0,
+          output_vat_sum: 0,
+          input_vat_services_sum: 0,
+          input_vat_cogs_sum: 0,
           profit_pct: 0,
           profit_sum: 0,
           payout_sum: payout,
           after_direct_costs_sum: afterDirect,
           vat_rate_pct: vatRate * 100,
-          vat_base_used: vatBase
+          vat_base_used: 'revenue_fact'
         };
 
   const logisticsTotal = logistics;
@@ -8454,9 +8517,10 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       const storageAlloc = revFact > 0.0001 ? storageTotal * (revSku / revFact) : 0;
       const holdbacksAlloc = revFact > 0.0001 ? holdbacksTotal * (revSku / revFact) : 0;
       const afterDirectSku = payoutSku - logisticsAlloc - storageAlloc - holdbacksAlloc;
-      const vatSkuBase = vatBase === 'after_direct_costs' ? afterDirectSku : payoutSku;
       const cogsSku = hasCost ? unitCost * row.sales_qty : 0;
-      const vatSku = hasCost ? vatSkuBase * vatRate : 0;
+      const outputVatSku = vatExtractFromGross(revSku, vatRate);
+      const inputVatCogsSku = hasCost ? (enriched.inputVatBySku[key] || 0) * row.sales_qty : 0;
+      const vatSku = outputVatSku - inputVatCogsSku;
       const profitSku = hasCost ? afterDirectSku - cogsSku - vatSku : null;
       const marginSku =
         hasCost && revSku > 0.0001 && profitSku != null ? (profitSku / revSku) * 100 : null;
@@ -8540,7 +8604,10 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       fines_sum: fines,
       cogs_sum: cogs,
       vat_sum: vat,
-      vat_base_used: vatBase,
+      output_vat_sum: outputVat,
+      input_vat_services_sum: inputVatServices,
+      input_vat_cogs_sum: inputVatCogs,
+      vat_base_used: 'revenue_fact',
       net_profit_sum: netProfit,
       net_profit_rub: rate > 0 ? netProfit / rate : 0,
       net_margin_pct: netMargin,
@@ -8653,19 +8720,16 @@ function loadWbAnalyticsSettingsIntoInputs() {
   if (rateEl) rateEl.value = String(s.wb_exchange_rate);
   const vatEl = document.getElementById('wbAnalyticsVatPct');
   if (vatEl) vatEl.value = String(Math.round(s.vat_rate * 10000) / 100);
-  const vatBaseEl = document.getElementById('wbAnalyticsVatBase');
-  if (vatBaseEl) vatBaseEl.value = s.vat_base || 'payout';
 }
 
 function readWbAnalyticsSettingsFromInputs() {
   const rate = n(document.getElementById('wbAnalyticsExchangeRate')?.value);
   const vatPct = n(document.getElementById('wbAnalyticsVatPct')?.value);
-  const vatBaseRaw = document.getElementById('wbAnalyticsVatBase')?.value;
   const cur = readWbAnalyticsSettings();
   return {
     wb_exchange_rate: rate > 0 ? rate : cur.wb_exchange_rate,
     vat_rate: vatPct >= 0 ? vatPct / 100 : cur.vat_rate,
-    vat_base: vatBaseRaw === 'after_direct_costs' ? 'after_direct_costs' : 'payout',
+    vat_base: 'revenue_fact',
     currency: 'UZS',
     abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
   };
@@ -8819,13 +8883,8 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   setTxt('wbStatBdVatLabel', `${Math.round(vatRatePct * 100) / 100}%`);
   const vatHint = document.getElementById('wbStatBdVatHint');
   if (vatHint) {
-    const vatBaseUsed = s.vat_base_used || bd.vat_base_used || 'payout';
-    const vatBaseAmount =
-      vatBaseUsed === 'after_direct_costs' ? s.after_direct_costs_sum : s.payout_sum;
-    const baseLabel =
-      vatBaseUsed === 'after_direct_costs' ? 'итого к оплате' : 'к перечислению';
     const rateLabel = Math.round(vatRatePct * 100) / 100;
-    vatHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Налог Узбекистана (${rateLabel}%). База: ${escapeHtml(baseLabel)} — ${escapeHtml((vatBaseAmount || 0).toLocaleString('ru-RU'))} сум. Уточните базу с бухгалтером.`;
+    vatHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> НДС к уплате (${rateLabel}%): исходящий от факт. выручки ${escapeHtml((s.revenue_fact_sum || 0).toLocaleString('ru-RU'))} сум − входящий (COGS и услуги WB).`;
   }
 
   const warnEl = document.getElementById('wbAnalyticsCostWarnings');
@@ -8897,7 +8956,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Удержания, сум', fmtWbRubLocale(s.wb_deductions_sum)],
       ['Штрафы, сум', fmtWbRubLocale(s.wb_fines_sum)],
       ['Себестоимость проданного, сум', fmtWbRubLocale(s.cogs_sum)],
-      [`НДС ${Math.round(settings.vat_rate * 100)}% (${s.vat_base_used === 'after_direct_costs' ? 'от итого к оплате' : 'от к перечислению'}), сум`, fmtWbRubLocale(s.vat_sum)],
+      [`НДС ${Math.round(settings.vat_rate * 100)}% к уплате (от факт. выручки), сум`, fmtWbRubLocale(s.vat_sum)],
       ['Чистая прибыль = итого к оплате − COGS − НДС, сум', fmtWbRubLocale(s.net_profit_sum)],
       ['Маржа от факт. выручки, %', fmtWbPctLocale(s.net_margin_pct)],
       ['Маржа от розничной цены, %', fmtWbPctLocale(s.net_margin_retail_pct)],
@@ -9070,7 +9129,7 @@ function wireWbAnalyticsUiOnce() {
       }
     }
   };
-  ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct', 'wbAnalyticsVatBase'].forEach(id => {
+  ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', wbSettingsRefreshPaint);
     document.getElementById(id)?.addEventListener('change', wbSettingsRefreshPaint);
   });
@@ -9248,8 +9307,8 @@ function computeUzumSalesAggregates(data) {
 
     const dbItem = findAnalyticsProductBySku(localProducts, row[C.sku]);
     const itemIncomingVat =
-      dbItem && dbItem.totalIncomingVat != null && Number.isFinite(Number(dbItem.totalIncomingVat))
-        ? Number(dbItem.totalIncomingVat)
+      dbItem && dbItem.inputVat != null && Number.isFinite(Number(dbItem.inputVat))
+        ? Number(dbItem.inputVat)
         : 0;
     totalCogsVat += itemIncomingVat * soldQty;
   });
