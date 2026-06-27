@@ -7759,6 +7759,16 @@ function fmtWbPctLocale(value) {
   return `${x.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
 }
 
+/** Реальная комиссия WB: отрицательное значение = WB доплатил продавцу (высокий СПП). */
+function fmtWbRealCommissionPctLocale(value) {
+  const x = Number(value);
+  if (!Number.isFinite(x)) return '0%';
+  if (x < -0.005) {
+    return `WB доплатил ${Math.abs(x).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
+  }
+  return fmtWbPctLocale(x);
+}
+
 function wbNormalizeSku(raw) {
   return String(raw ?? '')
     .replace(/\u00a0/g, ' ')
@@ -7973,6 +7983,14 @@ function wbFindKvvPctColumn(headerCells) {
   );
 }
 
+/** «Итоговый кВВ без НДС, %» — фактическая комиссия WB с учётом СПП (может быть отрицательной). */
+function wbFindRealKvvPctColumn(headerCells) {
+  return wbFindColByHeaderPredicate(
+    headerCells,
+    n => n.includes('итогов') && n.includes('квв') && n.includes('безндс')
+  );
+}
+
 function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   const headerRow = findWbReportHeaderRowIndex(matrix, maxScan);
   if (headerRow < 0) {
@@ -7988,6 +8006,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   );
   const priceRetail = wbFindRetailPriceColumn(headerCells);
   const kvvPctCol = wbFindKvvPctColumn(headerCells);
+  const realKvvPctCol = wbFindRealKvvPctColumn(headerCells);
   const toSeller = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.toTransfer));
   const logistics = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.logistics));
   const storage = wbFindColByHeaderPredicate(headerCells, n => n === 'хранение' || n.includes('хранение'));
@@ -8025,6 +8044,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     priceFact,
     priceRetail: priceRetail >= 0 ? priceRetail : -1,
     kvvPct: kvvPctCol >= 0 ? kvvPctCol : -1,
+    realKvvPct: realKvvPctCol >= 0 ? realKvvPctCol : -1,
     toSeller,
     logistics,
     storage: storage >= 0 ? storage : -1,
@@ -8125,8 +8145,10 @@ function touchWbSkuBucket(bySku, skuKey, displaySku) {
       commission_vv: 0,
       commission_vat_on_vv: 0,
       compensation: 0,
-      kvv_pct_sum: 0,
-      kvv_pct_count: 0,
+      kvv_qty_weighted_sum: 0,
+      kvv_qty_weight: 0,
+      real_kvv_weighted_sum: 0,
+      real_kvv_revenue_weight: 0,
       spp_retail_weight: 0,
       spp_pct_weighted_sum: 0
     };
@@ -8177,6 +8199,7 @@ function parseWbReport(arrayBuffer) {
     commission_sum: 0,
     compensation_sum: 0,
     avg_base_commission_pct: 0,
+    avg_real_commission_pct: 0,
     logistics_sum: 0,
     storage_sum: 0,
     deductions_sum: 0,
@@ -8188,8 +8211,10 @@ function parseWbReport(arrayBuffer) {
   let commissionVvRawSum = 0;
   let commissionVatOnVvRawSum = 0;
   let compensationRawSum = 0;
-  let kvvWeightedSum = 0;
-  let kvvRetailWeight = 0;
+  let kvvQtyWeightedSum = 0;
+  let kvvQtyWeight = 0;
+  let realKvvWeightedSum = 0;
+  let realKvvRevenueWeight = 0;
   let sppWeightedSum = 0;
   let sppRetailWeight = 0;
   const payoutRecon = {
@@ -8217,6 +8242,7 @@ function parseWbReport(arrayBuffer) {
     const commissionVatOnVv = C.commissionVatOnVv >= 0 ? cellAt(row, C.commissionVatOnVv) : 0;
     const compensation = C.paymentCompensation >= 0 ? cellAt(row, C.paymentCompensation) : 0;
     const kvvPct = C.kvvPct >= 0 ? parseWBNumber(row[C.kvvPct]) : 0;
+    const realKvvPct = C.realKvvPct >= 0 ? parseWBNumber(row[C.realKvvPct]) : 0;
     const platformPctCell = C.platformDiscountPct >= 0 ? row[C.platformDiscountPct] : '';
     const payoutCalc = calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, toTransfer);
 
@@ -8231,9 +8257,13 @@ function parseWbReport(arrayBuffer) {
       compensationRawSum += compensation;
       payoutRecon.sales_payout_column += toTransfer;
       payoutRecon.sales_payout_formula += payoutCalc;
-      if (priceRetail > 0.0001 && kvvPct >= 0) {
-        kvvWeightedSum += kvvPct * priceRetail;
-        kvvRetailWeight += priceRetail;
+      if (qty > 0) {
+        kvvQtyWeightedSum += kvvPct * qty;
+        kvvQtyWeight += qty;
+      }
+      if (priceFact > 0.0001) {
+        realKvvWeightedSum += realKvvPct * priceFact;
+        realKvvRevenueWeight += priceFact;
       }
     } else if (kind === 'return') {
       payoutRecon.returns_payout_column += toTransfer;
@@ -8262,12 +8292,16 @@ function parseWbReport(arrayBuffer) {
         bucket.commission_vv += commissionVv;
         bucket.commission_vat_on_vv += commissionVatOnVv;
         bucket.compensation += compensation;
-        if (kvvPct >= 0) {
-          bucket.kvv_pct_sum += kvvPct;
-          bucket.kvv_pct_count += 1;
+        if (qty > 0) {
+          bucket.kvv_qty_weighted_sum += kvvPct * qty;
+          bucket.kvv_qty_weight += qty;
+        }
+        if (priceFact > 0.0001) {
+          bucket.real_kvv_weighted_sum += realKvvPct * priceFact;
+          bucket.real_kvv_revenue_weight += priceFact;
         }
         const sppRow = wbCalcSppPct(priceRetail, priceFact, platformPctCell);
-        const sppWeight = priceRetail > 0.0001 ? priceRetail : priceFact;
+        const sppWeight = priceFact > 0.0001 ? priceFact : priceRetail;
         if (sppWeight > 0.0001) {
           bucket.spp_retail_weight += sppWeight;
           bucket.spp_pct_weighted_sum += sppRow * sppWeight;
@@ -8290,7 +8324,9 @@ function parseWbReport(arrayBuffer) {
   aggregates.commission_vat_on_vv_sum = Math.abs(commissionVatOnVvRawSum);
   aggregates.commission_sum = aggregates.commission_vv_sum + aggregates.commission_vat_on_vv_sum;
   aggregates.compensation_sum = compensationRawSum;
-  aggregates.avg_base_commission_pct = kvvRetailWeight > 0.0001 ? kvvWeightedSum / kvvRetailWeight : 0;
+  aggregates.avg_base_commission_pct = kvvQtyWeight > 0.0001 ? kvvQtyWeightedSum / kvvQtyWeight : 0;
+  aggregates.avg_real_commission_pct =
+    realKvvRevenueWeight > 0.0001 ? realKvvWeightedSum / realKvvRevenueWeight : 0;
   aggregates.spp_pct =
     sppRetailWeight > 0.0001
       ? sppWeightedSum / sppRetailWeight
@@ -8324,7 +8360,7 @@ function parseWbReport(arrayBuffer) {
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    formatVersion: 3,
+    formatVersion: 4,
     sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
@@ -8422,6 +8458,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const wbCommissionVatOnVvPct = revFact > 0.0001 ? (wbCommissionVatOnVvSum / revFact) * 100 : 0;
   const wbCompensationSum = agg.compensation_sum || 0;
   const avgBaseCommissionPct = agg.avg_base_commission_pct || 0;
+  const avgRealCommissionPct = agg.avg_real_commission_pct || 0;
   const sppPct = agg.spp_pct || 0;
   const wbWithheldPct =
     revFact > 0.0001 ? ((revFact - payout) / revFact) * 100 : 0;
@@ -8499,7 +8536,16 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
           : row.revenue_retail > 0.0001
             ? ((row.revenue_retail - revSku) / row.revenue_retail) * 100
             : 0;
-      const baseKvvSku = row.kvv_pct_count > 0 ? row.kvv_pct_sum / row.kvv_pct_count : 0;
+      const baseKvvSku =
+        row.kvv_qty_weight > 0.0001
+          ? row.kvv_qty_weighted_sum / row.kvv_qty_weight
+          : row.kvv_pct_count > 0
+            ? row.kvv_pct_sum / row.kvv_pct_count
+            : 0;
+      const realKvvSku =
+        row.real_kvv_revenue_weight > 0.0001
+          ? row.real_kvv_weighted_sum / row.real_kvv_revenue_weight
+          : 0;
       return {
         sku: row.displaySku || skuKey,
         skuKey,
@@ -8518,6 +8564,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         net_margin_pct: marginSku,
         spp_pct: sppSku,
         avg_base_commission_pct: baseKvvSku,
+        avg_real_commission_pct: realKvvSku,
         wb_compensation_sum: row.compensation || 0,
         has_cost: hasCost
       };
@@ -8562,6 +8609,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       avg_spp_pct: sppPct,
       spp_pct: sppPct,
       avg_base_commission_pct: avgBaseCommissionPct,
+      avg_real_commission_pct: avgRealCommissionPct,
       compensation_sum: wbCompensationSum,
       wb_compensation_sum: wbCompensationSum,
       wb_withheld_pct: wbWithheldPct,
@@ -8812,6 +8860,15 @@ function paintWbAnalyticsDashboard(computed, parsed) {
 
   setTxt('wbStatSppPct', fmtWbPctLocale(s.avg_spp_pct ?? s.spp_pct));
   setTxt('wbStatBaseKvvPct', fmtWbPctLocale(s.avg_base_commission_pct));
+  setTxt('wbStatRealKvvPct', fmtWbRealCommissionPctLocale(s.avg_real_commission_pct));
+  const realKvvMeta = document.getElementById('wbStatRealKvvHint');
+  if (realKvvMeta) {
+    const realPct = Number(s.avg_real_commission_pct);
+    realKvvMeta.textContent =
+      Number.isFinite(realPct) && realPct < -0.005
+        ? 'Отрицательное значение — WB снизил комиссию сильнее СПП и фактически доплатил вам'
+        : 'Фактическое удержание WB после СПП — колонка «Итоговый кВВ без НДС, %»';
+  }
   setTxt('wbStatCommVv', fmtWbRubLocale(s.wb_commission_vv_sum));
   setTxt('wbStatCommVvPct', `${fmtWbPctLocale(s.wb_commission_vv_pct)} от факт. выручки (справочно)`);
   setTxt('wbStatCommVatVv', fmtWbRubLocale(s.wb_commission_vat_on_vv_sum));
@@ -8875,6 +8932,11 @@ function paintWbAnalyticsDashboard(computed, parsed) {
         `⚠️ Сверка «К перечислению»: расхождение формулы и колонки отчёта ${Math.round(recon.column_vs_formula_delta).toLocaleString('ru-RU')} сум.`
       );
     }
+    if (parsed?.formatVersion != null && parsed.formatVersion < 4) {
+      warnings.push(
+        'ℹ️ Отчёт сохранён в старом формате — перезагрузите .xlsx, чтобы увидеть реальную комиссию WB (с учётом СПП).'
+      );
+    }
     if (warnings.length) {
       warnEl.classList.remove('hidden');
       warnEl.textContent = warnings.join('\n');
@@ -8900,6 +8962,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
               <td>${escapeHtml(fmtWbRubLocale(r.revenue_sum))}</td>
               <td>${escapeHtml(fmtWbPctLocale(r.spp_pct))}</td>
               <td>${escapeHtml(fmtWbPctLocale(r.avg_base_commission_pct))}</td>
+              <td>${escapeHtml(fmtWbRealCommissionPctLocale(r.avg_real_commission_pct))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.payout_sum))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.after_direct_costs_sum))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.cogs_sum))}</td>
@@ -8909,7 +8972,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
             </tr>`;
           })
           .join('')
-      : '<tr><td colspan="13" class="muted">Нет данных по артикулам.</td></tr>';
+      : '<tr><td colspan="14" class="muted">Нет данных по артикулам.</td></tr>';
   }
   renderWbTopProfitChart(topRows);
 
@@ -8923,6 +8986,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Итого к оплате (после логистики/хранения/удержаний/штрафов), сум', fmtWbRubLocale(s.after_direct_costs_sum)],
       ['СПП (скидка платформы), %', fmtWbPctLocale(s.avg_spp_pct ?? s.spp_pct)],
       ['Базовая комиссия кВВ, %', fmtWbPctLocale(s.avg_base_commission_pct)],
+      ['Реальная комиссия WB (с учётом СПП), %', fmtWbRealCommissionPctLocale(s.avg_real_commission_pct)],
       ['Компенсация платёжных услуг, сум', fmtWbRubLocale(s.compensation_sum ?? s.wb_compensation_sum)],
       ['Удержано WB (справочно, не комиссия), %', fmtWbPctLocale(s.wb_withheld_pct)],
       ['Логистика, сум', fmtWbRubLocale(s.wb_logistics_sum)],
