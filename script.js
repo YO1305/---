@@ -7807,8 +7807,8 @@ function parseWbSaleDateCell(val) {
 function wbDocTypeKind(raw) {
   const n = normalizeString(raw);
   if (!n) return 'service';
+  if (n.includes('возврат') || n.includes('return') || n.includes('сторно')) return 'return';
   if (n === 'продажа' || n.startsWith('продаж')) return 'sale';
-  if (n === 'возврат' || n.includes('возврат')) return 'return';
   return 'other';
 }
 
@@ -7965,16 +7965,29 @@ function findWbReportHeaderRowIndex(matrix, maxScan = 15) {
   return -1;
 }
 
+/** Для формулы «К перечислению» — базовая «Цена розничная», не «с учётом согласованной скидки». */
 function wbFindRetailPriceColumn(headerCells) {
   let idx = wbFindColByHeaderPredicate(
     headerCells,
-    n => n.includes('ценарозничная') && (n.includes('учетом') || n.includes('согласован'))
+    n =>
+      n.includes('ценарозничная') &&
+      !n.includes('вайлдберриз') &&
+      !n.includes('учетом') &&
+      !n.includes('согласован')
   );
   if (idx >= 0) return idx;
   return wbFindColByHeaderPredicate(
     headerCells,
-    n => n.includes('ценарозничная') && !n.includes('вайлдберриз') && !n.includes('учетом') && !n.includes('согласован')
+    n => n.includes('ценарозничная') && (n.includes('учетом') || n.includes('согласован'))
   );
+}
+
+/** Колонка «К перечислению Продавцу за реализованный Товар» — точное совпадение приоритетнее частичного. */
+function wbFindToSellerPayoutColumn(headerCells) {
+  const exactKey = WB_REPORT_HEADER_KEYS.toTransfer;
+  let idx = wbFindColByHeaderPredicate(headerCells, n => n === exactKey);
+  if (idx >= 0) return idx;
+  return wbFindColByHeaderPredicate(headerCells, n => n.includes(exactKey));
 }
 
 function wbFindKvvPctColumn(headerCells) {
@@ -8008,7 +8021,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   const priceRetail = wbFindRetailPriceColumn(headerCells);
   const kvvPctCol = wbFindKvvPctColumn(headerCells);
   const realKvvPctCol = wbFindRealKvvPctColumn(headerCells);
-  const toSeller = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.toTransfer));
+  const toSeller = wbFindToSellerPayoutColumn(headerCells);
   const logistics = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.logistics));
   const storage = wbFindColByHeaderPredicate(headerCells, n => n === 'хранение' || n.includes('хранение'));
   const deductions = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.deductions));
@@ -8114,6 +8127,16 @@ function calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, to
  * Сверка «К перечислению»: расчёт = формула по продажам + колонка по возвратам;
  * факт = колонка по продажам + колонка по возвратам. Разница — только округление по продажам.
  */
+function refreshWbPayoutReconciliationFromParsed(parsed) {
+  const raw = parsed?.aggregates?.payout_reconciliation;
+  if (!raw || raw.sales_formula_sum == null || raw.sales_column_sum == null) return null;
+  return finalizeWbPayoutReconciliation({
+    sales_payout_formula: raw.sales_formula_sum,
+    sales_payout_column: raw.sales_column_sum,
+    returns_payout_column: raw.returns_column_sum ?? 0
+  });
+}
+
 function finalizeWbPayoutReconciliation(payoutRecon) {
   const salesFormula = payoutRecon.sales_payout_formula;
   const salesColumn = payoutRecon.sales_payout_column;
@@ -8261,7 +8284,8 @@ function parseWbReport(arrayBuffer) {
     sales_payout_column: 0,
     sales_payout_formula: 0,
     returns_payout_column: 0,
-    row_counts: { sale: 0, return: 0, service: 0, other: 0 }
+    row_counts: { sale: 0, return: 0, service: 0, other: 0 },
+    doc_type_histogram: {}
   };
 
   for (let r = hRow + 1; r < matrix.length; r++) {
@@ -8269,6 +8293,8 @@ function parseWbReport(arrayBuffer) {
     if (!row?.length) continue;
 
     const kind = wbDocTypeKind(row[C.docType]);
+    const docLabel = String(row[C.docType] ?? '').replace(/\s+/g, ' ').trim() || '(пусто)';
+    payoutRecon.doc_type_histogram[docLabel] = (payoutRecon.doc_type_histogram[docLabel] || 0) + 1;
     if (kind === 'sale') payoutRecon.row_counts.sale += 1;
     else if (kind === 'return') payoutRecon.row_counts.return += 1;
     else if (kind === 'service') payoutRecon.row_counts.service += 1;
@@ -8387,10 +8413,12 @@ function parseWbReport(arrayBuffer) {
       : 0;
 
   const recon = finalizeWbPayoutReconciliation(payoutRecon);
+  aggregates.payout_sum = recon.calculated_total;
   aggregates.payout_reconciliation = {
     ...recon,
     returns_formula_sum: recon.returns_column_sum,
-    row_counts: payoutRecon.row_counts
+    row_counts: payoutRecon.row_counts,
+    doc_type_histogram: payoutRecon.doc_type_histogram
   };
 
   const period = { date_from: '', date_to: '' };
@@ -8403,7 +8431,7 @@ function parseWbReport(arrayBuffer) {
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    formatVersion: 5,
+    formatVersion: 6,
     sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
@@ -9267,15 +9295,19 @@ function paintWbAnalyticsDashboard(computed, parsed) {
         `⚠️ Неполные данные: нет себестоимости для ${s.skus_without_cost.length} артикул(ов) (${s.skus_without_cost.slice(0, 5).join(', ')}${s.skus_without_cost.length > 5 ? '…' : ''}). Прибыль занижена — не используйте как финальный итог.`
       );
     }
-    const recon = parsed?.aggregates?.payout_reconciliation;
+    const recon = refreshWbPayoutReconciliationFromParsed(parsed);
     if (recon && !recon.ok) {
+      const rc = parsed?.aggregates?.payout_reconciliation?.row_counts;
+      const rcTxt = rc
+        ? ` (строк: продаж ${rc.sale}, возврат ${rc.return}, служебных ${rc.service}, прочих ${rc.other})`
+        : '';
       warnings.push(
-        `⚠️ Сверка «К перечислению»: расхождение формулы и колонки отчёта ${Math.round(recon.column_vs_formula_delta).toLocaleString('ru-RU')} сум.`
+        `⚠️ Сверка «К перечислению»: расхождение формулы и колонки по продажам ${Math.round(recon.sales_formula_vs_column_delta).toLocaleString('ru-RU')} сум${rcTxt}.`
       );
     }
-    if (parsed?.formatVersion != null && parsed.formatVersion < 5) {
+    if (parsed?.formatVersion != null && parsed.formatVersion < 6) {
       warnings.push(
-        'ℹ️ Отчёт сохранён в старом формате расчёта — перезагрузите .xlsx для актуальной сверки «К перечислению» и цифр дашборда.'
+        'ℹ️ Отчёт устарел — обновите страницу (Ctrl+F5) и перезагрузите .xlsx для актуального расчёта «К перечислению».'
       );
     }
     if (warnings.length) {
