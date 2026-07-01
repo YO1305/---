@@ -7666,6 +7666,7 @@ function updateWbReportingUzsDisplay() {
 function normalizeString(str) {
   return String(str ?? '')
     .toLowerCase()
+    .replace(/ё/g, 'е')
     .replace(/\s+/g, '');
 }
 
@@ -7967,19 +7968,51 @@ function findWbReportHeaderRowIndex(matrix, maxScan = 15) {
 
 /** Для формулы «К перечислению» — базовая «Цена розничная», не «с учётом согласованной скидки». */
 function wbFindRetailPriceColumn(headerCells) {
-  let idx = wbFindColByHeaderPredicate(
-    headerCells,
-    n =>
-      n.includes('ценарозничная') &&
-      !n.includes('вайлдберриз') &&
-      !n.includes('учетом') &&
-      !n.includes('согласован')
-  );
-  if (idx >= 0) return idx;
-  return wbFindColByHeaderPredicate(
-    headerCells,
-    n => n.includes('ценарозничная') && (n.includes('учетом') || n.includes('согласован'))
-  );
+  let best = -1;
+  let bestScore = -1;
+  for (let i = 0; i < headerCells.length; i++) {
+    const n = normalizeString(headerCells[i]);
+    if (!n.includes('ценарозничная')) continue;
+    if (n.includes('вайлдберриз') && n.includes('реализовал')) continue;
+    let score = 60;
+    if (n.includes('учетом') || n.includes('согласован')) score = 15;
+    if (n.includes('ндс') && !n.includes('безндс')) score -= 25;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** «Компенсация платёжных услуг» и аналоги — без этой колонки формула завышает «К перечислению» на ~20 млн. */
+function wbFindPaymentCompensationColumn(headerCells) {
+  let best = -1;
+  let bestScore = -1;
+  for (let i = 0; i < headerCells.length; i++) {
+    const n = normalizeString(headerCells[i]);
+    if (!n.includes('компенсац')) continue;
+    if (n.includes('вознаграждени') && !n.includes('плат')) continue;
+    let score = 30;
+    if (n.includes('платеж') || n.includes('плат')) score += 50;
+    if (n.includes('эквайр')) score += 45;
+    if (n.includes('интеграц') || n.includes('сервис')) score += 35;
+    if (n.includes('лояльн') || n.includes('скидк')) score += 25;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  if (best < 0) {
+    for (let i = 0; i < headerCells.length; i++) {
+      const n = normalizeString(headerCells[i]);
+      if (n.includes('эквайр') || n.includes('acquiring')) {
+        best = i;
+        break;
+      }
+    }
+  }
+  return best;
 }
 
 /** Колонка «К перечислению Продавцу за реализованный Товар» — точное совпадение приоритетнее частичного. */
@@ -8044,10 +8077,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     headerCells,
     n => n.includes('платформенн') && n.includes('скидк')
   );
-  const paymentCompensation = wbFindColByHeaderPredicate(
-    headerCells,
-    n => n.includes('компенсац') && (n.includes('плат') || n.includes('интеграц') || n.includes('сервис'))
-  );
+  const paymentCompensation = wbFindPaymentCompensationColumn(headerCells);
   const docType = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.docType));
   const qty = wbFindQtyColumn(headerCells);
   const saleDate = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.saleDate));
@@ -8078,7 +8108,14 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     subject: subject >= 0 ? subject : -1,
     article: articleCol,
     articleHeaderUsed:
-      articleHeaderUsed || (articleCol >= 0 ? String(headerCells[articleCol] ?? '').replace(/\s+/g, ' ').trim() : '')
+      articleHeaderUsed || (articleCol >= 0 ? String(headerCells[articleCol] ?? '').replace(/\s+/g, ' ').trim() : ''),
+    priceRetailHeader:
+      priceRetail >= 0 ? String(headerCells[priceRetail] ?? '').replace(/\s+/g, ' ').trim() : '',
+    paymentCompensationHeader:
+      paymentCompensation >= 0
+        ? String(headerCells[paymentCompensation] ?? '').replace(/\s+/g, ' ').trim()
+        : '',
+    toSellerHeader: toSeller >= 0 ? String(headerCells[toSeller] ?? '').replace(/\s+/g, ' ').trim() : ''
   };
 
   const missing = [];
@@ -8089,6 +8126,9 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   if (col.docType < 0) missing.push('«Тип документа»');
   if (col.article < 0) missing.push('«Артикул поставщика»');
   if (col.qty < 0) missing.push('«Кол-во»');
+  if (col.paymentCompensation < 0) {
+    missing.push('«Компенсация платёжных услуг» (или аналог)');
+  }
 
   if (missing.length) {
     throw new Error(`Строка заголовков ${headerRow + 1}: не сопоставлены колонки: ${missing.join('; ')}.`);
@@ -8109,7 +8149,7 @@ function wbWorksheetToMatrix(ws) {
 function calculateWbRowPayout(priceRetail, kvvPct, compensation) {
   const retail = Math.abs(parseWBNumber(priceRetail) || 0);
   const kvv = Math.abs(parseWBNumber(kvvPct) || 0);
-  const comp = parseWBNumber(compensation) || 0;
+  const comp = Math.abs(parseWBNumber(compensation) || 0);
   return retail * (1 - kvv / 100) - comp;
 }
 
@@ -8418,7 +8458,11 @@ function parseWbReport(arrayBuffer) {
     ...recon,
     returns_formula_sum: recon.returns_column_sum,
     row_counts: payoutRecon.row_counts,
-    doc_type_histogram: payoutRecon.doc_type_histogram
+    doc_type_histogram: payoutRecon.doc_type_histogram,
+    compensation_column_found: C.paymentCompensation >= 0,
+    payment_compensation_header: C.paymentCompensationHeader || '',
+    retail_price_header: C.priceRetailHeader || '',
+    to_seller_header: C.toSellerHeader || ''
   };
 
   const period = { date_from: '', date_to: '' };
@@ -8431,7 +8475,7 @@ function parseWbReport(arrayBuffer) {
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    formatVersion: 6,
+    formatVersion: 7,
     sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
@@ -9301,11 +9345,18 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       const rcTxt = rc
         ? ` (строк: продаж ${rc.sale}, возврат ${rc.return}, служебных ${rc.service}, прочих ${rc.other})`
         : '';
+      const pr = parsed?.aggregates?.payout_reconciliation;
+      const compHint =
+        pr && !pr.compensation_column_found
+          ? ' Не найдена колонка компенсации платёжных услуг — формула завышена.'
+          : pr?.payment_compensation_header
+            ? ` Колонка компенсации: «${pr.payment_compensation_header}».`
+            : '';
       warnings.push(
-        `⚠️ Сверка «К перечислению»: расхождение формулы и колонки по продажам ${Math.round(recon.sales_formula_vs_column_delta).toLocaleString('ru-RU')} сум${rcTxt}.`
+        `⚠️ Сверка «К перечислению»: расхождение формулы и колонки по продажам ${Math.round(recon.sales_formula_vs_column_delta).toLocaleString('ru-RU')} сум${rcTxt}.${compHint}`
       );
     }
-    if (parsed?.formatVersion != null && parsed.formatVersion < 6) {
+    if (parsed?.formatVersion != null && parsed.formatVersion < 7) {
       warnings.push(
         'ℹ️ Отчёт устарел — обновите страницу (Ctrl+F5) и перезагрузите .xlsx для актуального расчёта «К перечислению».'
       );
