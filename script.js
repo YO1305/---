@@ -7809,8 +7809,25 @@ function wbDocTypeKind(raw) {
   const n = normalizeString(raw);
   if (!n) return 'service';
   if (n.includes('возврат') || n.includes('return') || n.includes('сторно')) return 'return';
-  if (n === 'продажа' || n.startsWith('продаж')) return 'sale';
+  if (n === 'продажа') return 'sale';
   return 'other';
+}
+
+function wbIsStrictSaleDocType(raw) {
+  return normalizeString(raw) === 'продажа';
+}
+
+function wbIsStrictReturnDocType(raw) {
+  const n = normalizeString(raw);
+  return n.includes('возврат') || n.includes('return') || n.includes('сторно');
+}
+
+/** Служебные/null-строки: кВВ=0, факт.выручка=0, но розница может быть заполнена — формулу не применять. */
+function wbIsEligibleSalePayoutRow(priceRetail, priceFact, kvvPct, toTransfer) {
+  if (priceFact > 0.0001) return true;
+  if (kvvPct > 0.0001 && priceRetail > 0.0001) return true;
+  if (Math.abs(toTransfer) > 0.0001 && kvvPct > 0.0001) return true;
+  return false;
 }
 
 let wbProductCostLookupCache = null;
@@ -8024,10 +8041,22 @@ function wbFindToSellerPayoutColumn(headerCells) {
 }
 
 function wbFindKvvPctColumn(headerCells) {
-  return wbFindColByHeaderPredicate(
-    headerCells,
-    n => n.includes('размер') && n.includes('квв') && !n.includes('итогов') && !n.includes('ндс')
-  );
+  let best = -1;
+  let bestScore = -1;
+  for (let i = 0; i < headerCells.length; i++) {
+    const n = normalizeString(headerCells[i]);
+    if (!n.includes('квв')) continue;
+    if (n.includes('итогов')) continue;
+    if (n.includes('ндс') && !n.includes('безндс')) continue;
+    let score = 10;
+    if (n.includes('размер')) score += 70;
+    if (n.startsWith('размерквв')) score += 25;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** «Итоговый кВВ без НДС, %» — фактическая комиссия WB с учётом СПП (может быть отрицательной). */
@@ -8153,11 +8182,11 @@ function calculateWbRowPayout(priceRetail, kvvPct, compensation) {
   return retail * (1 - kvv / 100) - comp;
 }
 
-function calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, toTransfer) {
-  if (kind === 'return') {
+function calculateWbRowPayoutForKind(isSale, isReturn, priceRetail, priceFact, kvvPct, compensation, toTransfer) {
+  if (isReturn) {
     return parseWBNumber(toTransfer) || 0;
   }
-  if (kind !== 'sale') {
+  if (!isSale || !wbIsEligibleSalePayoutRow(priceRetail, priceFact, kvvPct, toTransfer)) {
     return 0;
   }
   return calculateWbRowPayout(priceRetail, kvvPct, compensation);
@@ -8211,7 +8240,7 @@ function assertWbPayoutFormulaExamples() {
     }
   });
   const returnCol = 125000.5;
-  const gotReturn = calculateWbRowPayoutForKind('return', 500000, 18, 1000, returnCol);
+  const gotReturn = calculateWbRowPayoutForKind(false, true, 500000, 0, 18, 1000, returnCol);
   if (Math.abs(gotReturn - returnCol) > 0.01) {
     throw new Error(`WB payout return test: got ${gotReturn}, expected column value ${returnCol}`);
   }
@@ -8325,6 +8354,7 @@ function parseWbReport(arrayBuffer) {
     sales_payout_formula: 0,
     returns_payout_column: 0,
     row_counts: { sale: 0, return: 0, service: 0, other: 0 },
+    skipped_ineligible_sale_formula_rows: 0,
     doc_type_histogram: {}
   };
 
@@ -8332,11 +8362,14 @@ function parseWbReport(arrayBuffer) {
     const row = matrix[r];
     if (!row?.length) continue;
 
-    const kind = wbDocTypeKind(row[C.docType]);
-    const docLabel = String(row[C.docType] ?? '').replace(/\s+/g, ' ').trim() || '(пусто)';
+    const docTypeRaw = row[C.docType];
+    const isSale = wbIsStrictSaleDocType(docTypeRaw);
+    const isReturn = wbIsStrictReturnDocType(docTypeRaw);
+    const kind = wbDocTypeKind(docTypeRaw);
+    const docLabel = String(docTypeRaw ?? '').replace(/\s+/g, ' ').trim() || '(пусто)';
     payoutRecon.doc_type_histogram[docLabel] = (payoutRecon.doc_type_histogram[docLabel] || 0) + 1;
-    if (kind === 'sale') payoutRecon.row_counts.sale += 1;
-    else if (kind === 'return') payoutRecon.row_counts.return += 1;
+    if (isSale) payoutRecon.row_counts.sale += 1;
+    else if (isReturn) payoutRecon.row_counts.return += 1;
     else if (kind === 'service') payoutRecon.row_counts.service += 1;
     else payoutRecon.row_counts.other += 1;
 
@@ -8344,7 +8377,7 @@ function parseWbReport(arrayBuffer) {
     const priceFact = cellAt(row, C.priceFact);
     const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
     const toTransfer = cellAt(row, C.toSeller);
-    const qty = wbEffectiveRowQty(kind, rawQty, priceFact, toTransfer, priceRetail);
+    const qty = wbEffectiveRowQty(isSale ? 'sale' : isReturn ? 'return' : kind, rawQty, priceFact, toTransfer, priceRetail);
     const logistics = cellAt(row, C.logistics);
     const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
     const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
@@ -8355,19 +8388,29 @@ function parseWbReport(arrayBuffer) {
     const kvvPct = C.kvvPct >= 0 ? parseWBNumber(row[C.kvvPct]) : 0;
     const realKvvPct = C.realKvvPct >= 0 ? parseWBNumber(row[C.realKvvPct]) : 0;
     const platformPctCell = C.platformDiscountPct >= 0 ? row[C.platformDiscountPct] : '';
-    const payoutCalc = calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, toTransfer);
+    const payoutCalc = calculateWbRowPayoutForKind(
+      isSale,
+      isReturn,
+      priceRetail,
+      priceFact,
+      kvvPct,
+      compensation,
+      toTransfer
+    );
+    const saleFormulaEligible = isSale && wbIsEligibleSalePayoutRow(priceRetail, priceFact, kvvPct, toTransfer);
+    if (isSale && !saleFormulaEligible) payoutRecon.skipped_ineligible_sale_formula_rows += 1;
 
     aggregates.logistics_sum += logistics;
     aggregates.storage_sum += storage;
     aggregates.deductions_sum += deductions;
     aggregates.fines_sum += fines;
 
-    if (kind === 'sale') {
+    if (isSale) {
       commissionVvRawSum += commissionVv;
       commissionVatOnVvRawSum += commissionVatOnVv;
       compensationRawSum += compensation;
       payoutRecon.sales_payout_column += toTransfer;
-      payoutRecon.sales_payout_formula += payoutCalc;
+      if (saleFormulaEligible) payoutRecon.sales_payout_formula += payoutCalc;
       if (qty > 0) {
         kvvQtyWeightedSum += kvvPct * qty;
         kvvQtyWeight += qty;
@@ -8376,7 +8419,7 @@ function parseWbReport(arrayBuffer) {
         realKvvWeightedSum += realKvvPct * priceFact;
         realKvvRevenueWeight += priceFact;
       }
-    } else if (kind === 'return') {
+    } else if (isReturn) {
       payoutRecon.returns_payout_column += toTransfer;
     }
 
@@ -8390,11 +8433,11 @@ function parseWbReport(arrayBuffer) {
     const subjectCell =
       C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
 
-    if (kind === 'sale') {
+    if (isSale) {
       aggregates.revenue_fact_sum += priceFact;
       aggregates.revenue_retail_sum += priceRetail;
       aggregates.sales_qty += qty;
-      aggregates.payout_sum += payoutCalc;
+      if (saleFormulaEligible) aggregates.payout_sum += payoutCalc;
       if (skuKey) {
         const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
         bucket.sales_order_count += 1;
@@ -8423,7 +8466,7 @@ function parseWbReport(arrayBuffer) {
           sppWeightedSum += sppRow * sppWeight;
         }
       }
-    } else if (kind === 'return') {
+    } else if (isReturn) {
       aggregates.returns_qty += qty;
       aggregates.payout_sum += payoutCalc;
       if (skuKey) {
@@ -8462,7 +8505,8 @@ function parseWbReport(arrayBuffer) {
     compensation_column_found: C.paymentCompensation >= 0,
     payment_compensation_header: C.paymentCompensationHeader || '',
     retail_price_header: C.priceRetailHeader || '',
-    to_seller_header: C.toSellerHeader || ''
+    to_seller_header: C.toSellerHeader || '',
+    skipped_ineligible_sale_formula_rows: payoutRecon.skipped_ineligible_sale_formula_rows
   };
 
   const period = { date_from: '', date_to: '' };
@@ -8475,7 +8519,7 @@ function parseWbReport(arrayBuffer) {
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    formatVersion: 7,
+    formatVersion: 8,
     sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
@@ -9356,7 +9400,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
         `⚠️ Сверка «К перечислению»: расхождение формулы и колонки по продажам ${Math.round(recon.sales_formula_vs_column_delta).toLocaleString('ru-RU')} сум${rcTxt}.${compHint}`
       );
     }
-    if (parsed?.formatVersion != null && parsed.formatVersion < 7) {
+    if (parsed?.formatVersion != null && parsed.formatVersion < 8) {
       warnings.push(
         'ℹ️ Отчёт устарел — обновите страницу (Ctrl+F5) и перезагрузите .xlsx для актуального расчёта «К перечислению».'
       );
