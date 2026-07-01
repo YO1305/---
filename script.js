@@ -7807,8 +7807,8 @@ function parseWbSaleDateCell(val) {
 function wbDocTypeKind(raw) {
   const n = normalizeString(raw);
   if (!n) return 'service';
-  if (n === 'продажа') return 'sale';
-  if (n === 'возврат') return 'return';
+  if (n === 'продажа' || n.startsWith('продаж')) return 'sale';
+  if (n === 'возврат' || n.includes('возврат')) return 'return';
   return 'other';
 }
 
@@ -8104,7 +8104,35 @@ function calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, to
   if (kind === 'return') {
     return parseWBNumber(toTransfer) || 0;
   }
+  if (kind !== 'sale') {
+    return 0;
+  }
   return calculateWbRowPayout(priceRetail, kvvPct, compensation);
+}
+
+/**
+ * Сверка «К перечислению»: расчёт = формула по продажам + колонка по возвратам;
+ * факт = колонка по продажам + колонка по возвратам. Разница — только округление по продажам.
+ */
+function finalizeWbPayoutReconciliation(payoutRecon) {
+  const salesFormula = payoutRecon.sales_payout_formula;
+  const salesColumn = payoutRecon.sales_payout_column;
+  const returnsColumn = payoutRecon.returns_payout_column;
+  const calculatedTotal = salesFormula + returnsColumn;
+  const factualTotal = salesColumn + returnsColumn;
+  const salesDelta = Math.abs(salesFormula - salesColumn);
+  const tolerance = Math.max(200, factualTotal * 0.01);
+  return {
+    sales_formula_sum: salesFormula,
+    sales_column_sum: salesColumn,
+    returns_column_sum: returnsColumn,
+    calculated_total: calculatedTotal,
+    factual_total: factualTotal,
+    sales_formula_vs_column_delta: salesDelta,
+    column_vs_formula_delta: salesDelta,
+    tolerance_sum: tolerance,
+    ok: salesDelta <= tolerance
+  };
 }
 
 function assertWbPayoutFormulaExamples() {
@@ -8233,7 +8261,7 @@ function parseWbReport(arrayBuffer) {
     sales_payout_column: 0,
     sales_payout_formula: 0,
     returns_payout_column: 0,
-    returns_payout_formula: 0
+    row_counts: { sale: 0, return: 0, service: 0, other: 0 }
   };
 
   for (let r = hRow + 1; r < matrix.length; r++) {
@@ -8241,6 +8269,11 @@ function parseWbReport(arrayBuffer) {
     if (!row?.length) continue;
 
     const kind = wbDocTypeKind(row[C.docType]);
+    if (kind === 'sale') payoutRecon.row_counts.sale += 1;
+    else if (kind === 'return') payoutRecon.row_counts.return += 1;
+    else if (kind === 'service') payoutRecon.row_counts.service += 1;
+    else payoutRecon.row_counts.other += 1;
+
     const rawQty = C.qty >= 0 ? row[C.qty] : 0;
     const priceFact = cellAt(row, C.priceFact);
     const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
@@ -8279,7 +8312,6 @@ function parseWbReport(arrayBuffer) {
       }
     } else if (kind === 'return') {
       payoutRecon.returns_payout_column += toTransfer;
-      payoutRecon.returns_payout_formula += payoutCalc;
     }
 
     if (C.saleDate >= 0) {
@@ -8354,16 +8386,11 @@ function parseWbReport(arrayBuffer) {
       ? ((aggregates.revenue_fact_sum - aggregates.payout_sum) / aggregates.revenue_fact_sum) * 100
       : 0;
 
-  const formulaTotal = payoutRecon.sales_payout_formula + payoutRecon.returns_payout_formula;
-  const columnTotal = payoutRecon.sales_payout_column + payoutRecon.returns_payout_column;
-  const columnDelta = Math.abs(columnTotal - formulaTotal);
+  const recon = finalizeWbPayoutReconciliation(payoutRecon);
   aggregates.payout_reconciliation = {
-    sales_formula_sum: payoutRecon.sales_payout_formula,
-    sales_column_sum: payoutRecon.sales_payout_column,
-    returns_formula_sum: payoutRecon.returns_payout_formula,
-    returns_column_sum: payoutRecon.returns_payout_column,
-    column_vs_formula_delta: columnDelta,
-    ok: columnDelta <= 1
+    ...recon,
+    returns_formula_sum: recon.returns_column_sum,
+    row_counts: payoutRecon.row_counts
   };
 
   const period = { date_from: '', date_to: '' };
@@ -8376,7 +8403,7 @@ function parseWbReport(arrayBuffer) {
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
 
   return {
-    formatVersion: 4,
+    formatVersion: 5,
     sheetName,
     headerRow: hRow,
     articleSourceColumn: C.articleHeaderUsed || '',
@@ -9246,9 +9273,9 @@ function paintWbAnalyticsDashboard(computed, parsed) {
         `⚠️ Сверка «К перечислению»: расхождение формулы и колонки отчёта ${Math.round(recon.column_vs_formula_delta).toLocaleString('ru-RU')} сум.`
       );
     }
-    if (parsed?.formatVersion != null && parsed.formatVersion < 4) {
+    if (parsed?.formatVersion != null && parsed.formatVersion < 5) {
       warnings.push(
-        'ℹ️ Отчёт сохранён в старом формате — перезагрузите .xlsx, чтобы увидеть реальную комиссию WB (с учётом СПП).'
+        'ℹ️ Отчёт сохранён в старом формате расчёта — перезагрузите .xlsx для актуальной сверки «К перечислению» и цифр дашборда.'
       );
     }
     if (warnings.length) {
