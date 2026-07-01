@@ -2025,6 +2025,23 @@ body.dark-mode .wb-breakdown-item--profit {
   flex-wrap: wrap;
   gap: 10px;
 }
+.wb-analytics-export-bar {
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.wb-analytics-export-partial-warn {
+  margin: 0;
+  color: var(--warn, #b45309);
+}
+.wb-abc-unknown {
+  background: #e5e7eb;
+  color: #374151;
+}
+body.dark-mode .wb-abc-unknown {
+  background: #4b5563;
+  color: #f3f4f6;
+}
 
 /* Dashboard WB: плитки (Носов + современная сетка) */
 .analytics-grid {

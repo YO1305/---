@@ -7743,7 +7743,8 @@ const WB_REPORT_HEADER_KEYS = {
   storage: 'хранение',
   deductions: 'удержания',
   saleDate: 'датапродажи',
-  fines: 'штраф'
+  fines: 'штраф',
+  subject: 'предмет'
 };
 
 /** Денежные суммы в аналитике WB: значения из отчёта и себестоимость уже в сумах (UZS). */
@@ -8038,6 +8039,10 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   const qty = wbFindQtyColumn(headerCells);
   const saleDate = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.saleDate));
   const fines = wbFindColByHeaderPredicate(headerCells, n => n.includes(WB_REPORT_HEADER_KEYS.fines));
+  const subject = wbFindColByHeaderPredicate(
+    headerCells,
+    n => n === WB_REPORT_HEADER_KEYS.subject || n.includes('предмет')
+  );
   const { idx: articleCol, label: articleHeaderUsed } = wbFindArticleColumn(headerCells);
 
   const col = {
@@ -8057,6 +8062,7 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     qty: qty >= 0 ? qty : -1,
     saleDate: saleDate >= 0 ? saleDate : -1,
     docType,
+    subject: subject >= 0 ? subject : -1,
     article: articleCol,
     articleHeaderUsed:
       articleHeaderUsed || (articleCol >= 0 ? String(headerCells[articleCol] ?? '').replace(/\s+/g, ' ').trim() : '')
@@ -8150,7 +8156,9 @@ function touchWbSkuBucket(bySku, skuKey, displaySku) {
       real_kvv_weighted_sum: 0,
       real_kvv_revenue_weight: 0,
       spp_retail_weight: 0,
-      spp_pct_weighted_sum: 0
+      spp_pct_weighted_sum: 0,
+      sales_order_count: 0,
+      subject: ''
     };
   } else if (displaySku && !bySku[skuKey].displaySku) {
     bySku[skuKey].displaySku = displaySku;
@@ -8277,6 +8285,8 @@ function parseWbReport(arrayBuffer) {
 
     const displaySku = wbDisplaySku(row[C.article]);
     const skuKey = wbNormalizeSku(displaySku);
+    const subjectCell =
+      C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
 
     if (kind === 'sale') {
       aggregates.revenue_fact_sum += priceFact;
@@ -8285,6 +8295,8 @@ function parseWbReport(arrayBuffer) {
       aggregates.payout_sum += payoutCalc;
       if (skuKey) {
         const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
+        bucket.sales_order_count += 1;
+        if (subjectCell && !bucket.subject) bucket.subject = subjectCell;
         bucket.sales_qty += qty;
         bucket.revenue_fact += priceFact;
         bucket.revenue_retail += priceRetail;
@@ -8550,6 +8562,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         sku: row.displaySku || skuKey,
         skuKey,
         name: enriched.nameBySku[skuKey] || row.displaySku || skuKey,
+        subject: row.subject || '',
+        orders_qty: row.sales_order_count || 0,
         sales_qty: row.sales_qty,
         returns_qty: row.returns_qty,
         buyout_rate: buyoutSku,
@@ -8560,6 +8574,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         logistics_alloc: logisticsAlloc,
         storage_alloc: storageAlloc,
         holdbacks_alloc: holdbacksAlloc,
+        vat_sum: vatSku,
         net_profit_sum: profitSku,
         net_margin_pct: marginSku,
         spp_pct: sppSku,
@@ -8578,6 +8593,10 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const totalPosProfit = positiveProfit.reduce((sum, r) => sum + r.net_profit_sum, 0);
   let cumulative = 0;
   bySku.forEach(r => {
+    if (!r.has_cost) {
+      r.abc_class = '?';
+      return;
+    }
     if (r.net_profit_sum == null || r.net_profit_sum <= 0) {
       r.abc_class = 'C';
       return;
@@ -8647,6 +8666,297 @@ function buildWbAnalyticsFromParsed(parsed, cogsMap, settings) {
     cogsByArticle: cogsMap,
     settings: settings || readWbAnalyticsSettings()
   };
+}
+
+const WB_EXCEL_FMT_MONEY = '# ##0';
+const WB_EXCEL_FMT_PCT = '0.00%';
+const WB_EXCEL_FMT_QTY = '# ##0';
+const WB_EXCEL_HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+const WB_EXCEL_HEADER_FONT = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+const WB_EXCEL_TOTAL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F0FE' } };
+const WB_EXCEL_ALT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
+const WB_EXCEL_ABC_STYLES = {
+  A: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } }, font: { color: { argb: 'FF276221' } } },
+  B: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } }, font: { color: { argb: 'FF9C5700' } } },
+  C: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } }, font: { color: { argb: 'FF9C0006' } } }
+};
+
+function wbExcelPctValue(pct) {
+  const x = Number(pct);
+  return Number.isFinite(x) ? x / 100 : 0;
+}
+
+function wbExcelWeightedPct(rows, valueKey, weightKey) {
+  const totalWeight = rows.reduce((sum, r) => sum + Math.max(0, Number(r[weightKey]) || 0), 0);
+  if (totalWeight <= 0.0001) return 0;
+  const weighted = rows.reduce(
+    (sum, r) => sum + (Number(r[valueKey]) || 0) * Math.max(0, Number(r[weightKey]) || 0),
+    0
+  );
+  return weighted / totalWeight;
+}
+
+function wbExcelAutoFitColumns(sheet, minWidth = 10, maxWidth = 48) {
+  sheet.columns.forEach(col => {
+    let maxLen = minWidth;
+    col.eachCell({ includeEmpty: false }, cell => {
+      const raw = cell.value;
+      let len = 10;
+      if (raw == null) len = 0;
+      else if (typeof raw === 'number') len = String(Math.round(raw)).length + 2;
+      else len = String(raw).length;
+      if (len > maxLen) maxLen = len;
+    });
+    col.width = Math.min(Math.max(maxLen + 2, minWidth), maxWidth);
+  });
+}
+
+function wbExcelStyleHeaderRow(row) {
+  row.height = 30;
+  row.eachCell(cell => {
+    cell.fill = WB_EXCEL_HEADER_FILL;
+    cell.font = WB_EXCEL_HEADER_FONT;
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+  });
+}
+
+function wbExcelApplyMoneyCell(cell, value) {
+  cell.value = Math.round(Number(value) || 0);
+  cell.numFmt = WB_EXCEL_FMT_MONEY;
+}
+
+function wbExcelApplyQtyCell(cell, value) {
+  cell.value = Math.round(Number(value) || 0);
+  cell.numFmt = WB_EXCEL_FMT_QTY;
+}
+
+function wbExcelApplyPctCell(cell, pctValue) {
+  cell.value = wbExcelPctValue(pctValue);
+  cell.numFmt = WB_EXCEL_FMT_PCT;
+}
+
+function wbExcelBuildProductsSheet(workbook, analytics, settings) {
+  const vatRatePct = Math.round((settings?.vat_rate ?? 0.12) * 10000) / 100;
+  const headers = [
+    'Артикул',
+    'Название',
+    'Предмет',
+    'Заказано, шт',
+    'Выкуплено, шт',
+    'Возвращено, шт',
+    'Выкуп, %',
+    'Выручка (сум)',
+    'К перечислению (сум)',
+    'Логистика (сум)',
+    'Хранение (сум)',
+    'Удержания (сум)',
+    'Итого к оплате (сум)',
+    'Себестоимость (сум)',
+    `НДС ${vatRatePct}% (сум)`,
+    'Прибыль (сум)',
+    'Маржа, %',
+    'Реальная комиссия WB, %',
+    'Базовая комиссия WB, %',
+    'СПП, %',
+    'ABC'
+  ];
+  const sheet = workbook.addWorksheet('По товарам');
+  sheet.addRow(headers);
+  wbExcelStyleHeaderRow(sheet.getRow(1));
+  sheet.views = [{ state: 'frozen', ySplit: 1, activeCell: 'A2' }];
+
+  const rows = analytics.by_sku || [];
+  rows.forEach((r, idx) => {
+    sheet.addRow([
+      r.sku,
+      r.name || '',
+      r.subject || '',
+      r.orders_qty || 0,
+      r.sales_qty || 0,
+      r.returns_qty || 0,
+      wbExcelPctValue(r.buyout_rate),
+      Math.round(r.revenue_sum || 0),
+      Math.round(r.payout_sum || 0),
+      Math.round(r.logistics_alloc || 0),
+      Math.round(r.storage_alloc || 0),
+      Math.round(r.holdbacks_alloc || 0),
+      Math.round(r.after_direct_costs_sum || 0),
+      Math.round(r.cogs_sum || 0),
+      Math.round(r.vat_sum || 0),
+      r.net_profit_sum != null ? Math.round(r.net_profit_sum) : null,
+      r.net_margin_pct != null ? wbExcelPctValue(r.net_margin_pct) : null,
+      wbExcelPctValue(r.avg_real_commission_pct),
+      wbExcelPctValue(r.avg_base_commission_pct),
+      wbExcelPctValue(r.spp_pct),
+      r.abc_class || ''
+    ]);
+    const excelRowNum = idx + 2;
+    const excelRow = sheet.getRow(excelRowNum);
+    if (idx % 2 === 1) {
+      excelRow.eachCell(cell => {
+        cell.fill = WB_EXCEL_ALT_FILL;
+      });
+    }
+    wbExcelApplyQtyCell(excelRow.getCell(4), r.orders_qty);
+    wbExcelApplyQtyCell(excelRow.getCell(5), r.sales_qty);
+    wbExcelApplyQtyCell(excelRow.getCell(6), r.returns_qty);
+    wbExcelApplyPctCell(excelRow.getCell(7), r.buyout_rate);
+    for (let c = 8; c <= 16; c++) wbExcelApplyMoneyCell(excelRow.getCell(c), excelRow.getCell(c).value);
+    if (r.net_margin_pct != null) wbExcelApplyPctCell(excelRow.getCell(17), r.net_margin_pct);
+    wbExcelApplyPctCell(excelRow.getCell(18), r.avg_real_commission_pct);
+    wbExcelApplyPctCell(excelRow.getCell(19), r.avg_base_commission_pct);
+    wbExcelApplyPctCell(excelRow.getCell(20), r.spp_pct);
+    const abcCell = excelRow.getCell(21);
+    const abcStyle = WB_EXCEL_ABC_STYLES[r.abc_class];
+    if (abcStyle) {
+      abcCell.fill = abcStyle.fill;
+      abcCell.font = { ...(abcCell.font || {}), ...abcStyle.font, bold: abcCell.font?.bold };
+    }
+  });
+
+  const sumOrders = rows.reduce((acc, r) => acc + (r.orders_qty || 0), 0);
+  const sumSales = rows.reduce((acc, r) => acc + (r.sales_qty || 0), 0);
+  const sumReturns = rows.reduce((acc, r) => acc + (r.returns_qty || 0), 0);
+  const sumRevenue = rows.reduce((acc, r) => acc + (r.revenue_sum || 0), 0);
+  const sumPayout = rows.reduce((acc, r) => acc + (r.payout_sum || 0), 0);
+  const sumLog = rows.reduce((acc, r) => acc + (r.logistics_alloc || 0), 0);
+  const sumStorage = rows.reduce((acc, r) => acc + (r.storage_alloc || 0), 0);
+  const sumHold = rows.reduce((acc, r) => acc + (r.holdbacks_alloc || 0), 0);
+  const sumAfter = rows.reduce((acc, r) => acc + (r.after_direct_costs_sum || 0), 0);
+  const sumCogs = rows.reduce((acc, r) => acc + (r.cogs_sum || 0), 0);
+  const sumVat = rows.reduce((acc, r) => acc + (r.vat_sum || 0), 0);
+  const sumProfit = rows.reduce((acc, r) => acc + (r.net_profit_sum != null ? r.net_profit_sum : 0), 0);
+  const totalBuyout = sumSales + sumReturns > 0 ? (sumSales / (sumSales + sumReturns)) * 100 : 0;
+  const totalMargin = sumRevenue > 0.0001 ? (sumProfit / sumRevenue) * 100 : 0;
+  const totalRealKvv = wbExcelWeightedPct(rows, 'avg_real_commission_pct', 'revenue_sum');
+  const totalBaseKvv = wbExcelWeightedPct(rows, 'avg_base_commission_pct', 'revenue_sum');
+  const totalSpp = wbExcelWeightedPct(rows, 'spp_pct', 'revenue_sum');
+
+  const totalRowNum = sheet.rowCount + 1;
+  const totalRow = sheet.addRow([
+    'Итого',
+    '',
+    '',
+    sumOrders,
+    sumSales,
+    sumReturns,
+    wbExcelPctValue(totalBuyout),
+    Math.round(sumRevenue),
+    Math.round(sumPayout),
+    Math.round(sumLog),
+    Math.round(sumStorage),
+    Math.round(sumHold),
+    Math.round(sumAfter),
+    Math.round(sumCogs),
+    Math.round(sumVat),
+    Math.round(sumProfit),
+    wbExcelPctValue(totalMargin),
+    wbExcelPctValue(totalRealKvv),
+    wbExcelPctValue(totalBaseKvv),
+    wbExcelPctValue(totalSpp),
+    ''
+  ]);
+  totalRow.font = { bold: true };
+  totalRow.eachCell(cell => {
+    cell.fill = WB_EXCEL_TOTAL_FILL;
+    cell.font = { ...(cell.font || {}), bold: true };
+  });
+  wbExcelApplyQtyCell(totalRow.getCell(4), sumOrders);
+  wbExcelApplyQtyCell(totalRow.getCell(5), sumSales);
+  wbExcelApplyQtyCell(totalRow.getCell(6), sumReturns);
+  wbExcelApplyPctCell(totalRow.getCell(7), totalBuyout);
+  for (let c = 8; c <= 16; c++) wbExcelApplyMoneyCell(totalRow.getCell(c), totalRow.getCell(c).value);
+  wbExcelApplyPctCell(totalRow.getCell(17), totalMargin);
+  wbExcelApplyPctCell(totalRow.getCell(18), totalRealKvv);
+  wbExcelApplyPctCell(totalRow.getCell(19), totalBaseKvv);
+  wbExcelApplyPctCell(totalRow.getCell(20), totalSpp);
+
+  wbExcelAutoFitColumns(sheet);
+  return { sheet, totalRowNum };
+}
+
+function wbExcelBuildSummarySheet(workbook, analytics, settings) {
+  const s = analytics.summary || {};
+  const p = analytics.period || {};
+  const periodText =
+    p.date_from && p.date_to ? `${p.date_from} — ${p.date_to}` : 'не определён';
+  const vatRatePct = Math.round((settings?.vat_rate ?? 0.12) * 10000) / 100;
+  const sheet = workbook.addWorksheet('Сводка периода');
+  const rows = [
+    ['Период', periodText],
+    ['Продано, шт', s.sales_qty || 0],
+    ['Возвращено, шт', s.returns_qty || 0],
+    ['Выкуп, %', s.buyout_rate || 0],
+    ['Выручка розн. (сум)', Math.round(s.revenue_retail_sum || 0)],
+    ['Выручка факт. (сум)', Math.round(s.revenue_fact_sum || 0)],
+    ['К перечислению (сум)', Math.round(s.payout_sum || 0)],
+    ['Логистика (сум)', Math.round(s.wb_logistics_sum || 0)],
+    ['Хранение (сум)', Math.round(s.wb_storage_sum || 0)],
+    ['Удержания (сум)', Math.round(s.wb_deductions_sum || 0)],
+    ['Итого к оплате (сум)', Math.round(s.after_direct_costs_sum || 0)],
+    ['Себестоимость (сум)', Math.round(s.cogs_sum || 0)],
+    [`НДС ${vatRatePct}% (сум)`, Math.round(s.vat_sum || 0)],
+    ['Прибыль (сум)', Math.round(s.net_profit_sum || 0)],
+    ['Маржа от факт.выручки, %', s.net_margin_pct || 0],
+    ['Рентабельность (ROI), %', s.roi_pct || 0],
+    ['Базовая комиссия WB, %', s.avg_base_commission_pct || 0],
+    ['Реальная комиссия WB (с учётом СПП), %', s.avg_real_commission_pct || 0]
+  ];
+  sheet.addRow(['Показатель', 'Значение']);
+  wbExcelStyleHeaderRow(sheet.getRow(1));
+  rows.forEach(([label, value], idx) => {
+    const row = sheet.addRow([label, value]);
+    if (idx % 2 === 1) {
+      row.eachCell(cell => {
+        cell.fill = WB_EXCEL_ALT_FILL;
+      });
+    }
+    if (label.endsWith('%')) {
+      wbExcelApplyPctCell(row.getCell(2), value);
+    } else if (label.includes('шт')) {
+      wbExcelApplyQtyCell(row.getCell(2), value);
+    } else if (label !== 'Период') {
+      wbExcelApplyMoneyCell(row.getCell(2), value);
+    }
+  });
+  sheet.getColumn(1).width = 42;
+  sheet.getColumn(2).width = 22;
+}
+
+function buildWbReportExcelFilename(analytics) {
+  const p = analytics?.period || {};
+  const from = p.date_from || 'unknown';
+  const to = p.date_to || 'unknown';
+  return `bahmal_wb_report_${from}_${to}.xlsx`;
+}
+
+async function exportWbReportAnalyticsToExcel() {
+  const computed = wbAnalyticsState.computed;
+  if (!computed?.analytics) {
+    alert('Сначала постройте аналитику (себестоимость и кнопка «Показать аналитику»).');
+    return;
+  }
+  try {
+    ensureExcelJsReady();
+  } catch (e) {
+    alert(e?.message || String(e));
+    return;
+  }
+  const analytics = computed.analytics;
+  const settings = computed.settings || readWbAnalyticsSettings();
+  const workbook = new ExcelJS.Workbook();
+  wbExcelBuildProductsSheet(workbook, analytics, settings);
+  wbExcelBuildSummarySheet(workbook, analytics, settings);
+  try {
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    triggerBlobDownload(blob, buildWbReportExcelFilename(analytics));
+  } catch (e) {
+    console.error('exportWbReportAnalyticsToExcel:', e);
+    alert(e?.message || 'Не удалось сформировать Excel-файл.');
+  }
 }
 
 function isLegacyWbParsed(parsed) {
@@ -8946,6 +9256,11 @@ function paintWbAnalyticsDashboard(computed, parsed) {
     }
   }
 
+  const exportPartialWarn = document.getElementById('wbAnalyticsExportPartialWarn');
+  if (exportPartialWarn) {
+    exportPartialWarn.classList.toggle('hidden', !s.is_partial);
+  }
+
   const topRows = analytics.by_sku || [];
   const topBody = document.getElementById('wbTopProductsBody');
   if (topBody) {
@@ -8953,7 +9268,13 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ? topRows
           .map(r => {
             const gcls =
-              r.abc_class === 'A' ? 'wb-abc-a' : r.abc_class === 'B' ? 'wb-abc-b' : 'wb-abc-c';
+              r.abc_class === 'A'
+                ? 'wb-abc-a'
+                : r.abc_class === 'B'
+                  ? 'wb-abc-b'
+                  : r.abc_class === '?'
+                    ? 'wb-abc-unknown'
+                    : 'wb-abc-c';
             return `<tr>
               <td class="wb-cogs-article">${escapeHtml(r.sku)}<div class="analytics-abc-sku-inline">${escapeHtml(r.name || '')}</div></td>
               <td>${fmtAnalyticsInt(r.sales_qty)}</td>
@@ -9143,6 +9464,9 @@ function wireWbAnalyticsUiOnce() {
   });
   document.getElementById('wbAnalyticsNewFileBtn')?.addEventListener('click', () => {
     resetWbAnalyticsUi();
+  });
+  document.getElementById('wbAnalyticsExportExcelBtn')?.addEventListener('click', () => {
+    exportWbReportAnalyticsToExcel();
   });
   document.getElementById('wbReportSaveUzsBtn')?.addEventListener('click', () => {
     writeWbReportingUzs(wbReadOpsFromInputs());
