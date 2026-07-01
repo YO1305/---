@@ -8090,7 +8090,8 @@ function wbWorksheetToMatrix(ws) {
 
 /**
  * Официальная формула WB (раздел 2.2 спеки):
- * К перечислению = Цена_розничная × (1 − кВВ% / 100) − Компенсация_платёжных
+ * Продажа: К перечислению = Цена_розничная × (1 − кВВ% / 100) − Компенсация_платёжных
+ * Возврат: значение колонки «К перечислению…» как есть (в отчёте UZ — положительное, прибавляется к итогу).
  */
 function calculateWbRowPayout(priceRetail, kvvPct, compensation) {
   const retail = Math.abs(parseWBNumber(priceRetail) || 0);
@@ -8100,12 +8101,10 @@ function calculateWbRowPayout(priceRetail, kvvPct, compensation) {
 }
 
 function calculateWbRowPayoutForKind(kind, priceRetail, kvvPct, compensation, toTransfer) {
-  const formula = calculateWbRowPayout(priceRetail, kvvPct, compensation);
   if (kind === 'return') {
-    if (toTransfer < -0.0001) return toTransfer;
-    return -Math.abs(formula);
+    return parseWBNumber(toTransfer) || 0;
   }
-  return formula;
+  return calculateWbRowPayout(priceRetail, kvvPct, compensation);
 }
 
 function assertWbPayoutFormulaExamples() {
@@ -8120,6 +8119,11 @@ function assertWbPayoutFormulaExamples() {
       throw new Error(`WB payout formula test #${i + 1}: got ${got}, expected ${c.expected}`);
     }
   });
+  const returnCol = 125000.5;
+  const gotReturn = calculateWbRowPayoutForKind('return', 500000, 18, 1000, returnCol);
+  if (Math.abs(gotReturn - returnCol) > 0.01) {
+    throw new Error(`WB payout return test: got ${gotReturn}, expected column value ${returnCol}`);
+  }
 }
 
 try {
