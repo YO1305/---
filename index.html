@@ -1862,39 +1862,30 @@
               </section>
 
               <section class="wb-dash-section" aria-labelledby="wbCommissionRefHeading">
-                <h3 id="wbCommissionRefHeading" class="wb-dash-section-title">СПП и комиссия (справочно)</h3>
-                <p class="hint wb-dash-hint">Уже учтены в «К перечислению» — повторно из прибыли не вычитаются.</p>
+                <h3 id="wbCommissionRefHeading" class="wb-dash-section-title">Комиссия WB</h3>
+                <p class="hint wb-dash-hint">Сколько WB забрал как комиссию с продаж. Уже вычтено из «К перечислению» — повторно из прибыли не снимается.</p>
                 <div class="dashboard-grid">
-                  <article class="stat-card">
-                    <span class="stat-card__label">СПП (скидка платформы)</span>
-                    <span class="stat-card__value stat-card__value--accent" id="wbStatSppPct">0%</span>
-                    <span class="stat-card__meta" id="wbStatSppHint">Скидка WB покупателю — платит сам WB, не вы</span>
+                  <article class="stat-card stat-card--hero-net">
+                    <span class="stat-card__label">Комиссия WB, сум</span>
+                    <span class="stat-card__value stat-card__value--hero" id="wbStatCommissionSum">0 сум</span>
+                    <span class="stat-card__meta">Из колонки «Вознаграждение Вайлдберриз» отчёта</span>
                   </article>
                   <article class="stat-card">
-                    <span class="stat-card__label">Базовая комиссия кВВ</span>
-                    <span class="stat-card__value stat-card__value--accent" id="wbStatBaseKvvPct">0%</span>
-                    <span class="stat-card__meta">Ставка категории из колонки «Размер кВВ, %» (только продажи)</span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">Реальная комиссия WB (с учётом СПП)</span>
-                    <span class="stat-card__value stat-card__value--accent" id="wbStatRealKvvPct">0%</span>
-                    <span class="stat-card__meta" id="wbStatRealKvvHint">Фактическое удержание WB — «Итоговый кВВ без НДС, %»</span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">Компенсация платёжных</span>
-                    <span class="stat-card__value" id="wbStatCompensation">0 сум</span>
-                    <span class="stat-card__meta">Зависит от способа оплаты покупателя — уже в «К перечислению»</span>
+                    <span class="stat-card__label">Комиссия WB, %</span>
+                    <span class="stat-card__value stat-card__value--accent" id="wbStatCommissionPct">0%</span>
+                    <span class="stat-card__meta">Доля от вашей розничной цены (до скидки WB)</span>
                   </article>
                   <article class="stat-card hidden" aria-hidden="true">
+                    <span class="stat-card__value" id="wbStatSppPct">0%</span>
+                    <span class="stat-card__value" id="wbStatBaseKvvPct">0%</span>
+                    <span class="stat-card__value" id="wbStatRealKvvPct">0%</span>
+                    <span class="stat-card__value" id="wbStatCompensation">0</span>
                     <span class="stat-card__value" id="wbStatCommVv">0</span>
                     <span class="stat-card__value" id="wbStatCommVatVv">0</span>
                     <span class="stat-card__value" id="wbStatCommTotal">0</span>
                     <span id="wbStatCommVvPct"></span><span id="wbStatCommVatVvPct"></span><span id="wbStatCommTotalPct"></span>
-                  </article>
-                  <article class="stat-card">
-                    <span class="stat-card__label">Разница факт. − к перечислению</span>
+                    <span id="wbStatSppHint"></span><span id="wbStatRealKvvHint"></span>
                     <span class="stat-card__value" id="wbStatWithheldPct">0%</span>
-                    <span class="stat-card__meta">Не использовать как «комиссию» — смешивает СПП и кВВ</span>
                   </article>
                 </div>
               </section>
@@ -1972,9 +1963,8 @@
                         <th>Возврат</th>
                         <th>Выкуп %</th>
                         <th>Выручка факт.</th>
-                        <th>СПП %</th>
-                        <th>кВВ баз. %</th>
-                        <th>кВВ реал. %</th>
+                        <th>Комиссия WB</th>
+                        <th>Комиссия %</th>
                         <th>К перечислению</th>
                         <th>Итого к оплате</th>
                         <th>COGS</th>

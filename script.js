@@ -8668,7 +8668,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const wbCommissionSum = agg.commission_sum;
   const wbCommissionVvSum = agg.commission_vv_sum;
   const wbCommissionVatOnVvSum = agg.commission_vat_on_vv_sum;
-  const wbCommissionPct = revFact > 0.0001 ? (wbCommissionSum / revFact) * 100 : 0;
+  const wbCommissionPct = revRetail > 0.0001 ? (wbCommissionVvSum / revRetail) * 100 : 0;
+  const wbCommissionPctFact = revFact > 0.0001 ? (wbCommissionVvSum / revFact) * 100 : 0;
   const wbCommissionVvPct = revFact > 0.0001 ? (wbCommissionVvSum / revFact) * 100 : 0;
   const wbCommissionVatOnVvPct = revFact > 0.0001 ? (wbCommissionVatOnVvSum / revFact) * 100 : 0;
   const wbCompensationSum = agg.compensation_sum || 0;
@@ -8761,6 +8762,9 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         row.real_kvv_revenue_weight > 0.0001
           ? row.real_kvv_weighted_sum / row.real_kvv_revenue_weight
           : 0;
+      const commissionSku = Math.abs(row.commission_vv || 0);
+      const commissionPctSku =
+        row.revenue_retail > 0.0001 ? (commissionSku / row.revenue_retail) * 100 : 0;
       return {
         sku: row.displaySku || skuKey,
         skuKey,
@@ -8771,6 +8775,7 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         returns_qty: row.returns_qty,
         buyout_rate: buyoutSku,
         revenue_sum: revSku,
+        revenue_retail_sum: row.revenue_retail || 0,
         payout_sum: payoutSku,
         after_direct_costs_sum: afterDirectSku,
         cogs_sum: cogsSku,
@@ -8781,6 +8786,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
         net_profit_sum: profitSku,
         net_margin_pct: marginSku,
         spp_pct: sppSku,
+        commission_sum: commissionSku,
+        commission_pct: commissionPctSku,
         avg_base_commission_pct: baseKvvSku,
         avg_real_commission_pct: realKvvSku,
         wb_compensation_sum: row.compensation || 0,
@@ -8826,6 +8833,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       wb_commission_vv_sum: wbCommissionVvSum,
       wb_commission_vat_on_vv_sum: wbCommissionVatOnVvSum,
       wb_commission_pct: wbCommissionPct,
+      wb_commission_pct_retail: wbCommissionPct,
+      wb_commission_pct_fact: wbCommissionPctFact,
       wb_commission_vv_pct: wbCommissionVvPct,
       wb_commission_vat_on_vv_pct: wbCommissionVatOnVvPct,
       avg_spp_pct: sppPct,
@@ -8962,9 +8971,8 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     `НДС ${vatRatePct}% (сум)`,
     'Прибыль (сум)',
     'Маржа, %',
-    'Реальная комиссия WB, %',
-    'Базовая комиссия WB, %',
-    'СПП, %',
+    'Комиссия WB (сум)',
+    'Комиссия WB, %',
     'ABC'
   ];
   const sheet = workbook.addWorksheet('По товарам');
@@ -8992,9 +9000,8 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
       Math.round(r.vat_sum || 0),
       r.net_profit_sum != null ? Math.round(r.net_profit_sum) : null,
       r.net_margin_pct != null ? wbExcelPctValue(r.net_margin_pct) : null,
-      wbExcelPctValue(r.avg_real_commission_pct),
-      wbExcelPctValue(r.avg_base_commission_pct),
-      wbExcelPctValue(r.spp_pct),
+      Math.round(r.commission_sum || 0),
+      wbExcelPctValue(r.commission_pct),
       r.abc_class || ''
     ];
     sheet.addRow(rowValues);
@@ -9007,19 +9014,17 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     }
     const moneyEnd = extraExpenses ? 16 : 15;
     const marginCol = extraExpenses ? 17 : 16;
-    const realKvvCol = extraExpenses ? 18 : 17;
-    const baseKvvCol = extraExpenses ? 19 : 18;
-    const sppCol = extraExpenses ? 20 : 19;
-    const abcCol = extraExpenses ? 21 : 20;
+    const commissionSumCol = extraExpenses ? 18 : 17;
+    const commissionPctCol = extraExpenses ? 19 : 18;
+    const abcCol = extraExpenses ? 20 : 19;
     wbExcelApplyQtyCell(excelRow.getCell(4), r.orders_qty);
     wbExcelApplyQtyCell(excelRow.getCell(5), r.sales_qty);
     wbExcelApplyQtyCell(excelRow.getCell(6), r.returns_qty);
     wbExcelApplyPctCell(excelRow.getCell(7), r.buyout_rate);
     for (let c = 8; c <= moneyEnd; c++) wbExcelApplyMoneyCell(excelRow.getCell(c), excelRow.getCell(c).value);
     if (r.net_margin_pct != null) wbExcelApplyPctCell(excelRow.getCell(marginCol), r.net_margin_pct);
-    wbExcelApplyPctCell(excelRow.getCell(realKvvCol), r.avg_real_commission_pct);
-    wbExcelApplyPctCell(excelRow.getCell(baseKvvCol), r.avg_base_commission_pct);
-    wbExcelApplyPctCell(excelRow.getCell(sppCol), r.spp_pct);
+    wbExcelApplyMoneyCell(excelRow.getCell(commissionSumCol), r.commission_sum || 0);
+    wbExcelApplyPctCell(excelRow.getCell(commissionPctCol), r.commission_pct);
     const abcCell = excelRow.getCell(abcCol);
     const abcStyle = WB_EXCEL_ABC_STYLES[r.abc_class];
     if (abcStyle) {
@@ -9042,9 +9047,9 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
   const sumProfit = rows.reduce((acc, r) => acc + (r.net_profit_sum != null ? r.net_profit_sum : 0), 0);
   const totalBuyout = sumSales + sumReturns > 0 ? (sumSales / (sumSales + sumReturns)) * 100 : 0;
   const totalMargin = sumRevenue > 0.0001 ? (sumProfit / sumRevenue) * 100 : 0;
-  const totalRealKvv = wbExcelWeightedPct(rows, 'avg_real_commission_pct', 'revenue_sum');
-  const totalBaseKvv = wbExcelWeightedPct(rows, 'avg_base_commission_pct', 'revenue_sum');
-  const totalSpp = wbExcelWeightedPct(rows, 'spp_pct', 'revenue_sum');
+  const sumCommission = rows.reduce((acc, r) => acc + (r.commission_sum || 0), 0);
+  const sumRetail = rows.reduce((acc, r) => acc + (r.revenue_retail_sum || 0), 0);
+  const totalCommissionPct = sumRetail > 0.0001 ? (sumCommission / sumRetail) * 100 : 0;
 
   const totalRowNum = sheet.rowCount + 1;
   const totalRow = sheet.addRow([
@@ -9065,9 +9070,8 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     Math.round(sumVat),
     Math.round(sumProfit),
     wbExcelPctValue(totalMargin),
-    wbExcelPctValue(totalRealKvv),
-    wbExcelPctValue(totalBaseKvv),
-    wbExcelPctValue(totalSpp),
+    Math.round(sumCommission),
+    wbExcelPctValue(totalCommissionPct),
     ''
   ]);
   totalRow.font = { bold: true };
@@ -9077,18 +9081,16 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
   });
   const moneyEnd = extraExpenses ? 16 : 15;
   const marginCol = extraExpenses ? 17 : 16;
-  const realKvvCol = extraExpenses ? 18 : 17;
-  const baseKvvCol = extraExpenses ? 19 : 18;
-  const sppCol = extraExpenses ? 20 : 19;
+  const commissionSumCol = extraExpenses ? 18 : 17;
+  const commissionPctCol = extraExpenses ? 19 : 18;
   wbExcelApplyQtyCell(totalRow.getCell(4), sumOrders);
   wbExcelApplyQtyCell(totalRow.getCell(5), sumSales);
   wbExcelApplyQtyCell(totalRow.getCell(6), sumReturns);
   wbExcelApplyPctCell(totalRow.getCell(7), totalBuyout);
   for (let c = 8; c <= moneyEnd; c++) wbExcelApplyMoneyCell(totalRow.getCell(c), totalRow.getCell(c).value);
   wbExcelApplyPctCell(totalRow.getCell(marginCol), totalMargin);
-  wbExcelApplyPctCell(totalRow.getCell(realKvvCol), totalRealKvv);
-  wbExcelApplyPctCell(totalRow.getCell(baseKvvCol), totalBaseKvv);
-  wbExcelApplyPctCell(totalRow.getCell(sppCol), totalSpp);
+  wbExcelApplyMoneyCell(totalRow.getCell(commissionSumCol), sumCommission);
+  wbExcelApplyPctCell(totalRow.getCell(commissionPctCol), totalCommissionPct);
 
   wbExcelAutoFitColumns(sheet);
   return { sheet, totalRowNum };
@@ -9110,6 +9112,8 @@ function wbExcelBuildSummarySheet(workbook, analytics, settings) {
     ['Выручка розн. (сум)', Math.round(s.revenue_retail_sum || 0)],
     ['Выручка факт. (сум)', Math.round(s.revenue_fact_sum || 0)],
     ['К перечислению (сум)', Math.round(s.payout_sum || 0)],
+    ['Комиссия WB (сум)', Math.round(s.wb_commission_vv_sum || 0)],
+    ['Комиссия WB, % от розницы', s.wb_commission_pct_retail ?? s.wb_commission_pct ?? 0],
     ['Логистика (сум)', Math.round(s.wb_logistics_sum || 0)],
     ['Хранение (сум)', Math.round(s.wb_storage_sum || 0)],
     ...(extraExpenses ? [['Продвижение (сум)', Math.round(s.wb_deductions_sum || 0)]] : []),
@@ -9118,9 +9122,7 @@ function wbExcelBuildSummarySheet(workbook, analytics, settings) {
     [`НДС ${vatRatePct}% (сум)`, Math.round(s.vat_sum || 0)],
     ['Прибыль (сум)', Math.round(s.net_profit_sum || 0)],
     ['Маржа от факт.выручки, %', s.net_margin_pct || 0],
-    ['Рентабельность (ROI), %', s.roi_pct || 0],
-    ['Базовая комиссия WB, %', s.avg_base_commission_pct || 0],
-    ['Реальная комиссия WB (с учётом СПП), %', s.avg_real_commission_pct || 0]
+    ['Рентабельность (ROI), %', s.roi_pct || 0]
   ];
   sheet.addRow(['Показатель', 'Значение']);
   wbExcelStyleHeaderRow(sheet.getRow(1));
@@ -9400,36 +9402,20 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   setTxt('wbStatMargin', fmtWbPctLocale(s.net_margin_pct));
   setTxt('wbStatMarginRetail', fmtWbPctLocale(s.net_margin_retail_pct));
 
+  setTxt('wbStatCommissionSum', fmtWbRubLocale(s.wb_commission_vv_sum));
+  setTxt('wbStatCommissionPct', fmtWbPctLocale(s.wb_commission_pct_retail ?? s.wb_commission_pct));
   setTxt('wbStatSppPct', fmtWbPctLocale(s.avg_spp_pct ?? s.spp_pct));
   setTxt('wbStatBaseKvvPct', fmtWbPctLocale(s.avg_base_commission_pct));
   setTxt('wbStatRealKvvPct', fmtWbRealCommissionPctLocale(s.avg_real_commission_pct));
-  const realKvvMeta = document.getElementById('wbStatRealKvvHint');
-  if (realKvvMeta) {
-    const realPct = Number(s.avg_real_commission_pct);
-    realKvvMeta.textContent =
-      Number.isFinite(realPct) && realPct < -0.005
-        ? 'Отрицательное значение — WB снизил комиссию сильнее СПП и фактически доплатил вам'
-        : 'Фактическое удержание WB после СПП — колонка «Итоговый кВВ без НДС, %»';
-  }
   setTxt('wbStatCommVv', fmtWbRubLocale(s.wb_commission_vv_sum));
-  setTxt('wbStatCommVvPct', `${fmtWbPctLocale(s.wb_commission_vv_pct)} от факт. выручки (справочно)`);
   setTxt('wbStatCommVatVv', fmtWbRubLocale(s.wb_commission_vat_on_vv_sum));
-  setTxt('wbStatCommVatVvPct', `${fmtWbPctLocale(s.wb_commission_vat_on_vv_pct)} — налог WB, не ваш`);
   setTxt('wbStatCommTotal', fmtWbRubLocale(s.wb_commission_sum));
-  setTxt('wbStatCommTotalPct', `${fmtWbPctLocale(s.wb_commission_pct)} от факт. выручки (справочно)`);
   setTxt('wbStatCompensation', fmtWbRubLocale(s.compensation_sum ?? s.wb_compensation_sum));
   setTxt('wbStatWithheldPct', fmtWbPctLocale(s.wb_withheld_pct));
-  const sppHint = document.getElementById('wbStatSppHint');
-  if (sppHint) {
-    sppHint.textContent =
-      'Скидка, которую Wildberries сделал покупателю из своего бюджета. Вы её не платите — WB платит сам.';
-  }
   const commBdHint = document.getElementById('wbStatBdCommHint');
   if (commBdHint) {
-    const holdbacksNote = s.extra_expenses_enabled
-      ? 'продвижение, '
-      : '';
-    commBdHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Логистика, хранение, ${holdbacksNote}штрафы WB уже вычтены из «Итого к оплате». Базовая комиссия кВВ (${escapeHtml(fmtWbPctLocale(s.avg_base_commission_pct))}) учтена внутри «К перечислению».`;
+    const holdbacksNote = s.extra_expenses_enabled ? 'продвижение, ' : '';
+    commBdHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Логистика, хранение, ${holdbacksNote}штрафы WB уже вычтены из «Итого к оплате». Комиссия WB (${escapeHtml(fmtWbRubLocale(s.wb_commission_vv_sum))}) учтена внутри «К перечислению».`;
   }
   const afterDirectMeta = document.getElementById('wbStatAfterDirectMeta');
   if (afterDirectMeta) {
@@ -9536,9 +9522,8 @@ function paintWbAnalyticsDashboard(computed, parsed) {
               <td>${fmtAnalyticsInt(r.returns_qty)}</td>
               <td>${escapeHtml(fmtWbPctLocale(r.buyout_rate))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.revenue_sum))}</td>
-              <td>${escapeHtml(fmtWbPctLocale(r.spp_pct))}</td>
-              <td>${escapeHtml(fmtWbPctLocale(r.avg_base_commission_pct))}</td>
-              <td>${escapeHtml(fmtWbRealCommissionPctLocale(r.avg_real_commission_pct))}</td>
+              <td>${escapeHtml(fmtWbRubLocale(r.commission_sum))}</td>
+              <td>${escapeHtml(fmtWbPctLocale(r.commission_pct))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.payout_sum))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.after_direct_costs_sum))}</td>
               <td>${escapeHtml(fmtWbRubLocale(r.cogs_sum))}</td>
@@ -9548,7 +9533,7 @@ function paintWbAnalyticsDashboard(computed, parsed) {
             </tr>`;
           })
           .join('')
-      : '<tr><td colspan="14" class="muted">Нет данных по артикулам.</td></tr>';
+      : '<tr><td colspan="13" class="muted">Нет данных по артикулам.</td></tr>';
   }
   renderWbTopProfitChart(topRows);
 
@@ -9559,6 +9544,8 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Выручка фактическая (после СПП), сум', fmtWbRubLocale(s.revenue_fact_sum)],
       ['Выручка розничная (до СПП), сум', fmtWbRubLocale(s.revenue_retail_sum)],
       ['К перечислению за товар (продажи + возвраты), сум', fmtWbRubLocale(s.payout_sum)],
+      ['Комиссия WB, сум', fmtWbRubLocale(s.wb_commission_vv_sum)],
+      ['Комиссия WB, % от розничной цены', fmtWbPctLocale(s.wb_commission_pct_retail ?? s.wb_commission_pct)],
       [
         s.extra_expenses_enabled
           ? 'Итого к оплате (после логистики/хранения/продвижения/штрафов), сум'
