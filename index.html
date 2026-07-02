@@ -1778,7 +1778,7 @@
 
               <section class="wb-dash-section" aria-labelledby="wbInputsHeading">
                 <h3 id="wbInputsHeading" class="wb-dash-section-title">Настройки расчёта</h3>
-                <p class="hint wb-dash-hint">НДС Узбекистана — настраиваемая база (к перечислению или итого к оплате). Уточните с бухгалтером. Курс — только для пересчёта в ₽.</p>
+                <p class="hint wb-dash-hint">НДС Узбекистана — настраиваемая база (к перечислению или итого к оплате). Переключатель «Доп расходы» — только удержания за «ВБ.Продвижение». Курс — только для пересчёта в ₽.</p>
                 <div class="inputs-grid">
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Курс WB (сум за 1 ₽)</span>
@@ -1794,6 +1794,15 @@
                       <option value="payout">К перечислению (до логистики)</option>
                       <option value="after_direct_costs">Итого к оплате (после расходов WB)</option>
                     </select>
+                  </article>
+                  <article class="stat-card stat-card--input stat-card--toggle">
+                    <span class="stat-card__label">Доп расходы</span>
+                    <label class="wb-analytics-toggle" for="wbAnalyticsExtraExpenses">
+                      <input type="checkbox" id="wbAnalyticsExtraExpenses" />
+                      <span class="wb-analytics-toggle__track" aria-hidden="true"></span>
+                      <span class="wb-analytics-toggle__text" id="wbAnalyticsExtraExpensesLabel">Выкл — продвижение не учитывается</span>
+                    </label>
+                    <span class="stat-card__meta">Только удержания за «ВБ.Продвижение» из отчёта</span>
                   </article>
                   <article class="stat-card stat-card--input">
                     <span class="stat-card__label">Выведено денег (сум)</span>
@@ -1830,7 +1839,7 @@
                   <article class="stat-card">
                     <span class="stat-card__label">Итого к оплате (сум)</span>
                     <span class="stat-card__value" id="wbStatAfterDirect">0 сум</span>
-                    <span class="stat-card__meta">После логистики, хранения, удержаний и штрафов WB</span>
+                    <span class="stat-card__meta" id="wbStatAfterDirectMeta">После логистики, хранения и штрафов WB</span>
                   </article>
                   <article class="stat-card stat-card--hero-net">
                     <span class="stat-card__label">Чистая прибыль (сум)</span>
@@ -1895,7 +1904,7 @@
                 <div class="dashboard-grid">
                   <article class="stat-card"><span class="stat-card__label">Логистика (сум)</span><span class="stat-card__value" id="wbStatLog">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Хранение (сум)</span><span class="stat-card__value" id="wbStatStorage">0 сум</span></article>
-                  <article class="stat-card"><span class="stat-card__label">Удержания (сум)</span><span class="stat-card__value" id="wbStatDeductions">0 сум</span></article>
+                  <article class="stat-card hidden" id="wbStatDeductionsCard"><span class="stat-card__label">Продвижение (сум)</span><span class="stat-card__value" id="wbStatDeductions">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Штрафы (сум)</span><span class="stat-card__value" id="wbStatPen">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">НДС (сум)</span><span class="stat-card__value" id="wbStatVat">0 сум</span></article>
                   <article class="stat-card"><span class="stat-card__label">Себестоимость (сум)</span><span class="stat-card__value" id="wbStatCogs">0 сум</span></article>
@@ -1927,12 +1936,12 @@
                     </div>
                     <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Плата за хранение на складе WB за период.</p>
                   </article>
-                  <article class="wb-breakdown-item">
+                  <article class="wb-breakdown-item hidden" id="wbStatBdHoldbacksItem">
                     <div class="wb-breakdown-item-head">
-                      <h4 class="wb-breakdown-item-title">Удержания <span id="wbStatBdHoldbacks">0%</span></h4>
+                      <h4 class="wb-breakdown-item-title">Продвижение <span id="wbStatBdHoldbacks">0%</span></h4>
                       <span class="wb-breakdown-item-sum" id="wbStatBdHoldbacksSum">0 сум</span>
                     </div>
-                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Подписки, продвижение, минимальный платёж тарифных опций.</p>
+                    <p class="wb-breakdown-item-hint"><span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Удержания за услуги «ВБ.Продвижение» из колонки «Удержания» отчёта WB.</p>
                   </article>
                   <article class="wb-breakdown-item">
                     <div class="wb-breakdown-item-head">

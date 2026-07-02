@@ -2358,6 +2358,54 @@ body.dark-mode #wbAnalyticsResultsPanel .stat-card {
 #wbAnalyticsResultsPanel .stat-card--input {
   justify-content: flex-start;
 }
+#wbAnalyticsResultsPanel .stat-card--toggle .wb-analytics-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle__track {
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--border-color);
+  transition: background 0.2s ease;
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle__track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease;
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle input:checked + .wb-analytics-toggle__track {
+  background: #10b981;
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle input:checked + .wb-analytics-toggle__track::after {
+  transform: translateX(20px);
+}
+#wbAnalyticsResultsPanel .wb-analytics-toggle__text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
 #wbAnalyticsResultsPanel .stat-card--hero-net {
   border-color: rgba(16, 185, 129, 0.45);
   background: linear-gradient(160deg, rgba(16, 185, 129, 0.14) 0%, var(--card-bg) 58%);

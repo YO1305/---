@@ -7699,6 +7699,7 @@ const WB_SETTINGS_DEFAULT = {
   wb_exchange_rate: 168.54789,
   vat_rate: 0.12,
   vat_base: 'payout',
+  extra_expenses_enabled: false,
   currency: 'UZS',
   abc_thresholds: [0.8, 0.95]
 };
@@ -7712,6 +7713,7 @@ function readWbAnalyticsSettings() {
     wb_exchange_rate: Number.isFinite(rate) && rate > 0 ? rate : WB_SETTINGS_DEFAULT.wb_exchange_rate,
     vat_rate: Number.isFinite(vat) && vat >= 0 ? vat : WB_SETTINGS_DEFAULT.vat_rate,
     vat_base: vatBase,
+    extra_expenses_enabled: !!o.extra_expenses_enabled,
     currency: 'UZS',
     abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
   };
@@ -7723,7 +7725,9 @@ function writeWbAnalyticsSettings(patch) {
   writeStore(STORAGE_KEYS.wbAnalyticsSettings, {
     wb_exchange_rate: Math.max(0.0001, Number(patch.wb_exchange_rate ?? cur.wb_exchange_rate) || cur.wb_exchange_rate),
     vat_rate: Math.max(0, Math.min(1, Number(patch.vat_rate ?? cur.vat_rate) || cur.vat_rate)),
-    vat_base: patch.vat_base != null ? vatBase : cur.vat_base
+    vat_base: patch.vat_base != null ? vatBase : cur.vat_base,
+    extra_expenses_enabled:
+      patch.extra_expenses_enabled != null ? !!patch.extra_expenses_enabled : cur.extra_expenses_enabled
   });
 }
 
@@ -8067,6 +8071,40 @@ function wbFindRealKvvPctColumn(headerCells) {
   );
 }
 
+/** «Виды логистики, штрафов и корректировок ВВ» / «Обоснование для оплаты». */
+function wbFindOperationKindColumn(headerCells) {
+  let best = -1;
+  let bestScore = -1;
+  for (let i = 0; i < headerCells.length; i++) {
+    const n = normalizeHeaderKey(headerCells[i]);
+    if (!n) continue;
+    let score = 0;
+    if (n.includes('видылогистики') && n.includes('штрафов') && n.includes('корректировок')) score = 100;
+    else if (n.includes('видылогистики') && n.includes('корректировок')) score = 90;
+    else if (n.includes('обоснование') && n.includes('оплат')) score = 85;
+    else if (n.includes('видоперац')) score = 70;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Удержание за «ВБ.Продвижение» — по типу операции / обоснованию / комментарию в детализации WB. */
+function wbIsPromotionDeductionRow(docTypeRaw, operationKindRaw, subjectRaw, commentRaw) {
+  const parts = [docTypeRaw, operationKindRaw, subjectRaw, commentRaw]
+    .map(v => normalizeString(v))
+    .filter(Boolean);
+  if (!parts.length) return false;
+  const text = parts.join('');
+  return (
+    text.includes('продвижен') ||
+    text.includes('вбпродвижен') ||
+    (text.includes('реклам') && (text.includes('вб') || text.includes('wild')))
+  );
+}
+
 function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
   const headerRow = findWbReportHeaderRowIndex(matrix, maxScan);
   if (headerRow < 0) {
@@ -8115,6 +8153,8 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     headerCells,
     n => n === WB_REPORT_HEADER_KEYS.subject || n.includes('предмет')
   );
+  const operationKind = wbFindOperationKindColumn(headerCells);
+  const comment = wbFindColByHeaderPredicate(headerCells, n => n.includes('комментар'));
   const { idx: articleCol, label: articleHeaderUsed } = wbFindArticleColumn(headerCells);
 
   const col = {
@@ -8135,6 +8175,8 @@ function findWbReportHeaderAndColumns(matrix, maxScan = 15) {
     saleDate: saleDate >= 0 ? saleDate : -1,
     docType,
     subject: subject >= 0 ? subject : -1,
+    operationKind: operationKind >= 0 ? operationKind : -1,
+    comment: comment >= 0 ? comment : -1,
     article: articleCol,
     articleHeaderUsed:
       articleHeaderUsed || (articleCol >= 0 ? String(headerCells[articleCol] ?? '').replace(/\s+/g, ' ').trim() : ''),
@@ -8335,6 +8377,7 @@ function parseWbReport(arrayBuffer) {
     logistics_sum: 0,
     storage_sum: 0,
     deductions_sum: 0,
+    promotion_deductions_sum: 0,
     fines_sum: 0
   };
   const bySku = {};
@@ -8382,6 +8425,12 @@ function parseWbReport(arrayBuffer) {
     const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
     const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
     const fines = C.fines >= 0 ? cellAt(row, C.fines) : 0;
+    const operationKindCell =
+      C.operationKind >= 0 ? String(row[C.operationKind] ?? '').replace(/\s+/g, ' ').trim() : '';
+    const subjectCellEarly =
+      C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
+    const commentCell =
+      C.comment >= 0 ? String(row[C.comment] ?? '').replace(/\s+/g, ' ').trim() : '';
     const commissionVv = C.commissionVv >= 0 ? cellAt(row, C.commissionVv) : 0;
     const commissionVatOnVv = C.commissionVatOnVv >= 0 ? cellAt(row, C.commissionVatOnVv) : 0;
     const compensation = C.paymentCompensation >= 0 ? cellAt(row, C.paymentCompensation) : 0;
@@ -8403,6 +8452,12 @@ function parseWbReport(arrayBuffer) {
     aggregates.logistics_sum += logistics;
     aggregates.storage_sum += storage;
     aggregates.deductions_sum += deductions;
+    if (
+      Math.abs(deductions) > 0.0001 &&
+      wbIsPromotionDeductionRow(docTypeRaw, operationKindCell, subjectCellEarly, commentCell)
+    ) {
+      aggregates.promotion_deductions_sum += deductions;
+    }
     aggregates.fines_sum += fines;
 
     if (isSale) {
@@ -8591,7 +8646,8 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
   const payout = agg.payout_sum;
   const logistics = agg.logistics_sum;
   const storage = agg.storage_sum;
-  const holdbacks = agg.deductions_sum;
+  const extraExpenses = !!s.extra_expenses_enabled;
+  const holdbacks = extraExpenses ? agg.promotion_deductions_sum || 0 : 0;
   const fines = agg.fines_sum;
   const afterDirect = payout - logistics - storage - holdbacks - fines;
   const vatBaseAmount = vatBase === 'after_direct_costs' ? afterDirect : payout;
@@ -8783,6 +8839,9 @@ function calculateWbReportAnalytics(raw, enriched, settings) {
       wb_storage_sum: storage,
       wb_deductions_sum: holdbacks,
       holdbacks_sum: holdbacks,
+      wb_deductions_total_sum: agg.deductions_sum || 0,
+      promotion_deductions_sum: agg.promotion_deductions_sum || 0,
+      extra_expenses_enabled: extraExpenses,
       wb_fines_sum: fines,
       fines_sum: fines,
       cogs_sum: cogs,
@@ -8884,6 +8943,7 @@ function wbExcelApplyPctCell(cell, pctValue) {
 
 function wbExcelBuildProductsSheet(workbook, analytics, settings) {
   const vatRatePct = Math.round((settings?.vat_rate ?? 0.12) * 10000) / 100;
+  const extraExpenses = !!settings?.extra_expenses_enabled;
   const headers = [
     'Артикул',
     'Название',
@@ -8896,7 +8956,7 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     'К перечислению (сум)',
     'Логистика (сум)',
     'Хранение (сум)',
-    'Удержания (сум)',
+    ...(extraExpenses ? ['Продвижение (сум)'] : []),
     'Итого к оплате (сум)',
     'Себестоимость (сум)',
     `НДС ${vatRatePct}% (сум)`,
@@ -8914,7 +8974,7 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
 
   const rows = analytics.by_sku || [];
   rows.forEach((r, idx) => {
-    sheet.addRow([
+    const rowValues = [
       r.sku,
       r.name || '',
       r.subject || '',
@@ -8926,7 +8986,7 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
       Math.round(r.payout_sum || 0),
       Math.round(r.logistics_alloc || 0),
       Math.round(r.storage_alloc || 0),
-      Math.round(r.holdbacks_alloc || 0),
+      ...(extraExpenses ? [Math.round(r.holdbacks_alloc || 0)] : []),
       Math.round(r.after_direct_costs_sum || 0),
       Math.round(r.cogs_sum || 0),
       Math.round(r.vat_sum || 0),
@@ -8936,7 +8996,8 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
       wbExcelPctValue(r.avg_base_commission_pct),
       wbExcelPctValue(r.spp_pct),
       r.abc_class || ''
-    ]);
+    ];
+    sheet.addRow(rowValues);
     const excelRowNum = idx + 2;
     const excelRow = sheet.getRow(excelRowNum);
     if (idx % 2 === 1) {
@@ -8944,16 +9005,22 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
         cell.fill = WB_EXCEL_ALT_FILL;
       });
     }
+    const moneyEnd = extraExpenses ? 16 : 15;
+    const marginCol = extraExpenses ? 17 : 16;
+    const realKvvCol = extraExpenses ? 18 : 17;
+    const baseKvvCol = extraExpenses ? 19 : 18;
+    const sppCol = extraExpenses ? 20 : 19;
+    const abcCol = extraExpenses ? 21 : 20;
     wbExcelApplyQtyCell(excelRow.getCell(4), r.orders_qty);
     wbExcelApplyQtyCell(excelRow.getCell(5), r.sales_qty);
     wbExcelApplyQtyCell(excelRow.getCell(6), r.returns_qty);
     wbExcelApplyPctCell(excelRow.getCell(7), r.buyout_rate);
-    for (let c = 8; c <= 16; c++) wbExcelApplyMoneyCell(excelRow.getCell(c), excelRow.getCell(c).value);
-    if (r.net_margin_pct != null) wbExcelApplyPctCell(excelRow.getCell(17), r.net_margin_pct);
-    wbExcelApplyPctCell(excelRow.getCell(18), r.avg_real_commission_pct);
-    wbExcelApplyPctCell(excelRow.getCell(19), r.avg_base_commission_pct);
-    wbExcelApplyPctCell(excelRow.getCell(20), r.spp_pct);
-    const abcCell = excelRow.getCell(21);
+    for (let c = 8; c <= moneyEnd; c++) wbExcelApplyMoneyCell(excelRow.getCell(c), excelRow.getCell(c).value);
+    if (r.net_margin_pct != null) wbExcelApplyPctCell(excelRow.getCell(marginCol), r.net_margin_pct);
+    wbExcelApplyPctCell(excelRow.getCell(realKvvCol), r.avg_real_commission_pct);
+    wbExcelApplyPctCell(excelRow.getCell(baseKvvCol), r.avg_base_commission_pct);
+    wbExcelApplyPctCell(excelRow.getCell(sppCol), r.spp_pct);
+    const abcCell = excelRow.getCell(abcCol);
     const abcStyle = WB_EXCEL_ABC_STYLES[r.abc_class];
     if (abcStyle) {
       abcCell.fill = abcStyle.fill;
@@ -8992,7 +9059,7 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     Math.round(sumPayout),
     Math.round(sumLog),
     Math.round(sumStorage),
-    Math.round(sumHold),
+    ...(extraExpenses ? [Math.round(sumHold)] : []),
     Math.round(sumAfter),
     Math.round(sumCogs),
     Math.round(sumVat),
@@ -9008,15 +9075,20 @@ function wbExcelBuildProductsSheet(workbook, analytics, settings) {
     cell.fill = WB_EXCEL_TOTAL_FILL;
     cell.font = { ...(cell.font || {}), bold: true };
   });
+  const moneyEnd = extraExpenses ? 16 : 15;
+  const marginCol = extraExpenses ? 17 : 16;
+  const realKvvCol = extraExpenses ? 18 : 17;
+  const baseKvvCol = extraExpenses ? 19 : 18;
+  const sppCol = extraExpenses ? 20 : 19;
   wbExcelApplyQtyCell(totalRow.getCell(4), sumOrders);
   wbExcelApplyQtyCell(totalRow.getCell(5), sumSales);
   wbExcelApplyQtyCell(totalRow.getCell(6), sumReturns);
   wbExcelApplyPctCell(totalRow.getCell(7), totalBuyout);
-  for (let c = 8; c <= 16; c++) wbExcelApplyMoneyCell(totalRow.getCell(c), totalRow.getCell(c).value);
-  wbExcelApplyPctCell(totalRow.getCell(17), totalMargin);
-  wbExcelApplyPctCell(totalRow.getCell(18), totalRealKvv);
-  wbExcelApplyPctCell(totalRow.getCell(19), totalBaseKvv);
-  wbExcelApplyPctCell(totalRow.getCell(20), totalSpp);
+  for (let c = 8; c <= moneyEnd; c++) wbExcelApplyMoneyCell(totalRow.getCell(c), totalRow.getCell(c).value);
+  wbExcelApplyPctCell(totalRow.getCell(marginCol), totalMargin);
+  wbExcelApplyPctCell(totalRow.getCell(realKvvCol), totalRealKvv);
+  wbExcelApplyPctCell(totalRow.getCell(baseKvvCol), totalBaseKvv);
+  wbExcelApplyPctCell(totalRow.getCell(sppCol), totalSpp);
 
   wbExcelAutoFitColumns(sheet);
   return { sheet, totalRowNum };
@@ -9028,6 +9100,7 @@ function wbExcelBuildSummarySheet(workbook, analytics, settings) {
   const periodText =
     p.date_from && p.date_to ? `${p.date_from} — ${p.date_to}` : 'не определён';
   const vatRatePct = Math.round((settings?.vat_rate ?? 0.12) * 10000) / 100;
+  const extraExpenses = !!settings?.extra_expenses_enabled;
   const sheet = workbook.addWorksheet('Сводка периода');
   const rows = [
     ['Период', periodText],
@@ -9039,7 +9112,7 @@ function wbExcelBuildSummarySheet(workbook, analytics, settings) {
     ['К перечислению (сум)', Math.round(s.payout_sum || 0)],
     ['Логистика (сум)', Math.round(s.wb_logistics_sum || 0)],
     ['Хранение (сум)', Math.round(s.wb_storage_sum || 0)],
-    ['Удержания (сум)', Math.round(s.wb_deductions_sum || 0)],
+    ...(extraExpenses ? [['Продвижение (сум)', Math.round(s.wb_deductions_sum || 0)]] : []),
     ['Итого к оплате (сум)', Math.round(s.after_direct_costs_sum || 0)],
     ['Себестоимость (сум)', Math.round(s.cogs_sum || 0)],
     [`НДС ${vatRatePct}% (сум)`, Math.round(s.vat_sum || 0)],
@@ -9193,17 +9266,29 @@ function loadWbAnalyticsSettingsIntoInputs() {
   if (vatEl) vatEl.value = String(Math.round(s.vat_rate * 10000) / 100);
   const vatBaseEl = document.getElementById('wbAnalyticsVatBase');
   if (vatBaseEl) vatBaseEl.value = s.vat_base || 'payout';
+  const extraEl = document.getElementById('wbAnalyticsExtraExpenses');
+  if (extraEl) extraEl.checked = !!s.extra_expenses_enabled;
+  updateWbExtraExpensesToggleLabel(!!s.extra_expenses_enabled);
+}
+
+function updateWbExtraExpensesToggleLabel(enabled) {
+  const label = document.getElementById('wbAnalyticsExtraExpensesLabel');
+  if (label) {
+    label.textContent = enabled ? 'Вкл — учитываем продвижение' : 'Выкл — продвижение не учитывается';
+  }
 }
 
 function readWbAnalyticsSettingsFromInputs() {
   const rate = n(document.getElementById('wbAnalyticsExchangeRate')?.value);
   const vatPct = n(document.getElementById('wbAnalyticsVatPct')?.value);
   const vatBaseRaw = document.getElementById('wbAnalyticsVatBase')?.value;
+  const extraExpenses = !!document.getElementById('wbAnalyticsExtraExpenses')?.checked;
   const cur = readWbAnalyticsSettings();
   return {
     wb_exchange_rate: rate > 0 ? rate : cur.wb_exchange_rate,
     vat_rate: vatPct >= 0 ? vatPct / 100 : cur.vat_rate,
     vat_base: vatBaseRaw === 'after_direct_costs' ? 'after_direct_costs' : 'payout',
+    extra_expenses_enabled: extraExpenses,
     currency: 'UZS',
     abc_thresholds: WB_SETTINGS_DEFAULT.abc_thresholds
   };
@@ -9341,10 +9426,22 @@ function paintWbAnalyticsDashboard(computed, parsed) {
   }
   const commBdHint = document.getElementById('wbStatBdCommHint');
   if (commBdHint) {
-    commBdHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Логистика, хранение, удержания и штрафы WB уже вычтены из «Итого к оплате». Базовая комиссия кВВ (${escapeHtml(fmtWbPctLocale(s.avg_base_commission_pct))}) учтена внутри «К перечислению».`;
+    const holdbacksNote = s.extra_expenses_enabled
+      ? 'продвижение, '
+      : '';
+    commBdHint.innerHTML = `<span class="wb-breakdown-info-icon" aria-hidden="true">ℹ️</span> Логистика, хранение, ${holdbacksNote}штрафы WB уже вычтены из «Итого к оплате». Базовая комиссия кВВ (${escapeHtml(fmtWbPctLocale(s.avg_base_commission_pct))}) учтена внутри «К перечислению».`;
+  }
+  const afterDirectMeta = document.getElementById('wbStatAfterDirectMeta');
+  if (afterDirectMeta) {
+    afterDirectMeta.textContent = s.extra_expenses_enabled
+      ? 'После логистики, хранения, продвижения и штрафов WB'
+      : 'После логистики, хранения и штрафов WB';
   }
   setTxt('wbStatLog', fmtWbRubLocale(s.wb_logistics_sum));
   setTxt('wbStatStorage', fmtWbRubLocale(s.wb_storage_sum));
+  const showHoldbacks = !!s.extra_expenses_enabled;
+  document.getElementById('wbStatDeductionsCard')?.classList.toggle('hidden', !showHoldbacks);
+  document.getElementById('wbStatBdHoldbacksItem')?.classList.toggle('hidden', !showHoldbacks);
   setTxt('wbStatDeductions', fmtWbRubLocale(s.wb_deductions_sum));
   setTxt('wbStatPen', fmtWbRubLocale(s.wb_fines_sum));
   setTxt('wbStatVat', fmtWbRubLocale(s.vat_sum));
@@ -9462,7 +9559,12 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Выручка фактическая (после СПП), сум', fmtWbRubLocale(s.revenue_fact_sum)],
       ['Выручка розничная (до СПП), сум', fmtWbRubLocale(s.revenue_retail_sum)],
       ['К перечислению за товар (продажи + возвраты), сум', fmtWbRubLocale(s.payout_sum)],
-      ['Итого к оплате (после логистики/хранения/удержаний/штрафов), сум', fmtWbRubLocale(s.after_direct_costs_sum)],
+      [
+        s.extra_expenses_enabled
+          ? 'Итого к оплате (после логистики/хранения/продвижения/штрафов), сум'
+          : 'Итого к оплате (после логистики/хранения/штрафов), сум',
+        fmtWbRubLocale(s.after_direct_costs_sum)
+      ],
       ['СПП (скидка платформы), %', fmtWbPctLocale(s.avg_spp_pct ?? s.spp_pct)],
       ['Базовая комиссия кВВ, %', fmtWbPctLocale(s.avg_base_commission_pct)],
       ['Реальная комиссия WB (с учётом СПП), %', fmtWbRealCommissionPctLocale(s.avg_real_commission_pct)],
@@ -9470,7 +9572,9 @@ function paintWbAnalyticsDashboard(computed, parsed) {
       ['Удержано WB (справочно, не комиссия), %', fmtWbPctLocale(s.wb_withheld_pct)],
       ['Логистика, сум', fmtWbRubLocale(s.wb_logistics_sum)],
       ['Хранение, сум', fmtWbRubLocale(s.wb_storage_sum)],
-      ['Удержания, сум', fmtWbRubLocale(s.wb_deductions_sum)],
+      ...(s.extra_expenses_enabled
+        ? [['Продвижение (удержания), сум', fmtWbRubLocale(s.wb_deductions_sum)]]
+        : []),
       ['Штрафы, сум', fmtWbRubLocale(s.wb_fines_sum)],
       ['Себестоимость проданного, сум', fmtWbRubLocale(s.cogs_sum)],
       [`НДС ${Math.round(settings.vat_rate * 100)}% (${s.vat_base_used === 'after_direct_costs' ? 'от итого к оплате' : 'от к перечислению'}), сум`, fmtWbRubLocale(s.vat_sum)],
@@ -9632,6 +9736,7 @@ function wireWbAnalyticsUiOnce() {
     alert('Сохранено');
   });
   const wbSettingsRefreshPaint = () => {
+    updateWbExtraExpensesToggleLabel(!!document.getElementById('wbAnalyticsExtraExpenses')?.checked);
     writeWbAnalyticsSettings(readWbAnalyticsSettingsFromInputs());
     if (wbAnalyticsState.computed?.analytics && wbAnalyticsState.parsed) {
       const cogsMap =
@@ -9649,7 +9754,7 @@ function wireWbAnalyticsUiOnce() {
       }
     }
   };
-  ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct', 'wbAnalyticsVatBase'].forEach(id => {
+  ['wbAnalyticsExchangeRate', 'wbAnalyticsVatPct', 'wbAnalyticsVatBase', 'wbAnalyticsExtraExpenses'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', wbSettingsRefreshPaint);
     document.getElementById(id)?.addEventListener('change', wbSettingsRefreshPaint);
   });
