@@ -171,11 +171,12 @@
           <div class="unit-tab-wb-only hidden unit-wb-root">
             <div class="card wb-unit-intro-card">
               <h2>Юнит-экономика Wildberries</h2>
-              <p class="sub">Расчёт только в рублях (модель 2026). Себестоимость, артикул и литраж подставляются из вкладки «Себестоимость» кнопкой переноса.</p>
+              <p class="sub">Калиброванная модель по отчётам WB (SKU → категория → глобальная). Себестоимость, артикул и литраж — из «Себестоимость» кнопкой переноса.</p>
               <div class="wb-unit-meta-row">
                 <div class="wb-unit-meta-pill"><span class="k">Артикул 1С</span><strong id="wbUnitArticleVal">—</strong></div>
                 <div class="wb-unit-meta-pill"><span class="k">Литраж</span><strong id="wbUnitLitersDisplay">—</strong> л</div>
                 <div class="wb-unit-meta-pill"><span class="k">Себестоимость</span><strong id="wbUnitCostRubDisplay">—</strong></div>
+                <div class="wb-unit-meta-pill"><span class="k">Калибровка</span><strong id="wbUnitCalibSourceVal">—</strong></div>
               </div>
               <input type="hidden" id="wbUnitLitersHidden" value="0" />
             </div>
@@ -188,19 +189,19 @@
                 </div>
                 <div class="field">
                   <label for="wbSppPct">СПП от WB, %</label>
-                  <input id="wbSppPct" class="input" type="number" min="0" max="100" step="0.1" value="15" title="Скидка постоянного покупателя — вручную из кабинета" />
+                  <input id="wbSppPct" class="input" type="number" min="0" max="100" step="0.1" value="24.7" title="При переносе артикула подставляется из калибровки; можно править вручную" />
                 </div>
-                <div class="field">
-                  <label for="wbCommissionPct">Комиссия WB, %</label>
+                <div class="field hidden" aria-hidden="true">
+                  <label for="wbCommissionPct">Комиссия WB, % (устарело — в payout ratio)</label>
                   <input id="wbCommissionPct" class="input" type="number" min="0" step="0.01" value="25" />
                 </div>
                 <div class="field">
                   <label for="wbDrrPct">ДРР (реклама), %</label>
                   <input id="wbDrrPct" class="input" type="number" min="0" step="0.01" value="0" />
                 </div>
-                <div class="field">
-                  <label for="wbAcquiringPct">Эквайринг, %</label>
-                  <input id="wbAcquiringPct" class="input" type="number" min="0" max="100" step="0.01" value="3" title="По умолчанию 3% — можно изменить" />
+                <div class="field hidden" aria-hidden="true">
+                  <label for="wbAcquiringPct">Эквайринг, % (устарело — в payout ratio / BF)</label>
+                  <input id="wbAcquiringPct" class="input" type="number" min="0" max="100" step="0.01" value="3" />
                 </div>
                 <div class="field hidden" aria-hidden="true">
                   <label for="wbIrpIndex">Индекс ИРП</label>
@@ -219,7 +220,7 @@
                   <input id="wbCostRub" class="input" style="display:none" type="number" min="0" step="0.01" value="0" readonly title="Заполняется при переносе из калькуляции WB" />
                 </div>
               </div>
-              <p class="hint wb-unit-spp-hint" id="wbUnitBuyerHint">Цена для покупателя на сайте: <strong id="wbUnitBuyerPriceVal">—</strong> сум <span class="muted">(цена в кабинете минус СПП <span id="wbUnitSppPctEcho">15</span>%)</span></p>
+              <p class="hint wb-unit-spp-hint" id="wbUnitBuyerHint">Цена для покупателя на сайте: <strong id="wbUnitBuyerPriceVal">—</strong> сум <span class="muted">(цена в кабинете минус СПП <span id="wbUnitSppPctEcho">24,7</span>%)</span></p>
             </div>
 
             <details class="card wb-params-reference" open>
@@ -238,7 +239,7 @@
                 <div class="field">
                   <label for="wbVatPct">НДС, %</label>
                   <input type="number" id="wbVatPct" class="input" value="12" min="0" max="50" step="1" />
-                  <p class="hint">Исходящий НДС от цены продажи; входящий — от себестоимости (и услуг WB после подтверждения бухгалтером)</p>
+                  <p class="hint">Исходящий НДС от цены покупателя (после СПП); входящий — от себестоимости</p>
                 </div>
 
                 <div class="field">
@@ -307,12 +308,13 @@
               </div>
               <h3 class="wb-unit-breakdown-title">Детализация расходов</h3>
               <div class="list">
-                <div class="row"><div class="key">Комиссия WB</div><div class="val" id="wbUnitFeeVal">0 сум</div></div>
-                <div class="row"><div class="key" id="wbUnitAcqLabel">Эквайринг</div><div class="val" id="wbUnitAcqVal">0 сум</div></div>
+                <div class="row"><div class="key">Выплата за товар (после СПП × payout)</div><div class="val" id="wbUnitGoodsPayoutVal">—</div></div>
+                <div class="row"><div class="key" id="wbUnitFeeLabel">Удержание WB (payout)</div><div class="val" id="wbUnitFeeVal">0 сум</div></div>
+                <div class="row"><div class="key" id="wbUnitAcqLabel">Прочие удержания (BF)</div><div class="val" id="wbUnitAcqVal">0 сум</div></div>
                 <div class="row"><div class="key">Реклама (ДРР)</div><div class="val" id="wbUnitAdsVal">0 сум</div></div>
-                <div class="row"><div class="key">Логистика (Узбекистан)</div><div class="val" id="wbUnitLogisticsVal">0 сум</div></div>
+                <div class="row"><div class="key" id="wbUnitLogisticsLabel">Логистика</div><div class="val" id="wbUnitLogisticsVal">0 сум</div></div>
                 <div class="row"><div class="key">Хранение</div><div class="val" id="wbUnitStorageVal">0 сум</div></div>
-                <div class="row"><div class="key">К перечислению (сумма вывода)</div><div class="val" id="wbUnitToSellerVal">—</div></div>
+                <div class="row"><div class="key">К перечислению (после расходов WB)</div><div class="val" id="wbUnitToSellerVal">—</div></div>
                 <div class="row"><div class="key">Исходящий НДС</div><div class="val" id="wbUnitOutputVatVal">—</div></div>
                 <div class="row"><div class="key">Входящий НДС</div><div class="val" id="wbUnitInputVatVal">—</div></div>
                 <div class="row"><div class="key">НДС к оплате</div><div class="val" id="wbUnitVatPayableVal">—</div></div>
@@ -320,7 +322,7 @@
               </div>
             </div>
             <div class="card">
-              <div class="note">Прибыль: из цены в кабинете вычитаются комиссия, эквайринг (задаётся %), ДРР, логистика Узбекистана (11,3 + (л − 1) × 3,5) ₽/л с ИРП и выкупом 82%, себестоимость в ₽ и хранение. СПП влияет только на справочную цену для покупателя на сайте.</div>
+              <div class="note">Прибыль = выплата за товар (цена покупателя × sellerPayoutRatio) − логистика×coef − BF − ДРР − хранение − приёмка − себестоимость − НДС к оплате. Коэффициенты и BF — из калибровки по артикулу/категории (отчёты WB). НДС от цены после СПП.</div>
             </div>
           </div>
           <div class="unit-tab-uzum-only">
@@ -2056,7 +2058,8 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="assets/uzum-invoice-template.base64.js"></script>
-  <script src="script.js?v=wb-payout-fix-2026-07-02"></script>
+  <script src="wb-uz-calibration.js?v=2026-07-04"></script>
+  <script src="script.js?v=wb-calibrated-2026-07-04"></script>
   <script src="finances.js?v=2026-06-16o"></script>
 </body>
 </html>

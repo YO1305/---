@@ -1746,84 +1746,152 @@ function getWbLitersFromCostFormCm() {
   return (L * W * H) / 1000;
 }
 
-function computeWbUnitEconomics() {
-  // --- Цена и параметры WB ---
-  const priceUzs = Math.max(0, n(document.getElementById('wbPriceUzs')?.value));
-  const commPct = Math.max(0, n(document.getElementById('wbCommissionPct')?.value));
-  const drrPct = Math.max(0, n(document.getElementById('wbDrrPct')?.value));
-  const acquiPct = Math.max(0, Math.min(100, n(document.getElementById('wbAcquiringPct')?.value)));
-  const sppPct = Math.max(0, Math.min(100, n(document.getElementById('wbSppPct')?.value)));
+/** Артикул 1С из юнит-вкладки WB (для SKU-калибровки). */
+function getWbUnitArticleSku() {
+  const artEl = document.getElementById('wbUnitArticleVal');
+  const art = String(artEl?.textContent || '').trim();
+  if (art && art !== '—') return art;
+  const fromCost = String(document.getElementById('productArticle1c')?.value || '').trim();
+  if (fromCost) return fromCost;
+  return String(state.linkedProduct?.sku || '').trim();
+}
 
-  // --- Параметры справочника ---
-  const buyoutPct = Math.max(1, Math.min(100, n(document.getElementById('wbBuyoutPct')?.value) || WB_UZ_DEFAULTS.buyoutPct));
+/**
+ * Юнит-экономика WB UZ — калиброванная модель (отчёты WB + цены + себестоимость).
+ * Логика: wb-uz-calibration.js → computeWbUnitEconomicsCalibrated + forecastStorageCalibrated.
+ */
+function computeWbUnitEconomics() {
+  const priceUzs = Math.max(0, n(document.getElementById('wbPriceUzs')?.value));
+  const drrPct = Math.max(0, n(document.getElementById('wbDrrPct')?.value));
+  const sppPctUi = Math.max(0, Math.min(100, n(document.getElementById('wbSppPct')?.value)));
+  const buyoutPctUi = Math.max(1, Math.min(100, n(document.getElementById('wbBuyoutPct')?.value) || WB_UZ_DEFAULTS.buyoutPct));
   const vatPct = Math.max(0, n(document.getElementById('wbVatPct')?.value) || WB_UZ_DEFAULTS.vatPct);
   const storageTariff = Math.max(0, n(document.getElementById('wbStorageTariff')?.value) || WB_UZ_DEFAULTS.storageTariff);
   const turnoverDays = Math.max(0, n(document.getElementById('wbTurnoverDays')?.value));
   const returnFixed = Math.max(0, n(document.getElementById('wbReturnFixed')?.value) || WB_UZ_DEFAULTS.returnFixed);
   const safetyPct = Math.max(0, n(document.getElementById('wbSafetyPct')?.value) || WB_UZ_DEFAULTS.safetyMarginPct);
   const exchangeRate = Math.max(1, n(document.getElementById('wbExchangeRate')?.value) || WB_UZ_DEFAULTS.exchangeRate);
+  const acceptanceUzs = Math.max(0, n(document.getElementById('wbAcceptanceUzs')?.value));
 
-  // --- Себестоимость ---
-  // Приоритет: поле wbCostUzs → wbCostRub * курс (для совместимости с переносом из себестоимости)
   const costRubRaw = Math.max(0, n(document.getElementById('wbCostRub')?.value));
   const costUzsRaw = Math.max(0, n(document.getElementById('wbCostUzs')?.value));
   const costUzs = costUzsRaw > 0 ? costUzsRaw : Math.round(costRubRaw * exchangeRate);
-
-  // --- Габариты и объём ---
-  // Объём берём из скрытого поля (туда пишет перенос из себестоимости)
   const liters = Math.max(0, n(document.getElementById('wbUnitLitersHidden')?.value));
 
-  // --- Расчёт расходов ---
-  const fee = Math.round(priceUzs * commPct / 100);
-  const acquiring = Math.round(priceUzs * acquiPct / 100);
-  const ads = Math.round(priceUzs * drrPct / 100);
-
-  // Логистика (наша формула из отчёта WB, в сумах)
-  const buyoutRate = buyoutPct / 100;
-  const totalLogUzs = liters > 0
-    ? wbUzLogistics(liters, buyoutRate, safetyPct, returnFixed)
-    : 0;
-
-  // Хранение
-  const storageTotal = Math.round(liters * storageTariff * turnoverDays);
-
-  // Платная приёмка (если есть поле)
-  const acceptanceUzs = Math.max(0, n(document.getElementById('wbAcceptanceUzs')?.value));
-
-  // --- К перечислению (сумма вывода) ---
-  const toSeller = priceUzs - fee - acquiring - ads - totalLogUzs - storageTotal - acceptanceUzs;
-
-  // --- НДС: исходящий от цены продажи − входящий (себестоимость [+ услуги WB]) ---
-  const saleVatMode = 'with';
-  const outputVat = Math.round(vatFromAmount(priceUzs, vatPct, saleVatMode));
+  const sku = getWbUnitArticleSku();
   const useProductCost = document.getElementById('useProductCost')?.checked;
   const linkedMode = state.linkedProduct.active && (useProductCost || state.linkedProduct.inputVat > 0.0001);
-  const inputVatCost = linkedMode
-    ? state.linkedProduct.inputVat
-    : Math.round(vatFromAmount(costUzs, vatPct, 'with'));
-  const wbServicesTotal = fee + acquiring + ads + totalLogUzs + storageTotal + acceptanceUzs;
-  const inputVatServices = CREDIT_VAT_ON_WB_SERVICES
-    ? Math.round(vatFromAmount(wbServicesTotal, vatPct, 'with'))
-    : 0;
-  const inputVat = inputVatCost + inputVatServices;
-  const vatPayable = outputVat - inputVat;
+  const inputVatLinked = linkedMode ? state.linkedProduct.inputVat : null;
 
-  // --- Итог ---
-  const netProfit = toSeller - costUzs - vatPayable;
-  const marginPct = priceUzs > 0 ? (netProfit / priceUzs) * 100 : 0;
+  const cal = typeof getWbCalibration === 'function'
+    ? getWbCalibration(sku, '')
+    : { source: 'GLOBAL', logisticsCoef: 1, bfPerUnit: 0, sellerPayoutRatio: 1, sppPct: sppPctUi, buyoutPct: buyoutPctUi };
+
+  // СПП / выкуп: из UI; если поле пустое — из калибровки
+  const sppPct = Number.isFinite(sppPctUi) && document.getElementById('wbSppPct')?.value !== ''
+    ? sppPctUi
+    : Math.max(0, Number(cal.sppPct) || 0);
+  const buyoutPct = Number.isFinite(buyoutPctUi) ? buyoutPctUi : Math.max(1, Number(cal.buyoutPct) || WB_UZ_DEFAULTS.buyoutPct);
+
+  let c;
+  if (typeof computeWbUnitEconomicsCalibrated === 'function') {
+    c = computeWbUnitEconomicsCalibrated({
+      sku,
+      category: cal.category || '',
+      priceUzs,
+      drrPct,
+      liters,
+      costUzs,
+      inputVat: inputVatLinked != null ? inputVatLinked : undefined,
+      safetyPct,
+      returnFixed,
+      buyoutPct,
+      sppPct,
+      vatPct,
+      logisticsCoef: cal.logisticsCoef,
+      bfPerUnit: cal.bfPerUnit,
+      sellerPayoutRatio: cal.sellerPayoutRatio,
+    });
+  } else {
+    // Fallback без файла калибровки (старая схема)
+    const fee = Math.round(priceUzs * n(document.getElementById('wbCommissionPct')?.value) / 100);
+    const acquiring = Math.round(priceUzs * n(document.getElementById('wbAcquiringPct')?.value) / 100);
+    const ads = Math.round(priceUzs * drrPct / 100);
+    const totalLogUzs = liters > 0 ? wbUzLogistics(liters, buyoutPct / 100, safetyPct, returnFixed) : 0;
+    const storageTotal = Math.round(liters * storageTariff * turnoverDays);
+    const toSeller = priceUzs - fee - acquiring - ads - totalLogUzs - storageTotal - acceptanceUzs;
+    const outputVat = Math.round(vatFromAmount(priceUzs, vatPct, 'with'));
+    const inputVatCost = inputVatLinked != null
+      ? inputVatLinked
+      : Math.round(vatFromAmount(costUzs, vatPct, 'with'));
+    const vatPayable = outputVat - inputVatCost;
+    const netProfit = toSeller - costUzs - vatPayable;
+    return {
+      priceUzs, sppPct, acquiPct: 0, buyerPrice: Math.round(priceUzs * (1 - sppPct / 100)),
+      fee, acquiring, ads, totalLogUzs, storageTotal, acceptanceUzs, toSeller,
+      outputVat, inputVatCost, inputVatServices: 0, inputVat: inputVatCost, vatPayable,
+      costUzs, costRubRaw, netProfit,
+      marginPct: priceUzs > 0 ? (netProfit / priceUzs) * 100 : 0,
+      roiPct: costUzs > 0 ? (netProfit / costUzs) * 100 : 0,
+      liters, buyoutPct, turnoverDays, exchangeRate,
+      calibrationSource: 'FALLBACK', sellerPayoutRatio: 1, logisticsCoef: 1, bf: 0, toSellerGoods: toSeller,
+    };
+  }
+
+  const storageTotal = typeof forecastStorageCalibrated === 'function'
+    ? forecastStorageCalibrated({
+      priceUzs: c.buyerPriceAfterSpp || priceUzs,
+      liters,
+      turnoverDays,
+      storageTariff,
+      useActualFallback: true,
+    })
+    : Math.round(liters * storageTariff * turnoverDays);
+
+  // Патч v2-storage: хранение и приёмка вычитаются из прибыли
+  const netProfit = c.netProfit - storageTotal - acceptanceUzs;
+  const buyerPrice = c.buyerPriceAfterSpp;
+  const marginPct = buyerPrice > 0 ? (netProfit / buyerPrice) * 100 : 0;
   const roiPct = costUzs > 0 ? (netProfit / costUzs) * 100 : 0;
-  const buyerPrice = priceUzs > 0 ? Math.round(priceUzs * (1 - sppPct / 100)) : 0;
+
+  // Удержание WB (комиссия+эквайринг в старой модели) = цена покупателя − выплата за товар
+  const fee = Math.round(buyerPrice - c.toSellerGoods);
+  const bf = Math.round(c.bf || 0);
+  const toSeller = c.toSellerGoods - c.logistics - bf - c.ads - storageTotal - acceptanceUzs;
 
   return {
-    priceUzs, sppPct, acquiPct, buyerPrice,
-    fee, acquiring, ads,
-    totalLogUzs, storageTotal, acceptanceUzs,
+    priceUzs,
+    sppPct: c.sppPct,
+    acquiPct: 0,
+    buyerPrice,
+    fee,
+    acquiring: bf,
+    ads: c.ads,
+    totalLogUzs: c.logistics,
+    storageTotal,
+    acceptanceUzs,
     toSeller,
-    outputVat, inputVatCost, inputVatServices, inputVat, vatPayable,
-    costUzs, costRubRaw,
-    netProfit, marginPct, roiPct,
-    liters, buyoutPct, turnoverDays,
+    toSellerGoods: c.toSellerGoods,
+    outputVat: c.outputVat,
+    inputVatCost: c.inputVatCost,
+    inputVatServices: 0,
+    inputVat: c.inputVatCost,
+    vatPayable: c.vatPayable,
+    costUzs,
+    costRubRaw,
+    netProfit,
+    marginPct,
+    roiPct,
+    liters,
+    buyoutPct,
+    turnoverDays,
     exchangeRate,
+    calibrationSource: c.calibrationSource || cal.source || 'GLOBAL',
+    sellerPayoutRatio: c.sellerPayoutRatio,
+    logisticsCoef: c.logisticsCoef,
+    baseLogistics: c.baseLogistics,
+    bf,
+    sku: c.sku || sku,
   };
 }
 
@@ -1846,6 +1914,17 @@ function renderWbUnitEconomics() {
   const costDisp = document.getElementById('wbUnitCostRubDisplay');
   if (costDisp) costDisp.textContent = u.costUzs > 0 ? fmt(u.costUzs) : '—';
 
+  const calSrcEl = document.getElementById('wbUnitCalibSourceVal');
+  if (calSrcEl) {
+    const srcMap = { SKU: 'SKU', CATEGORY: 'категория', GLOBAL: 'глобальная', FALLBACK: 'старая' };
+    const srcLabel = srcMap[u.calibrationSource] || u.calibrationSource || '—';
+    const ratio = Number(u.sellerPayoutRatio);
+    const coef = Number(u.logisticsCoef);
+    const ratioStr = Number.isFinite(ratio) ? ratio.toFixed(3) : '—';
+    const coefStr = Number.isFinite(coef) ? coef.toFixed(3) : '—';
+    calSrcEl.textContent = `${srcLabel} · payout ${ratioStr} · log×${coefStr}`;
+  }
+
   set('wbUnitNetProfitVal', fmt(u.netProfit));
   const netEl = document.getElementById('wbUnitNetProfitVal');
   if (netEl) {
@@ -1857,20 +1936,29 @@ function renderWbUnitEconomics() {
   set('wbUnitMarginVal', fmtPctLocal(u.marginPct));
   set('wbUnitRoiVal', fmtPctLocal(u.roiPct));
   set('wbUnitFeeVal', fmt(u.fee));
-  const acqLab = document.getElementById('wbUnitAcqLabel');
-  if (acqLab) {
-    const ap = Math.round(u.acquiPct * 100) / 100;
-    const apStr = Math.abs(ap - Math.round(ap)) < 1e-9 ? String(Math.round(ap)) : ap.toFixed(2).replace('.', ',');
-    acqLab.textContent = `Эквайринг (${apStr}%)`;
+  const feeLab = document.getElementById('wbUnitFeeLabel');
+  if (feeLab) {
+    const ratio = Number(u.sellerPayoutRatio);
+    const ratioStr = Number.isFinite(ratio) ? ratio.toFixed(3) : '—';
+    feeLab.textContent = `Удержание WB (payout ${ratioStr})`;
   }
+  const acqLab = document.getElementById('wbUnitAcqLabel');
+  if (acqLab) acqLab.textContent = 'Прочие удержания (BF)';
   set('wbUnitAcqVal', fmt(u.acquiring));
   set('wbUnitAdsVal', fmt(u.ads));
+  const logLab = document.getElementById('wbUnitLogisticsLabel');
+  if (logLab) {
+    const coef = Number(u.logisticsCoef);
+    const coefStr = Number.isFinite(coef) ? coef.toFixed(3) : '1';
+    logLab.textContent = `Логистика (×${coefStr})`;
+  }
   set('wbUnitLogisticsVal', fmt(u.totalLogUzs));
   set('wbUnitStorageVal', fmt(u.storageTotal));
   set('wbUnitOutputVatVal', fmt(u.outputVat));
   set('wbUnitInputVatVal', fmt(u.inputVat));
   set('wbUnitVatPayableVal', fmt(u.vatPayable));
   set('wbUnitToSellerVal', fmt(u.toSeller));
+  set('wbUnitGoodsPayoutVal', u.toSellerGoods != null ? fmt(u.toSellerGoods) : '—');
   set('wbUnitCostLineVal', fmt(u.costUzs));
 
   const buyerVal = document.getElementById('wbUnitBuyerPriceVal');
@@ -2820,6 +2908,16 @@ document.getElementById('sendToUnitBtn')?.addEventListener('click', () => {
     const costUzsEl = document.getElementById('wbCostUzs');
     if (costUzsEl && costRub > 0) {
       costUzsEl.value = String(Math.round(costRub * uxRate));
+    }
+    // Калибровка по артикулу 1С: СПП и % выкупа из отчётов WB
+    if (typeof getWbCalibration === 'function' && art) {
+      const cal = getWbCalibration(art, '');
+      if (cal.buyoutPct != null && Number.isFinite(Number(cal.buyoutPct))) {
+        setValAndDispatch('wbBuyoutPct', Math.round(Number(cal.buyoutPct) * 10) / 10);
+      }
+      if (cal.sppPct != null && Number.isFinite(Number(cal.sppPct))) {
+        setValAndDispatch('wbSppPct', Math.round(Number(cal.sppPct) * 10) / 10);
+      }
     }
   }
   const sku = document.getElementById('sku').value.trim() || '—';
