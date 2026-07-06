@@ -1756,12 +1756,29 @@ function getWbUnitArticleSku() {
   return String(state.linkedProduct?.sku || '').trim();
 }
 
+/** Сопоставление категорий из wb-uz-calibration.js с именами в patch v4. */
+function mapWbCategoryToV4(category) {
+  const map = {
+    'Простыни 160x200': 'Простыни 160×200',
+    'Наволочки 70x70': 'Наволочки 70×70',
+    'Наволочки 50x70': 'Наволочки 50×70',
+    'Простыни 140x200': 'Простыни 140×200',
+    'Простыни 180x200': 'Простыни 180×200',
+    'Постельное Kids': 'Kids',
+    'Постельное сатин/stripe': 'Сатин / stripe',
+  };
+  const c = String(category || '').trim();
+  return map[c] || c;
+}
+
 /**
- * Юнит-экономика WB UZ — калиброванная модель (отчёты WB + цены + себестоимость).
- * Логика: wb-uz-calibration.js → computeWbUnitEconomicsCalibrated + forecastStorageCalibrated.
+ * Юнит-экономика WB UZ — patch v4: комиссия только из commPct, AH/P — справочно.
+ * Логика: wb-uz-calibration-v4.js → computeWbUnitEconomicsForecastV4.
  */
 function computeWbUnitEconomics() {
   const priceUzs = Math.max(0, n(document.getElementById('wbPriceUzs')?.value));
+  const commPct = Math.max(0, n(document.getElementById('wbCommissionPct')?.value));
+  const acquiPct = Math.max(0, Math.min(100, n(document.getElementById('wbAcquiringPct')?.value)));
   const drrPct = Math.max(0, n(document.getElementById('wbDrrPct')?.value));
   const sppPctUi = Math.max(0, Math.min(100, n(document.getElementById('wbSppPct')?.value)));
   const buyoutPctUi = Math.max(1, Math.min(100, n(document.getElementById('wbBuyoutPct')?.value) || WB_UZ_DEFAULTS.buyoutPct));
@@ -1783,115 +1800,105 @@ function computeWbUnitEconomics() {
   const linkedMode = state.linkedProduct.active && (useProductCost || state.linkedProduct.inputVat > 0.0001);
   const inputVatLinked = linkedMode ? state.linkedProduct.inputVat : null;
 
-  const cal = typeof getWbCalibration === 'function'
+  const legacyCal = typeof getWbCalibration === 'function'
     ? getWbCalibration(sku, '')
-    : { source: 'GLOBAL', logisticsCoef: 1, bfPerUnit: 0, sellerPayoutRatio: 1, sppPct: sppPctUi, buyoutPct: buyoutPctUi };
+    : { source: 'GLOBAL', logisticsCoef: 1, bfPerUnit: 0, sppPct: sppPctUi, buyoutPct: buyoutPctUi };
 
-  // СПП / выкуп: из UI; если поле пустое — из калибровки
   const sppPct = Number.isFinite(sppPctUi) && document.getElementById('wbSppPct')?.value !== ''
     ? sppPctUi
-    : Math.max(0, Number(cal.sppPct) || 0);
-  const buyoutPct = Number.isFinite(buyoutPctUi) ? buyoutPctUi : Math.max(1, Number(cal.buyoutPct) || WB_UZ_DEFAULTS.buyoutPct);
+    : Math.max(0, Number(legacyCal.sppPct) || 0);
+  const buyoutPct = Number.isFinite(buyoutPctUi) ? buyoutPctUi : Math.max(1, Number(legacyCal.buyoutPct) || WB_UZ_DEFAULTS.buyoutPct);
+  const category = mapWbCategoryToV4(legacyCal.category || '');
 
-  let c;
-  if (typeof computeWbUnitEconomicsCalibrated === 'function') {
-    c = computeWbUnitEconomicsCalibrated({
+  if (typeof computeWbUnitEconomicsForecastV4 === 'function') {
+    const c = computeWbUnitEconomicsForecastV4({
       sku,
-      category: cal.category || '',
+      category,
       priceUzs,
+      commPct,
+      acquiPct,
       drrPct,
-      liters,
-      costUzs,
-      inputVat: inputVatLinked != null ? inputVatLinked : undefined,
+      sppPct,
+      buyoutPct,
+      vatPct,
+      storageTariff,
+      turnoverDays,
       safetyPct,
       returnFixed,
-      buyoutPct,
-      sppPct,
-      vatPct,
-      logisticsCoef: cal.logisticsCoef,
-      bfPerUnit: cal.bfPerUnit,
-      sellerPayoutRatio: cal.sellerPayoutRatio,
+      exchangeRate,
+      costRub: costRubRaw,
+      costUzs: costUzsRaw > 0 ? costUzsRaw : undefined,
+      liters,
+      acceptanceUzs,
+      inputVat: inputVatLinked != null ? inputVatLinked : undefined,
+      logisticsCoefOverride: legacyCal.logisticsCoef,
+      bfPerUnitOverride: legacyCal.bfPerUnit,
     });
-  } else {
-    // Fallback без файла калибровки (старая схема)
-    const fee = Math.round(priceUzs * n(document.getElementById('wbCommissionPct')?.value) / 100);
-    const acquiring = Math.round(priceUzs * n(document.getElementById('wbAcquiringPct')?.value) / 100);
-    const ads = Math.round(priceUzs * drrPct / 100);
-    const totalLogUzs = liters > 0 ? wbUzLogistics(liters, buyoutPct / 100, safetyPct, returnFixed) : 0;
-    const storageTotal = Math.round(liters * storageTariff * turnoverDays);
-    const toSeller = priceUzs - fee - acquiring - ads - totalLogUzs - storageTotal - acceptanceUzs;
-    const outputVat = Math.round(vatFromAmount(priceUzs, vatPct, 'with'));
-    const inputVatCost = inputVatLinked != null
-      ? inputVatLinked
-      : Math.round(vatFromAmount(costUzs, vatPct, 'with'));
-    const vatPayable = outputVat - inputVatCost;
-    const netProfit = toSeller - costUzs - vatPayable;
+
     return {
-      priceUzs, sppPct, acquiPct: 0, buyerPrice: Math.round(priceUzs * (1 - sppPct / 100)),
-      fee, acquiring, ads, totalLogUzs, storageTotal, acceptanceUzs, toSeller,
-      outputVat, inputVatCost, inputVatServices: 0, inputVat: inputVatCost, vatPayable,
-      costUzs, costRubRaw, netProfit,
-      marginPct: priceUzs > 0 ? (netProfit / priceUzs) * 100 : 0,
-      roiPct: costUzs > 0 ? (netProfit / costUzs) * 100 : 0,
-      liters, buyoutPct, turnoverDays, exchangeRate,
-      calibrationSource: 'FALLBACK', sellerPayoutRatio: 1, logisticsCoef: 1, bf: 0, toSellerGoods: toSeller,
+      priceUzs: c.priceUzs,
+      commPct: c.commPct,
+      sppPct: c.sppPct,
+      acquiPct: c.acquiPct,
+      buyerPrice: c.buyerPrice,
+      fee: c.commissionTariffUzs,
+      acquiring: c.acquiringUzs,
+      bf: c.bfForecastUzs,
+      ads: c.adsUzs,
+      totalLogUzs: c.logisticsUzs,
+      baseLogistics: c.baseLogisticsUzs,
+      storageTotal: c.storageTotalUzs,
+      acceptanceUzs: c.acceptanceUzs,
+      toSeller: c.toSellerForecast,
+      outputVat: c.outputVat,
+      inputVatCost: c.inputVatCost,
+      inputVatServices: c.inputVatServices,
+      inputVat: c.inputVat,
+      vatPayable: c.vatPayable,
+      costUzs: c.costUzs,
+      costRubRaw,
+      netProfit: c.netProfit,
+      marginPct: c.marginPct,
+      roiPct: c.roiPct,
+      liters,
+      buyoutPct,
+      turnoverDays,
+      exchangeRate,
+      calibrationSource: c.calibrationSource || 'global',
+      logisticsCoef: c.logisticsCoef,
+      historicalSellerPayoutRatio: c.historicalSellerPayoutRatio,
+      historicalPayoutByRatio: c.historicalPayoutByRatio,
+      historicalEffectiveGoodsDeductionPct: c.historicalEffectiveGoodsDeductionPct,
+      sku,
     };
   }
 
-  const storageTotal = typeof forecastStorageCalibrated === 'function'
-    ? forecastStorageCalibrated({
-      priceUzs: c.buyerPriceAfterSpp || priceUzs,
-      liters,
-      turnoverDays,
-      storageTariff,
-      useActualFallback: true,
-    })
-    : Math.round(liters * storageTariff * turnoverDays);
-
-  // Патч v2-storage: хранение и приёмка вычитаются из прибыли
-  const netProfit = c.netProfit - storageTotal - acceptanceUzs;
-  const buyerPrice = c.buyerPriceAfterSpp;
-  const marginPct = buyerPrice > 0 ? (netProfit / buyerPrice) * 100 : 0;
-  const roiPct = costUzs > 0 ? (netProfit / costUzs) * 100 : 0;
-
-  // Удержание WB (комиссия+эквайринг в старой модели) = цена покупателя − выплата за товар
-  const fee = Math.round(buyerPrice - c.toSellerGoods);
-  const bf = Math.round(c.bf || 0);
-  const toSeller = c.toSellerGoods - c.logistics - bf - c.ads - storageTotal - acceptanceUzs;
-
+  // Fallback без patch v4
+  const fee = Math.round(priceUzs * commPct / 100);
+  const acquiring = Math.round(priceUzs * acquiPct / 100);
+  const ads = Math.round(priceUzs * drrPct / 100);
+  const totalLogUzs = liters > 0 ? wbUzLogistics(liters, buyoutPct / 100, safetyPct, returnFixed) : 0;
+  const storageTotal = Math.round(liters * storageTariff * turnoverDays);
+  const bf = Math.round(legacyCal.bfPerUnit || 0);
+  const toSeller = priceUzs - fee - acquiring - ads - totalLogUzs - bf - storageTotal - acceptanceUzs;
+  const outputVat = Math.round(vatFromAmount(priceUzs, vatPct, 'with'));
+  const inputVatCost = inputVatLinked != null
+    ? inputVatLinked
+    : Math.round(vatFromAmount(costUzs, vatPct, 'with'));
+  const vatPayable = outputVat - inputVatCost;
+  const netProfit = toSeller - costUzs - vatPayable;
   return {
-    priceUzs,
-    sppPct: c.sppPct,
-    acquiPct: 0,
-    buyerPrice,
-    fee,
-    acquiring: bf,
-    ads: c.ads,
-    totalLogUzs: c.logistics,
-    storageTotal,
-    acceptanceUzs,
-    toSeller,
-    toSellerGoods: c.toSellerGoods,
-    outputVat: c.outputVat,
-    inputVatCost: c.inputVatCost,
-    inputVatServices: 0,
-    inputVat: c.inputVatCost,
-    vatPayable: c.vatPayable,
-    costUzs,
-    costRubRaw,
-    netProfit,
-    marginPct,
-    roiPct,
-    liters,
-    buyoutPct,
-    turnoverDays,
-    exchangeRate,
-    calibrationSource: c.calibrationSource || cal.source || 'GLOBAL',
-    sellerPayoutRatio: c.sellerPayoutRatio,
-    logisticsCoef: c.logisticsCoef,
-    baseLogistics: c.baseLogistics,
-    bf,
-    sku: c.sku || sku,
+    priceUzs, commPct, sppPct, acquiPct,
+    buyerPrice: Math.round(priceUzs * (1 - sppPct / 100)),
+    fee, acquiring, bf, ads, totalLogUzs, storageTotal, acceptanceUzs, toSeller,
+    outputVat, inputVatCost, inputVatServices: 0, inputVat: inputVatCost, vatPayable,
+    costUzs, costRubRaw, netProfit,
+    marginPct: priceUzs > 0 ? (netProfit / priceUzs) * 100 : 0,
+    roiPct: costUzs > 0 ? (netProfit / costUzs) * 100 : 0,
+    liters, buyoutPct, turnoverDays, exchangeRate,
+    calibrationSource: 'FALLBACK', logisticsCoef: 1, baseLogistics: totalLogUzs,
+    historicalSellerPayoutRatio: null, historicalPayoutByRatio: null,
+    historicalEffectiveGoodsDeductionPct: null, sku,
   };
 }
 
@@ -1916,13 +1923,13 @@ function renderWbUnitEconomics() {
 
   const calSrcEl = document.getElementById('wbUnitCalibSourceVal');
   if (calSrcEl) {
-    const srcMap = { SKU: 'SKU', CATEGORY: 'категория', GLOBAL: 'глобальная', FALLBACK: 'старая' };
+    const srcMap = { sku: 'SKU', category: 'категория', global: 'глобальная', FALLBACK: 'fallback' };
     const srcLabel = srcMap[u.calibrationSource] || u.calibrationSource || '—';
-    const ratio = Number(u.sellerPayoutRatio);
     const coef = Number(u.logisticsCoef);
-    const ratioStr = Number.isFinite(ratio) ? ratio.toFixed(3) : '—';
     const coefStr = Number.isFinite(coef) ? coef.toFixed(3) : '—';
-    calSrcEl.textContent = `${srcLabel} · payout ${ratioStr} · log×${coefStr}`;
+    const histRatio = Number(u.historicalSellerPayoutRatio);
+    const histStr = Number.isFinite(histRatio) ? histRatio.toFixed(3) : '—';
+    calSrcEl.textContent = `${srcLabel} · log×${coefStr} · AH/P ${histStr}`;
   }
 
   set('wbUnitNetProfitVal', fmt(u.netProfit));
@@ -1938,13 +1945,14 @@ function renderWbUnitEconomics() {
   set('wbUnitFeeVal', fmt(u.fee));
   const feeLab = document.getElementById('wbUnitFeeLabel');
   if (feeLab) {
-    const ratio = Number(u.sellerPayoutRatio);
-    const ratioStr = Number.isFinite(ratio) ? ratio.toFixed(3) : '—';
-    feeLab.textContent = `Удержание WB (payout ${ratioStr})`;
+    const comm = Number(u.commPct);
+    const commStr = Number.isFinite(comm) ? comm.toFixed(1).replace('.', ',') : '—';
+    feeLab.textContent = `Комиссия WB (${commStr}%)`;
   }
+  set('wbUnitAcquiringVal', fmt(u.acquiring));
   const acqLab = document.getElementById('wbUnitAcqLabel');
-  if (acqLab) acqLab.textContent = 'Прочие удержания (BF)';
-  set('wbUnitAcqVal', fmt(u.acquiring));
+  if (acqLab) acqLab.textContent = 'BF (прочие удержания)';
+  set('wbUnitAcqVal', fmt(u.bf));
   set('wbUnitAdsVal', fmt(u.ads));
   const logLab = document.getElementById('wbUnitLogisticsLabel');
   if (logLab) {
@@ -1958,7 +1966,16 @@ function renderWbUnitEconomics() {
   set('wbUnitInputVatVal', fmt(u.inputVat));
   set('wbUnitVatPayableVal', fmt(u.vatPayable));
   set('wbUnitToSellerVal', fmt(u.toSeller));
-  set('wbUnitGoodsPayoutVal', u.toSellerGoods != null ? fmt(u.toSellerGoods) : '—');
+  const histPayoutEl = document.getElementById('wbUnitHistPayoutVal');
+  if (histPayoutEl) {
+    histPayoutEl.textContent = u.historicalPayoutByRatio != null ? fmt(u.historicalPayoutByRatio) : '—';
+  }
+  const histDedEl = document.getElementById('wbUnitHistDeductionVal');
+  if (histDedEl) {
+    const pct = Number(u.historicalEffectiveGoodsDeductionPct);
+    const pctStr = Number.isFinite(pct) ? pct.toFixed(1).replace('.', ',') + '%' : '—';
+    histDedEl.textContent = pctStr;
+  }
   set('wbUnitCostLineVal', fmt(u.costUzs));
 
   const buyerVal = document.getElementById('wbUnitBuyerPriceVal');
