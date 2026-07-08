@@ -1738,6 +1738,264 @@ function renderProductCost() {
   renderUnit();
 }
 
+function xlColLetter(colIndex) {
+  let nCol = colIndex + 1;
+  let s = '';
+  while (nCol > 0) {
+    const rem = (nCol - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    nCol = Math.floor((nCol - 1) / 26);
+  }
+  return s;
+}
+
+function xlRef(colIndex, row1) {
+  return `${xlColLetter(colIndex)}${row1}`;
+}
+
+function xlSetCell(ws, ref, value, type) {
+  if (value === '' || value == null) return;
+  const t = type || (typeof value === 'number' ? 'n' : 's');
+  ws[ref] = { t, v: value };
+}
+
+function xlSetFormula(ws, ref, formula, cached) {
+  ws[ref] = { t: 'n', f: formula, v: cached != null ? cached : 0 };
+}
+
+/** Входящий НДС по закупке — та же логика, что purchaseInputVat (режим with/without). */
+function xlPurchaseVatFormula(grossRef, modeRef, rateRef) {
+  return `IF(${modeRef}="with",${grossRef}*${rateRef}/(100+${rateRef}),0)`;
+}
+
+/** Выгрузка полной калькуляции себестоимости в Excel с формулами для проверки. */
+function exportProductCostToExcel() {
+  if (typeof window === 'undefined' || !window.XLSX) {
+    alert('SheetJS не загрузился.');
+    return;
+  }
+  const mp = getCurrentMarketplace();
+  if (mp === 'yandex') {
+    alert('Для Yandex выгрузка пока недоступна.');
+    return;
+  }
+
+  const vals = getProductCost();
+  const defaultVatRate = n(document.getElementById('vatRate')?.value) || 12;
+  const article1c = String(document.getElementById('productArticle1c')?.value || '').trim();
+  const code1c = String(document.getElementById('productCode1c')?.value || '').trim();
+  const category = String(document.getElementById('productCategory')?.value || '').trim();
+  const stockQty = Math.max(0, Math.floor(n(document.getElementById('productStockQty')?.value) || 0));
+  const productLink = String(document.getElementById('productLink')?.value || '').trim();
+  const fabricPrice = n(document.getElementById('fabricPrice')?.value);
+  const fabricConsumption = n(document.getElementById('fabricConsumption')?.value);
+  const fabricMode = document.getElementById('fabricVatIncluded')?.value || 'with';
+  const fabricVatRate = n(document.getElementById('fabricVatRate')?.value) || defaultVatRate;
+  const fabricUnit = document.getElementById('fabricUnit')?.value || 'm';
+  const fabricUnitLabel = { m: 'метры', kg: 'килограммы', unit: 'усл. ед.' }[fabricUnit] || fabricUnit;
+  const mpSkuUzum = String(document.getElementById('mpSkuUzum')?.value || '').trim();
+  const mpWbNmid = String(document.getElementById('mpWbNmid')?.value || '').trim();
+  const mpSkuYandex = String(document.getElementById('mpSkuYandex')?.value || '').trim();
+
+  const costLineDefs = [
+    { label: 'Пошив', amountId: 'sewingCost', modeId: 'sewingCostVatIncluded' },
+    { label: 'Пакет', amountId: 'packageCost', modeId: 'packageCostVatIncluded' },
+    { label: 'Замок', amountId: 'zipperCost', modeId: 'zipperCostVatIncluded' },
+    { label: 'Резинка', amountId: 'elasticCost', modeId: 'elasticCostVatIncluded' },
+    { label: 'Полиграфия', amountId: 'polygraphyCost', modeId: 'polygraphyCostVatIncluded' },
+    { label: 'Стикеры', amountId: 'stickersCost', modeId: 'stickersCostVatIncluded' },
+    { label: 'Рекламная полиграфия', amountId: 'promoPolygraphyCost', modeId: 'promoPolygraphyCostVatIncluded' },
+    ...(mp === 'uzum' ? [{ label: 'Логистика до склада Uzum', amountId: 'inboundLogisticsCost', modeId: 'inboundLogisticsCostVatIncluded' }] : []),
+    { label: 'Коробка транспортная', amountId: 'transportBoxCost', modeId: 'transportBoxCostVatIncluded' },
+    { label: 'Прочие расходы', amountId: 'otherProductCost', modeId: 'otherProductCostVatIncluded' }
+  ];
+
+  const Lcm = n(document.getElementById('uzumLengthCm')?.value);
+  const Wcm = n(document.getElementById('uzumWidthCm')?.value);
+  const Hcm = n(document.getElementById('uzumHeightCm')?.value);
+  const onWarehouse = document.getElementById('productOnWarehouse')?.value || 'no';
+  const storageDays = n(document.getElementById('productStorageDays')?.value);
+  const turnover = n(document.getElementById('productTurnover')?.value);
+  const stockStatus = document.getElementById('productStockStatus')?.value || 'existing';
+  const newSkuDays = n(document.getElementById('productNewSkuDays')?.value);
+  const ps = getProductStorageData();
+
+  const rows = [];
+  const push = (cells) => { rows.push(cells); return rows.length; };
+
+  push(['Калькуляция себестоимости товара']);
+  push(['Маркетплейс', mp === 'wb' ? 'Wildberries' : 'Uzum']);
+  push(['Артикул 1С', article1c]);
+  push(['Код 1С', code1c]);
+  push(['Категория', category]);
+  push(['Остаток, шт', stockQty]);
+  push(['Ссылка', productLink]);
+  push(['Единица расхода ткани', fabricUnitLabel]);
+  push(['SKU Uzum', mpSkuUzum]);
+  push(['nmId WB', mpWbNmid]);
+  push(['SKU Yandex', mpSkuYandex]);
+  push(['Ставка НДС по умолчанию, %', defaultVatRate]);
+  push(['Дата выгрузки', new Date().toLocaleString('ru-RU')]);
+  push([]);
+
+  push([
+    'Статья', 'Значение 1', 'Значение 2', 'Сумма, сум', 'НДС? (with/without)', 'Ставка НДС, %', 'Входящий НДС', 'Без НДС'
+  ]);
+
+  const fabricRow = push([
+    'Ткань',
+    fabricPrice,
+    fabricConsumption,
+    null,
+    fabricMode,
+    fabricVatRate,
+    null,
+    null
+  ]);
+
+  const lineRows = [];
+  costLineDefs.forEach((def) => {
+    const amount = n(document.getElementById(def.amountId)?.value);
+    const mode = document.getElementById(def.modeId)?.value || 'with';
+    const r = push([def.label, '', '', amount, mode, defaultVatRate, null, null]);
+    lineRows.push(r);
+  });
+
+  const storageReserveRow = push([
+    'Резерв на хранение (склад Uzum)',
+    '', '', null, '', '', null, null
+  ]);
+
+  push([]);
+  push(['Блок хранения (Uzum)']);
+  push(['Параметр', 'Значение']);
+  const rLen = push(['Длина, см', Lcm]);
+  const rWid = push(['Ширина, см', Wcm]);
+  const rHei = push(['Высота, см', Hcm]);
+  const rLit = push(['Литраж, л', null]);
+  const rLitR = push(['Литраж округл., л', null]);
+  const rOnWh = push(['Товар на складе (yes/no)', mp === 'uzum' ? onWarehouse : 'no']);
+  const rDays = push(['Дней хранения в расчёте', mp === 'uzum' ? storageDays : 0]);
+  const rTurn = push(['Оборачиваемость, дней', mp === 'uzum' ? turnover : 0]);
+  const rStat = push(['Статус SKU (new/existing)', mp === 'uzum' ? stockStatus : 'existing']);
+  const rNewDays = push(['Дней с первой поставки', mp === 'uzum' ? newSkuDays : 0]);
+  const rPerDay = push(['Хранение в день, сум', null]);
+  const rReserve = push(['Резерв на хранение, сум', null]);
+
+  push([]);
+  const totalGrossRow = push(['ИТОГО себестоимость (с НДС)', '', '', null, '', '', null, null]);
+  const totalVatRow = push(['ИТОГО входящий НДС', '', '', null, '', '', null, null]);
+  const totalNetRow = push(['ИТОГО без входящего НДС', '', '', null, '', '', null, null]);
+
+  let wbRateRow = null;
+  let wbRubRow = null;
+  if (mp === 'wb') {
+    const rate = getCostRubCourseForDisplayAndSave();
+    push([]);
+    wbRateRow = push(['Курс RUB/UZS', rate]);
+    wbRubRow = push(['Себестоимость, ₽', null]);
+  }
+
+  push([]);
+  push(['Справка по формулам']);
+  push(['Ткань: сумма = цена × расход; входящий НДС = IF(НДС?="with", сумма×ставка/(100+ставка), 0)']);
+  push(['Расходы: входящий НДС по той же формуле; «без НДС» = сумма − входящий НДС']);
+  push(['Хранение Uzum: тариф 12/18/24 сум/л/день по оборачиваемости; min(литры×тариф, 5000); новый SKU ≤30 дней — бесплатно']);
+  push(['Резерв = хранение в день × дней хранения (если товар на складе)']);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const grossCol = 3;
+  const modeCol = 4;
+  const rateCol = 5;
+  const vatCol = 6;
+  const netCol = 7;
+
+  const fGross = xlRef(grossCol, fabricRow);
+  const fMode = xlRef(modeCol, fabricRow);
+  const fRate = xlRef(rateCol, fabricRow);
+  const fVat = xlRef(vatCol, fabricRow);
+  const fNet = xlRef(netCol, fabricRow);
+  const fB = xlRef(1, fabricRow);
+  const fC = xlRef(2, fabricRow);
+  xlSetFormula(ws, fGross, `${fB}*${fC}`, fabricPrice * fabricConsumption);
+  xlSetFormula(ws, fVat, xlPurchaseVatFormula(fGross, fMode, fRate), purchaseInputVat(fabricPrice * fabricConsumption, fabricVatRate, fabricMode));
+  xlSetFormula(ws, fNet, `${fGross}-${fVat}`, (fabricPrice * fabricConsumption) - purchaseInputVat(fabricPrice * fabricConsumption, fabricVatRate, fabricMode));
+
+  const dataGrossRefs = [fGross];
+  const dataVatRefs = [fVat];
+  const dataNetRefs = [fNet];
+
+  costLineDefs.forEach((def, i) => {
+    const row = lineRows[i];
+    const gRef = xlRef(grossCol, row);
+    const mRef = xlRef(modeCol, row);
+    const rRef = xlRef(rateCol, row);
+    const vRef = xlRef(vatCol, row);
+    const nRef = xlRef(netCol, row);
+    const line = purchaseLine(def.amountId, def.modeId, defaultVatRate);
+    xlSetFormula(ws, vRef, xlPurchaseVatFormula(gRef, mRef, rRef), line.inputVat);
+    xlSetFormula(ws, nRef, `${gRef}-${vRef}`, line.net);
+    dataGrossRefs.push(gRef);
+    dataVatRefs.push(vRef);
+    dataNetRefs.push(nRef);
+  });
+
+  const litRef = xlRef(1, rLit);
+  const litRRef = xlRef(1, rLitR);
+  const onWhRef = xlRef(1, rOnWh);
+  const daysRef = xlRef(1, rDays);
+  const turnRef = xlRef(1, rTurn);
+  const statRef = xlRef(1, rStat);
+  const newDaysRef = xlRef(1, rNewDays);
+  const perDayRef = xlRef(1, rPerDay);
+  const reserveCalcRef = xlRef(1, rReserve);
+  const lenRef = xlRef(1, rLen);
+  const widRef = xlRef(1, rWid);
+  const heiRef = xlRef(1, rHei);
+
+  xlSetFormula(ws, litRef, `${lenRef}*${widRef}*${heiRef}/1000`, ps.liters || 0);
+  xlSetFormula(ws, litRRef, `IF(${litRef}>0,CEILING(${litRef},1),0)`, ps.roundedLiters || 0);
+  const storagePerDayFormula = `IF(${onWhRef}<>"yes",0,IF(AND(${statRef}="new",${newDaysRef}<=30),0,IF(${turnRef}<=60,0,MIN(${litRRef}*IF(${turnRef}<=180,12,IF(${turnRef}<=360,18,24)),5000))))`;
+  xlSetFormula(ws, perDayRef, storagePerDayFormula, mp === 'uzum' ? ps.perDay : 0);
+  xlSetFormula(ws, reserveCalcRef, `IF(${onWhRef}<>"yes",0,${perDayRef}*${daysRef})`, mp === 'uzum' ? ps.storageReserve : 0);
+
+  const srGross = xlRef(grossCol, storageReserveRow);
+  const srVat = xlRef(vatCol, storageReserveRow);
+  const srNet = xlRef(netCol, storageReserveRow);
+  xlSetFormula(ws, srGross, reserveCalcRef, mp === 'uzum' ? ps.storageReserve : 0);
+  xlSetCell(ws, srVat, 0, 'n');
+  xlSetFormula(ws, srNet, srGross, mp === 'uzum' ? ps.storageReserve : 0);
+  dataGrossRefs.push(srGross);
+  dataVatRefs.push(srVat);
+  dataNetRefs.push(srNet);
+
+  const sumGross = dataGrossRefs.join('+');
+  const sumVat = dataVatRefs.join('+');
+  const sumNet = dataNetRefs.join('+');
+  xlSetFormula(ws, xlRef(grossCol, totalGrossRow), sumGross, vals.total);
+  xlSetFormula(ws, xlRef(vatCol, totalVatRow), sumVat, vals.totalInputVat);
+  xlSetFormula(ws, xlRef(netCol, totalNetRow), sumNet, vals.totalNet);
+
+  if (wbRubRow != null && wbRateRow != null) {
+    const totalGrossRef = xlRef(grossCol, totalGrossRow);
+    const rateRef = xlRef(1, wbRateRow);
+    xlSetFormula(ws, xlRef(1, wbRubRow), `IF(${rateRef}>0,${totalGrossRef}/${rateRef},0)`, getCostRubCourseForDisplayAndSave() > 0 ? vals.total / getCostRubCourseForDisplayAndSave() : 0);
+  }
+
+  ws['!cols'] = [
+    { wch: 34 }, { wch: 14 }, { wch: 14 }, { wch: 16 },
+    { wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 16 }
+  ];
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  ws['!ref'] = XLSX.utils.encode_range(range);
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Себестоимость');
+  const safeArt = (article1c || 'товар').replace(/[^\w\-а-яА-ЯёЁ]+/gi, '_').slice(0, 40);
+  const dateSuffix = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `себестоимость_${safeArt}_${dateSuffix}.xlsx`);
+}
+
 /** Литраж из габаритов калькуляции (см): Д×Ш×В / 1000 */
 function getWbLitersFromCostFormCm() {
   const L = n(document.getElementById('uzumLengthCm')?.value);
@@ -7517,6 +7775,13 @@ function exportShipmentFinanceToExcel(shipmentId) {
 if (document.getElementById('saveProductToDbBtn')) {
   document.getElementById('saveProductToDbBtn').addEventListener('click', saveCurrentProductToDb);
 }
+document.getElementById('exportCostExcelBtn')?.addEventListener('click', () => {
+  try {
+    exportProductCostToExcel();
+  } catch (e) {
+    alert(e?.message || String(e));
+  }
+});
 document.getElementById('exportToDbBtn')?.addEventListener('click', exportToDbFromCalculator);
 if (document.getElementById('refreshProductsBtn')) {
   document.getElementById('refreshProductsBtn').addEventListener('click', renderProductsDb);

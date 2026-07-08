@@ -858,8 +858,11 @@
               <div class="row"><div class="key">Итоговая себестоимость</div><div class="val" id="productTotalCostVal">0 сум</div></div>
             </div>
             <div class="export-to-db-wrap">
-              <button type="button" id="exportToDbBtn" class="btn-primary export-to-db-btn">💾 Создать товар в Базе</button>
-              <p class="hint export-to-db-hint">Сохраняет артикул 1С, итоговую себестоимость (сум и ₽), курс RUB/UZS (для WB) и коды маркетплейсов. Если артикул 1С уже есть — можно обновить карточку.</p>
+              <div class="toolbar" style="margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+                <button type="button" id="exportCostExcelBtn" class="btn-secondary">📥 Скачать Excel</button>
+                <button type="button" id="exportToDbBtn" class="btn-primary export-to-db-btn">💾 Создать товар в Базе</button>
+              </div>
+              <p class="hint export-to-db-hint">Excel-выгрузка содержит все исходные данные и формулы расчёта — можно проверить каждую ячейку. «Создать товар в Базе» сохраняет артикул 1С, итоговую себестоимость (сум и ₽), курс RUB/UZS (для WB) и коды маркетплейсов.</p>
             </div>
           </div>
 
