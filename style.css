@@ -1427,6 +1427,17 @@ body.dark-mode .wms-ship-delete-btn:hover {
   border-color:rgba(245,158,11,.45);
   background:linear-gradient(135deg, rgba(245,158,11,.12), rgba(245,158,11,.04));
 }
+.product-mp-sku-pill--design{
+  border-color:rgba(59,130,246,.45);
+  background:linear-gradient(135deg, rgba(59,130,246,.10), rgba(59,130,246,.04));
+  min-width:100px;
+}
+.field--compact{
+  max-width:180px;
+}
+.input--compact{
+  max-width:160px;
+}
 
 .shipment-calc-mode-bar {
   display: flex;

@@ -885,7 +885,9 @@ function productSearchMatchesQuery(p, qq) {
     p.mp_wb_sku,
     p.calc?.mpSkuUzum,
     p.calc?.mpWbNmid,
-    p.calc?.mpSkuYandex
+    p.calc?.mpSkuYandex,
+    p.design,
+    p.calc?.productDesign
   ];
   return fields.some(x => String(x ?? '').toLowerCase().includes(qq));
 }
@@ -3124,7 +3126,7 @@ document.getElementById('wbUzAddTariffBtn')?.addEventListener('click', wbUzAddTa
 wbUzRenderTariffsTable();
 
 [
-  'productArticle1c', 'productCode1c', 'productStockQty', 'productLink',
+  'productArticle1c', 'productCode1c', 'productStockQty', 'productDesign', 'productLink',
   'mpSkuUzum', 'mpWbNmid', 'mpSkuYandex',
   'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate', 'sewingCost', 'packageCost',
   'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost', 'promoPolygraphyCost', 'inboundLogisticsCost',
@@ -3543,6 +3545,7 @@ function snapshotCurrentProduct() {
   const productCode1c = document.getElementById('productCode1c').value.trim();
   const productStockQty = Math.max(0, Math.floor(n(document.getElementById('productStockQty').value) || 0));
   const productCategory = (document.getElementById('productCategory')?.value || '').trim();
+  const productDesign = (document.getElementById('productDesign')?.value || '').trim();
   const productLink = document.getElementById('productLink').value.trim();
   if (!sku) {
     alert('Укажите артикул 1С или хотя бы один код в блоке «Связки с маркетплейсами» (Uzum, WB, Yandex).');
@@ -3570,7 +3573,7 @@ function snapshotCurrentProduct() {
   }
 
   const calc = {
-    productLink, productArticle1c, productCode1c, productStockQty, productCategory,
+    productLink, productArticle1c, productCode1c, productStockQty, productCategory, productDesign,
     fabricPrice: n(document.getElementById('fabricPrice').value),
     fabricConsumption: n(document.getElementById('fabricConsumption').value),
     fabricUnit: document.getElementById('fabricUnit').value,
@@ -3626,6 +3629,7 @@ function snapshotCurrentProduct() {
     code1c: productCode1c,
     stockQty: productStockQty,
     category: productCategory,
+    design: productDesign,
     link: productLink,
     updatedAt: new Date().toISOString(),
     costGross: vals.total,
@@ -3680,6 +3684,7 @@ const HISTORY_TOP_LABELS = {
   name: 'Имя записи (легаси, как правило = артикул 1С)',
   article1c: 'Артикул 1С',
   code1c: 'Код 1С',
+  design: 'Дизайн',
   stockQty: 'Остаток, шт',
   link: 'Ссылка',
   costGross: 'Себестоимость (гросс)',
@@ -3697,6 +3702,7 @@ const HISTORY_CALC_LABELS = {
   productLink: 'Калькуляция · Ссылка',
   productArticle1c: 'Калькуляция · Артикул 1С',
   productCode1c: 'Калькуляция · Код 1С',
+  productDesign: 'Калькуляция · Дизайн',
   productStockQty: 'Калькуляция · Остаток в форме',
   fabricPrice: 'Калькуляция · Цена ткани',
   fabricConsumption: 'Калькуляция · Расход ткани',
@@ -3816,6 +3822,7 @@ function resetCostCalculatorForm() {
     'sku',
     'productArticle1c',
     'productCode1c',
+    'productDesign',
     'productLink',
     'mpSkuUzum',
     'mpUzumBarcode',
@@ -4154,9 +4161,11 @@ function loadProductIntoCalculator(product, preserveTab=false, options = {}) {
     document.getElementById('productCategory').value = String(product.category || product.calc?.productCategory || '').trim();
   }
   document.getElementById('productLink').value = product.link || '';
+  const designEl = document.getElementById('productDesign');
+  if (designEl) designEl.value = String(product.design ?? product.calc?.productDesign ?? '').trim();
   const c = product.calc || {};
   const ids = [
-    'productArticle1c','productCode1c','productStockQty',
+    'productArticle1c','productCode1c','productStockQty','productDesign',
     'fabricPrice','fabricConsumption','fabricUnit','fabricVatIncluded','fabricVatRate',
     'sewingCost','packageCost','zipperCost','elasticCost','polygraphyCost','stickersCost',
     'promoPolygraphyCost','inboundLogisticsCost','transportBoxCost','otherProductCost',
@@ -4320,6 +4329,7 @@ function renderProductDetail(product) {
   // Калькуляция (используем текущие параметры из юнита)
   const unit = computeUnitEconomicsForProduct(product);
   setText('detailSkuVal', product.article1c || product.sku || '—');
+  setText('detailDesignVal', String(product.design ?? product.calc?.productDesign ?? '').trim() || '—');
   setText('detailLitersVal', unit.liters.toFixed(2).replace('.', ','));
   setText('detailRoundedLitersVal', unit.roundedLiters.toLocaleString('ru-RU'));
   setText('detailCostVal', fmtMoney(unit.cost));
@@ -4803,6 +4813,7 @@ function renderProducts(filteredArray) {
     const uzumBarcode = normalizeUzumBarcode(p.uzum_barcode);
     const wbSku = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
     const yandexSku = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+    const design = String(p.design ?? p.calc?.productDesign ?? '').trim();
     const category = extractProductCategory(p);
     const monthShip = recordId ? (shippedMonthByRid.get(String(recordId)) || 0) : 0;
     const stockOutpace = monthShip > 0 && monthShip >= stock;
@@ -4845,8 +4856,14 @@ function renderProducts(filteredArray) {
         </div>
       </div>
 
-      ${(uzumSku || uzumBarcode || wbSku || yandexSku) ? `
-        <div class="product-mp-skus" aria-label="SKU маркетплейсов">
+      ${(design || uzumSku || uzumBarcode || wbSku || yandexSku) ? `
+        <div class="product-mp-skus" aria-label="Коды и идентификаторы">
+          ${design ? `
+            <div class="product-mp-sku-pill product-mp-sku-pill--design">
+              <span class="k">Дизайн</span>
+              <span class="v">${escapeHtml(design)}</span>
+            </div>
+          ` : ''}
           ${uzumSku ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--uzum">
               <span class="k">Uzum SKU</span>
@@ -5648,7 +5665,7 @@ function getShipmentLineBreakdown(line, fromDraft) {
 }
 
 const COST_CALC_BACKUP_IDS = [
-  'sku', 'productArticle1c', 'productCode1c', 'productStockQty', 'productLink',
+  'sku', 'productArticle1c', 'productCode1c', 'productStockQty', 'productDesign', 'productLink',
   'mpSkuUzum', 'mpUzumBarcode', 'mpWbNmid', 'mpSkuYandex', 'costRubUzRate',
   'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate',
   'sewingCost', 'packageCost', 'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost',
@@ -5697,7 +5714,7 @@ function loadProductIntoCalculatorFromWmsLine(line) {
   if (c1) c1.value = fs.code1c != null ? String(fs.code1c) : (c.productCode1c != null ? String(c.productCode1c) : '');
   if (a1 && !String(a1.value || '').trim() && line.sku) a1.value = String(line.sku);
   const ids = [
-    'productLink', 'productArticle1c', 'productCode1c', 'productStockQty',
+    'productLink', 'productArticle1c', 'productCode1c', 'productStockQty', 'productDesign',
     'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate',
     'sewingCost', 'packageCost', 'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost',
     'promoPolygraphyCost', 'inboundLogisticsCost', 'transportBoxCost', 'otherProductCost',

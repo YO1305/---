@@ -550,7 +550,10 @@
                   <option value="11 - Фартук">11 - Фартук</option>
                 </select>
               </div>
-              <div class="field"></div>
+              <div class="field field--compact">
+                <label for="productDesign">Дизайн</label>
+                <input id="productDesign" class="input input--compact" type="text" placeholder="№ дизайна" maxlength="32" autocomplete="off" />
+              </div>
             </div>
             <div class="grid" style="margin-top:12px;">
               <div class="field">
@@ -1108,6 +1111,7 @@
                 <p class="sub">Расчёт использует текущие значения из вкладки «Юнит-экономика» (цена, комиссия, НДС, тариф логистики).</p>
                 <div class="list">
                   <div class="row"><div class="key">Артикул 1С</div><div class="val" id="detailSkuVal">—</div></div>
+                  <div class="row"><div class="key">Дизайн</div><div class="val" id="detailDesignVal">—</div></div>
                   <div class="row"><div class="key">Объём (л)</div><div class="val" id="detailLitersVal">0</div></div>
                   <div class="row"><div class="key">Округлённый литраж</div><div class="val" id="detailRoundedLitersVal">0</div></div>
                 </div>
