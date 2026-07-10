@@ -6136,6 +6136,35 @@ function renderWmsBoxes() {
       rows = `<tr><td colspan="${uzumOnly ? 9 : 8}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
     }
     const payoutHead = uzumOnly ? '<th>К ВЫВОДУ (СУМ)</th>' : '';
+
+    let mobileCards = '';
+    if ((box.items || []).length === 0) {
+      mobileCards = `<div class="wms-item-cards-empty">Нажми «Добавить товар»</div>`;
+    } else {
+      mobileCards = (box.items || []).map(line => {
+        const q = Math.max(0, Math.floor(Number(line.qty || 0)));
+        const name = escapeHtml(line.financialSnapshot?.name || line.name || '—');
+        const sku = escapeHtml(line.sku || '—');
+        return `<div class="wms-item-card">
+          <div class="wms-item-card-info">
+            <div class="wms-item-card-name">${name}</div>
+            <div class="wms-item-card-sku">${sku}</div>
+          </div>
+          <div class="wms-item-card-qty">
+            <input class="input wms-qty-input" type="number" inputmode="numeric" min="1" step="1"
+              value="${q}"
+              data-wms-qty="${escapeAttr(box.id)}"
+              data-line="${escapeAttr(line.lineId)}"
+              data-prev-qty="${q}" />
+          </div>
+          <button type="button" class="wms-item-card-del"
+            data-wms-remove-line="${escapeAttr(box.id)}"
+            data-line="${escapeAttr(line.lineId)}"
+            title="Удалить товар">×</button>
+        </div>`;
+      }).join('');
+    }
+
     card.innerHTML = `
       <div class="wms-box-card-head">
         <div>
@@ -6154,6 +6183,7 @@ function renderWmsBoxes() {
       <div class="table-wrap wms-box-items">
         <table><thead><tr><th>Товар</th><th>SKU</th><th>Шт</th><th>Логистика до склада</th><th>Коробка трансп.</th><th>Себест. 1 шт</th><th>Сумма</th>${payoutHead}<th></th></tr></thead><tbody>${rows}</tbody></table>
       </div>
+      <div class="wms-item-cards">${mobileCards}</div>
     `;
     container.appendChild(card);
   });
