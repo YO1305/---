@@ -10757,7 +10757,51 @@ document.getElementById('saveWithdrawnBtn')?.addEventListener('click', () => {
 document.getElementById('downloadPdfBtn')?.addEventListener('click', downloadReportPDF);
 renderAnalyticsReportsList();
 
+function initMobileMenu() {
+  const mobileToggle = document.getElementById('mobileMenuToggle');
+  const sidebar = document.querySelector('.sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+
+  function closeSidebar() {
+    if (!sidebar) return;
+    sidebar.classList.remove('open');
+    overlay?.classList.remove('active');
+    mobileToggle?.classList.remove('open');
+    mobileToggle?.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+
+  function openSidebar() {
+    if (!sidebar) return;
+    sidebar.classList.add('open');
+    overlay?.classList.add('active');
+    mobileToggle?.classList.add('open');
+    mobileToggle?.setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+  }
+
+  if (mobileToggle) {
+    mobileToggle.addEventListener('click', () => {
+      sidebar?.classList.contains('open') ? closeSidebar() : openSidebar();
+    });
+  }
+  if (overlay) {
+    overlay.addEventListener('click', closeSidebar);
+  }
+
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (window.innerWidth <= 768) closeSidebar();
+    });
+  });
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 768) closeSidebar();
+  });
+}
+
 initUzumCostWarehouseListeners();
+initMobileMenu();
 initMarketplaceSwitcher();
 initThemeToggle();
 initCodeGenerator1C();

@@ -10,6 +10,12 @@
 </head>
 <body>
   <div class="wrap">
+    <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Открыть меню" aria-expanded="false">
+      <span class="hamburger-line"></span>
+      <span class="hamburger-line"></span>
+      <span class="hamburger-line"></span>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-box">
@@ -905,7 +911,7 @@
             </div>
             <div class="card" style="margin-top:12px; padding:14px;">
               <div class="products-toolbar" style="align-items:flex-end;">
-                <div style="flex:1; min-width:260px;">
+                <div style="flex:1; min-width:0;">
                   <div class="sub" style="margin:0 0 8px;">Сводка базы</div>
                   <div class="mini-grid">
                     <div class="mini">
@@ -939,7 +945,7 @@
               </div>
             </div>
             <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
-              <div class="field" style="min-width:260px; margin:0;">
+              <div class="field" style="min-width:0; margin:0;">
                 <label for="categoryFilter" style="margin-bottom:6px; display:block;">Фильтр: категория</label>
                 <select id="categoryFilter" class="select">
                   <option value="" selected>Все категории</option>
@@ -959,7 +965,7 @@
               <button type="button" id="productsStockFilterZeroBtn" class="btn-secondary">Закончились</button>
               <button type="button" id="productsStockFilterLowBtn" class="btn-secondary">Мало (&lt; 10)</button>
               <button type="button" id="productsStockFilterInBtn" class="btn-secondary">В наличии (&gt; 10)</button>
-              <div class="field" style="min-width:220px; margin:0;">
+              <div class="field" style="min-width:0; margin:0;">
                 <label for="productsStockLtInput" style="margin-bottom:6px; display:block;">Поиск по остатку</label>
                 <input id="productsStockLtInput" class="input" type="number" min="0" step="1" placeholder="например: меньше 5" />
               </div>
@@ -1124,7 +1130,7 @@
               <div class="card">
                 <h2>История отправок (по дням)</h2>
                 <div class="table-wrap">
-                  <table style="min-width: 560px;">
+                  <table style="min-width: 480px;">
                     <thead><tr><th>Дата</th><th>Шт</th><th>Сумма</th></tr></thead>
                     <tbody id="detailShipmentsByDayBody"></tbody>
                   </table>
@@ -1134,7 +1140,7 @@
               <div class="card">
                 <h2>По неделям</h2>
                 <div class="table-wrap">
-                  <table style="min-width: 560px;">
+                  <table style="min-width: 480px;">
                     <thead><tr><th>Неделя</th><th>Шт</th><th>Сумма</th></tr></thead>
                     <tbody id="detailShipmentsByWeekBody"></tbody>
                   </table>
@@ -1144,7 +1150,7 @@
               <div class="card">
                 <h2>По месяцам</h2>
                 <div class="table-wrap">
-                  <table style="min-width: 560px;">
+                  <table style="min-width: 480px;">
                     <thead><tr><th>Месяц</th><th>Шт</th><th>Сумма</th></tr></thead>
                     <tbody id="detailShipmentsByMonthBody"></tbody>
                   </table>
