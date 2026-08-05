@@ -10,6 +10,7 @@ const firebaseConfig = {
 // Инициализируем Firebase БЕЗ изменения остального кода
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+window.db = db;
 console.log("Firebase успешно подключен к проекту!");
 db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
   console.warn('Firestore persistence не включен:', err?.code || err?.message || err);

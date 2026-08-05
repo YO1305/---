@@ -1317,6 +1317,38 @@
     renderSettingsPage();
   }
 
+  function uzumProxyUrl(apiPath) {
+    const path = String(apiPath || '').replace(/^\/+/, '');
+    return `/api/uzum-proxy?path=${encodeURIComponent(path)}`;
+  }
+
+  async function uzumFetch(apiPath, options = {}) {
+    const token = getToken();
+    if (!token) throw new Error('Нет токена');
+    const headers = Object.assign(
+      {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json'
+      },
+      options.headers || {}
+    );
+    const path = String(apiPath || '').replace(/^\/+/, '');
+    // Предпочитаем Vercel serverless-прокси (без CORS)
+    try {
+      const proxied = await fetch(uzumProxyUrl(path), { ...options, headers });
+      // 404 HTML = прокси ещё не задеплоен
+      const ct = proxied.headers.get('content-type') || '';
+      if (proxied.status === 404 && ct.includes('text/html')) {
+        throw new Error('proxy-missing');
+      }
+      return proxied;
+    } catch (e) {
+      if (String(e?.message) !== 'proxy-missing' && !(e instanceof TypeError)) throw e;
+      // Fallback: прямой запрос (часто падает из-за CORS в браузере)
+      return fetch(`${UZUM_API}/${path}`, { ...options, headers });
+    }
+  }
+
   async function syncUzum() {
     const token = getToken();
     if (!token) {
@@ -1324,15 +1356,25 @@
       return;
     }
     try {
-      const res = await fetch(`${UZUM_API}/seller/products/?page=0&size=1`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json'
-        }
+      const res = await uzumFetch('seller/products/?page=0&size=1');
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${errText ? ': ' + errText.slice(0, 180) : ''}`);
+      }
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (_) { /* ignore */ }
+      const countHint =
+        data && (data.totalElements != null || data.total != null || Array.isArray(data.content))
+          ? ` Ответ API получен${data.totalElements != null ? ` (total: ${data.totalElements})` : ''}.`
+          : ' Ответ API получен.';
+      saveSyncMeta({
+        lastSyncAt: new Date().toISOString(),
+        lastStatus: 'ok',
+        lastHttp: res.status
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      saveSyncMeta({ lastSyncAt: new Date().toISOString(), lastStatus: 'ok', lastHttp: res.status });
-      alert('Токен принят API (пробный запрос успешен). Полный импорт заказов/остатков — следующий этап.');
+      alert(`✅ Токен рабочий.${countHint}\nПолный импорт заказов и остатков можно добавить следующим шагом.`);
     } catch (err) {
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
@@ -1340,7 +1382,10 @@
         lastError: String(err?.message || err)
       });
       alert(
-        'Запрос к Uzum API не прошёл (часто CORS из браузера).\nТокен сохранён локально. Для полной синхронизации нужен прокси/расширение или ручная выгрузка.'
+        'Не удалось проверить токен через API.\n\n' +
+          String(err?.message || err) +
+          '\n\nЕсли сайт на Vercel — задеплой свежую версию с папкой /api (прокси). ' +
+          'Локально без прокси браузер часто блокирует CORS.'
       );
     }
     renderSettingsPage();
