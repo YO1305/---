@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const UZUM_API = 'https://api-seller.uzum.uz/api';
+  const UZUM_OPENAPI = 'https://api-seller.uzum.uz/api/seller-openapi';
   const TOKEN_KEY = 'yo_uzum_bearer_token';
   const SYNC_KEY = 'yo_scaleup_sync_meta';
   const ORDERS_KEY = 'yo_uzum_orders_v1';
@@ -113,14 +113,13 @@
   function tokenStatusHtml(token) {
     if (!token) return pill('bad', '❌ Не подключён');
     const meta = readJwtMeta(token);
-    if (meta?.expired) return pill('bad', '⛔ Токен просрочен');
-    if (meta?.secondsLeft != null && meta.secondsLeft < 600) {
+    // OpenAPI-ключ обычно не JWT — просто «ключ есть»
+    if (!meta) return pill('ok', '✅ API-ключ есть');
+    if (meta.expired) return pill('bad', '⛔ Ключ/токен просрочен');
+    if (meta.secondsLeft != null && meta.secondsLeft < 600) {
       return pill('warn', `⏳ ~${Math.max(1, Math.ceil(meta.secondsLeft / 60))} мин`);
     }
-    if (meta?.secondsLeft != null) {
-      return pill('ok', `✅ ~${Math.ceil(meta.secondsLeft / 60)} мин`);
-    }
-    return pill('ok', '✅ Токен есть');
+    return pill('ok', '✅ API-ключ есть');
   }
 
   function getSyncMeta() {
@@ -1021,17 +1020,6 @@
       </div>`;
   }
 
-  function bookmarkletHref() {
-    // Важно: код выполняется на seller.uzum.uz — токен кладём в буфер + показываем,
-    // чтобы пользователь вставил его в YO (localStorage чужого домена недоступен).
-    const code = `(function(){function pick(){var keys=['access_token','accessToken','token','sellerToken','bearerToken','id_token','access-token'];var i,v,k,m,o;function jwt(s){m=String(s||'').match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/);return m?m[0]:null;}for(i=0;i<keys.length;i++){v=localStorage.getItem(keys[i]);if(v&&v.length>80){m=jwt(v)||String(v).replace(/^Bearer\\s+/i,'').trim();if(m&&m.length>80)return m;}}try{for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i)||'';v=sessionStorage.getItem(k);m=jwt(v);if(m&&/token|auth|bearer|oauth|keycloak/i.test(k+v))return m;}}catch(e){}try{for(i=0;i<localStorage.length;i++){k=localStorage.key(i)||'';v=localStorage.getItem(k);if(!v||v.length<40)continue;m=jwt(v);if(!m)continue;if(/token|auth|bearer|oauth|oidc|keycloak|access/i.test(k)||k.indexOf('oidc')>=0)return m;if(v.charAt(0)==='{'){try{o=JSON.parse(v);if(o.access_token)return jwt(o.access_token)||o.access_token;if(o.accessToken)return jwt(o.accessToken)||o.accessToken;}catch(e){}}}}catch(e){}return null;}var t=pick();if(!t){alert('❌ Токен не найден.\\n\\nСделай так:\\n1) F12 → Console\\n2) Вставь код из YO → Настройки\\nИли Application → Local Storage → ищи access_token');return;}t=String(t).replace(/^Bearer\\s+/i,'').trim();function done(ok){prompt((ok?'✅ Скопировано в буфер. ':'')+'Вставь этот токен в YO → Настройки:',t);}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){done(true);}).catch(function(){done(false);});}else{done(false);}})();`;
-    return 'javascript:' + encodeURIComponent(code);
-  }
-
-  function consoleSnippet() {
-    return `(() => { const jwt = s => (String(s||'').match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/)||[])[0]; const keys=['access_token','accessToken','token','sellerToken','bearerToken']; for (const k of keys) { const v = localStorage.getItem(k); const t = jwt(v)||v; if (t && t.length>80) { console.log('KEY',k); copy(t); return alert('Токен скопирован (ключ '+k+'). Вставь в YO → Настройки'); } } for (const store of [localStorage, sessionStorage]) { for (let i=0;i<store.length;i++){ const k=store.key(i); const v=store.getItem(k); const t=jwt(v); if(t && /token|auth|oauth|access|oidc|keycloak/i.test(k+String(v).slice(0,200))){ console.log('FOUND',k); copy(t); return alert('Токен скопирован из '+k+'. Вставь в YO'); } } } alert('Токен не найден. Обнови seller.uzum.uz и попробуй снова'); })();`;
-  }
-
   function renderSettingsPage() {
     const root = document.getElementById('settingsTabContent');
     if (!root) return;
@@ -1040,46 +1028,41 @@
     const lastSync = meta.lastSyncAt
       ? new Date(meta.lastSyncAt).toLocaleString('ru-RU')
       : 'ещё не было';
-    const snip = consoleSnippet();
     root.innerHTML = `
       <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">⚙️ Настройки</h2>
       <div class="sc-settings-wrap">
         <div class="sc-settings-block">
           <div class="sc-settings-title">
-            🔌 Uzum Market API
+            🔌 Uzum Seller OpenAPI
             <span style="margin-left:auto">${tokenStatusHtml(token)}</span>
           </div>
+
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px 16px;margin-bottom:16px;font-size:13px;line-height:1.5;color:var(--text)">
+            Используем <strong>официальный OpenAPI</strong>, не сессию кабинета.<br>
+            Документация:
+            <a href="https://api-seller.uzum.uz/api/seller-openapi/swagger/swagger-ui/webjars/swagger-ui/index.html" target="_blank" rel="noopener">Swagger OpenAPI</a>
+            · ключ в кабинете:
+            <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">seller.uzum.uz → API ключи</a>
+          </div>
+
           <label style="display:block;margin-bottom:12px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:6px">Вставь access_token сюда</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без слова Bearer)</div>
             <div style="display:flex;gap:8px">
-              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь токен (начинается с eyJ...)" value="" autocomplete="off">
+              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь API-ключ из кабинета Uzum" value="" autocomplete="off">
               <button type="button" class="btn-secondary" data-sc-toggle-token title="Показать/скрыть">👁</button>
             </div>
-            <div style="font-size:12px;color:var(--muted);margin-top:6px">⏱ Живёт ~30–40 мин. Network искать не нужно — используй Console или закладку ниже.</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:6px">OpenAPI шлёт ключ в заголовке Authorization <em>без</em> Bearer. Console / Network не нужны.</div>
           </label>
 
           <div style="background:var(--accent-soft);border:1px solid #c4b5fd;border-radius:12px;padding:16px;margin-bottom:16px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">✅ Способ 1 — Console (самый простой)</div>
-            <ol style="margin:0 0 12px;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.55">
-              <li>Открой <a href="https://seller.uzum.uz" target="_blank" rel="noopener">seller.uzum.uz</a> и войди</li>
-              <li>Нажми <strong>F12</strong> → вкладка <strong>Console</strong> (не Network)</li>
-              <li>Вставь код ниже и Enter — токен скопируется</li>
-              <li>Вернись сюда → Ctrl+V в поле → «Сохранить и проверить»</li>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Как получить ключ (1 минута)</div>
+            <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.55">
+              <li>Зайди в кабинет под <strong>владельцем</strong> аккаунта</li>
+              <li>Открой <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">Настройки → API ключи</a></li>
+              <li>Нажми «Создать ключ» → название (например YO) → магазин → права (чтение или редактирование) → срок</li>
+              <li>Скопируй ключ сразу (потом его не покажут) и вставь сюда</li>
+              <li>Нажми «Сохранить и проверить»</li>
             </ol>
-            <textarea id="sc-console-snip" class="sc-token-input" readonly rows="4" style="font-size:11px;line-height:1.35;resize:vertical">${esc(snip)}</textarea>
-            <div class="toolbar" style="margin-top:10px;gap:8px">
-              <button type="button" class="btn-primary" data-sc-copy-console>📋 Скопировать код для Console</button>
-            </div>
-          </div>
-
-          <div style="background:var(--surface-2);border:1px solid var(--border-color);border-radius:12px;padding:16px;margin-bottom:16px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">⚡ Способ 2 — закладка</div>
-            <ol style="margin:0 0 12px;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.5">
-              <li>Перетащи кнопку в панель закладок</li>
-              <li>На вкладке seller.uzum.uz нажми закладку</li>
-              <li>В окне будет токен — скопируй и вставь сюда</li>
-            </ol>
-            <a class="sc-bookmarklet" href="${bookmarkletHref()}">📎 YO: Получить токен Uzum</a>
           </div>
 
           <div class="toolbar" style="gap:10px;flex-wrap:wrap">
@@ -1087,7 +1070,10 @@
             <button type="button" class="btn-secondary" data-sc-sync>🔄 Синхронизировать</button>
             <button type="button" class="btn-danger" data-sc-clear-token>🗑 Удалить</button>
           </div>
-          <p class="sub" style="margin-top:12px">Последняя синхронизация: <strong>${esc(lastSync)}</strong></p>
+          <p class="sub" style="margin-top:12px">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
+            ${meta.shopsCount != null ? ` · магазинов: <strong>${esc(meta.shopsCount)}</strong>` : ''}
+            ${meta.shopId ? ` · shopId: <strong>${esc(meta.shopId)}</strong>` : ''}
+          </p>
         </div>
 
         <div class="sc-settings-block">
@@ -1095,22 +1081,22 @@
           <div class="sc-sync-grid">
             <div class="sc-sync-item"><div class="sc-sync-icon">📋</div><div class="sc-sync-body">
               <div class="sc-sync-name">Товары и SKU</div>
-              <div class="sc-sync-desc">Каталог seller API</div>
+              <div class="sc-sync-desc">GET /v1/product/shop/{id}</div>
               <div class="sc-sync-stat">${_products.length} SKU в базе YO</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">🛒</div><div class="sc-sync-body">
               <div class="sc-sync-name">Заказы и продажи</div>
-              <div class="sc-sync-desc">yo_uzum_orders_v1</div>
+              <div class="sc-sync-desc">GET /v1/finance/orders · /v2/fbs/orders</div>
               <div class="sc-sync-stat">${_orders.length} записей</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">💰</div><div class="sc-sync-body">
               <div class="sc-sync-name">Выплаты и расходы</div>
-              <div class="sc-sync-desc">finance_payments + API</div>
+              <div class="sc-sync-desc">GET /v1/finance/expenses</div>
               <div class="sc-sync-stat">${_finance.length} записей</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">📦</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Остатки FBO</div>
-              <div class="sc-sync-desc">через sync stocks</div>
+              <div class="sc-sync-name">Остатки FBO/FBS</div>
+              <div class="sc-sync-desc">GET /v3/fbs/sku/stocks</div>
               <div class="sc-sync-stat">${_products.reduce((s, p) => s + productStock(p), 0)} шт в базе</div>
             </div></div>
           </div>
@@ -1126,16 +1112,6 @@
                 : `${pill('bad', '● Не подключён')} — используется localStorage`
             }
           </p>
-        </div>
-
-        <div class="sc-settings-block">
-          <div class="sc-settings-title">📖 Если Console тоже пусто</div>
-          <ol style="margin:0;padding-left:18px;font-size:13px;line-height:1.55;color:var(--muted)">
-            <li>F12 → <strong>Application</strong> (Приложение) → Local Storage → <code>https://seller.uzum.uz</code></li>
-            <li>Ищи ключ с <code>access_token</code> / <code>token</code> / <code>oidc</code> — значение начинается с <code>eyJ</code></li>
-            <li>Скопируй значение (без слова Bearer) и вставь сюда</li>
-            <li>Network часто пустой из‑за фильтра — его можно не использовать</li>
-          </ol>
         </div>
       </div>`;
   }
@@ -1361,29 +1337,23 @@
     let raw = String(inp?.value || '').trim();
     if (!raw || raw.startsWith('••••')) {
       if (!getToken()) {
-        alert('Вставьте Bearer токен');
+        alert('Вставь API-ключ из seller.uzum.uz → API ключи');
         return;
       }
       void syncUzum();
       return;
     }
     raw = cleanToken(raw);
-    if (raw.length < 40) {
-      alert('Токен слишком короткий. Скопируй access_token целиком (обычно начинается с eyJ).');
+    if (raw.length < 16) {
+      alert('Ключ слишком короткий. Скопируй API-ключ целиком из кабинета Uzum (Настройки → API ключи).');
       return;
     }
     localStorage.setItem(TOKEN_KEY, raw);
-    const meta = readJwtMeta(raw);
-    if (meta?.expired) {
-      alert('Токен уже просрочен. Открой seller.uzum.uz и возьми свежий Authorization → Bearer.');
-      renderSettingsPage();
-      return;
-    }
     void syncUzum();
   }
 
   function clearToken() {
-    if (!confirm('Удалить сохранённый токен Uzum?')) return;
+    if (!confirm('Удалить сохранённый API-ключ Uzum?')) return;
     localStorage.removeItem(TOKEN_KEY);
     renderSettingsPage();
   }
@@ -1394,11 +1364,12 @@
   }
 
   async function uzumFetch(apiPath, options = {}) {
-    const token = getToken();
-    if (!token) throw new Error('Нет токена');
+    const token = cleanToken(getToken());
+    if (!token) throw new Error('Нет API-ключа');
+    // OpenAPI: Authorization = сырой ключ, БЕЗ "Bearer "
     const headers = Object.assign(
       {
-        Authorization: `Bearer ${token}`,
+        Authorization: token,
         Accept: 'application/json',
         'Accept-Language': 'ru-RU'
       },
@@ -1414,26 +1385,25 @@
       return proxied;
     } catch (e) {
       if (String(e?.message) !== 'proxy-missing' && !(e instanceof TypeError)) throw e;
-      return fetch(`${UZUM_API}/${path}`, { ...options, headers });
+      return fetch(`${UZUM_OPENAPI}/${path}`, { ...options, headers });
     }
   }
 
   function explainUzumHttpError(status, errText) {
     if (status === 401 || /unauthorized/i.test(errText)) {
       return (
-        'Uzum отклонил токен (HTTP 401 Unauthorized).\n\n' +
-        'Это не CORS и не поломка прокси — access_token недействителен или истёк (~30–40 мин).\n\n' +
-        'Что сделать:\n' +
-        '1) Открой https://seller.uzum.uz\n' +
-        '2) F12 → Console (не Network)\n' +
-        '3) В YO → Настройки нажми «Скопировать код для Console» и вставь в Console\n' +
-        '4) Вернись в YO, вставь токен → «Сохранить и проверить»'
+        'Uzum отклонил API-ключ (HTTP 401).\n\n' +
+        'Нужен ключ из OpenAPI, не сессия кабинета.\n\n' +
+        '1) https://seller.uzum.uz/seller/api-keys\n' +
+        '2) Создать ключ → скопировать\n' +
+        '3) Вставить в YO → Сохранить и проверить\n\n' +
+        'Swagger: api-seller.uzum.uz → seller-openapi'
       );
     }
     if (status === 403) {
-      return 'Доступ запрещён (403). Проверь, что токен от нужного магазина/аккаунта продавца.';
+      return 'Доступ запрещён (403). Создай ключ с нужными правами/магазином в API ключи.';
     }
-    if (String(errText).includes('proxy-missing') || status === 404) {
+    if (String(errText).includes('proxy-missing')) {
       return 'Прокси /api/uzum-proxy не найден. Задеплой на Vercel папку api/.';
     }
     return `HTTP ${status}${errText ? ': ' + errText.slice(0, 220) : ''}`;
@@ -1442,24 +1412,14 @@
   async function syncUzum() {
     const token = cleanToken(getToken());
     if (!token) {
-      alert('Сначала сохрани Bearer токен');
+      alert('Сначала вставь API-ключ из кабинета (Настройки → API ключи)');
       return;
     }
     if (token !== getToken()) localStorage.setItem(TOKEN_KEY, token);
 
-    const meta = readJwtMeta(token);
-    if (meta?.expired) {
-      alert(
-        'Токен просрочен (поле exp в JWT уже в прошлом).\n\n' +
-          'Возьми новый access_token в seller.uzum.uz и сохрани снова.'
-      );
-      renderSettingsPage();
-      return;
-    }
-
     try {
-      // Правильный endpoint кабинета: список магазинов (не /seller/products/)
-      const res = await uzumFetch('seller/shop/');
+      // OpenAPI: GET /v1/shops
+      const res = await uzumFetch('v1/shops');
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
         throw new Error(explainUzumHttpError(res.status, errText));
@@ -1481,22 +1441,28 @@
       let productHint = '';
 
       if (shopId) {
-        const q =
-          `seller/shop/${shopId}/product/getProducts?searchQuery=&filter=ALL&sortBy=id&order=descending&size=1&page=0`;
-        const pRes = await uzumFetch(q);
+        const pRes = await uzumFetch(`v1/product/shop/${shopId}`);
         if (pRes.ok) {
           let pData = null;
           try {
             pData = await pRes.json();
           } catch (_) { /* ignore */ }
+          const list = Array.isArray(pData)
+            ? pData
+            : Array.isArray(pData?.payload)
+              ? pData.payload
+              : Array.isArray(pData?.productList)
+                ? pData.productList
+                : Array.isArray(pData?.skuList)
+                  ? pData.skuList
+                  : [];
           const total =
             pData?.totalElements ??
-            pData?.payload?.totalElements ??
             pData?.total ??
-            null;
+            (list.length ? list.length : null);
           productHint =
             total != null
-              ? `\nТовары API: ${total} (магазин #${shopId}).`
+              ? `\nТовары OpenAPI: ${total} (магазин #${shopId}).`
               : `\nКаталог магазина #${shopId} доступен.`;
         } else {
           productHint = `\nМагазин #${shopId} найден, каталог: HTTP ${pRes.status}.`;
@@ -1508,15 +1474,12 @@
         lastStatus: 'ok',
         lastHttp: res.status,
         shopId: shopId || null,
-        shopsCount: shops.length
+        shopsCount: shops.length,
+        api: 'seller-openapi'
       });
-      const left =
-        meta?.secondsLeft != null
-          ? `\nТокену осталось ~${Math.max(1, Math.ceil(meta.secondsLeft / 60))} мин.`
-          : '';
       alert(
-        `✅ Токен рабочий. Магазинов: ${shops.length}.${productHint}${left}\n` +
-          'Полный импорт заказов/остатков — следующим шагом.'
+        `✅ OpenAPI-ключ рабочий. Магазинов: ${shops.length}.${productHint}\n` +
+          'Дальше можно тянуть заказы/финансы/остатки через те же endpoints.'
       );
     } catch (err) {
       saveSyncMeta({
@@ -1525,9 +1488,13 @@
         lastError: String(err?.message || err)
       });
       const msg = String(err?.message || err);
-      alert(msg.startsWith('Uzum отклонил') || msg.startsWith('Токен') || msg.startsWith('Доступ') || msg.startsWith('Прокси')
-        ? msg
-        : 'Не удалось проверить токен через API.\n\n' + msg);
+      alert(
+        msg.startsWith('Uzum отклонил') ||
+          msg.startsWith('Доступ') ||
+          msg.startsWith('Прокси')
+          ? msg
+          : 'Не удалось проверить API-ключ.\n\n' + msg
+      );
     }
     renderSettingsPage();
   }
@@ -1656,23 +1623,6 @@
       }
       if (e.target.closest('#scSettingsBackYo')) {
         if (typeof openPage === 'function') openPage('dashboard-page');
-        return;
-      }
-      if (e.target.closest('[data-sc-copy-console]')) {
-        const ta = document.getElementById('sc-console-snip');
-        const text = ta?.value || consoleSnippet();
-        if (navigator.clipboard?.writeText) {
-          navigator.clipboard.writeText(text).then(
-            () => alert('Код скопирован. Открой seller.uzum.uz → F12 → Console → Ctrl+V → Enter'),
-            () => {
-              ta?.select();
-              alert('Выдели код вручную (Ctrl+C), потом вставь в Console на seller.uzum.uz');
-            }
-          );
-        } else {
-          ta?.select();
-          alert('Выдели код вручную (Ctrl+C), потом вставь в Console на seller.uzum.uz');
-        }
         return;
       }
       if (e.target.closest('[data-sc-toggle-token]')) toggleToken();

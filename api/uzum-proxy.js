@@ -1,14 +1,21 @@
 /**
- * Vercel Serverless: прокси к Uzum Seller API (обход CORS из браузера).
- * GET/POST /api/uzum-proxy?path=seller/products/?page=0&size=1
- * Заголовок Authorization: Bearer <token> пробрасывается как есть.
+ * Vercel Serverless: прокси к Uzum Seller OpenAPI (обход CORS).
+ *
+ * GET /api/uzum-proxy?path=v1/shops
+ * Header: Authorization: <api-key>   ← БЕЗ префикса Bearer (так требует OpenAPI)
+ *
+ * Docs: https://api-seller.uzum.uz/api/seller-openapi/swagger/...
  */
-const UZUM_BASE = 'https://api-seller.uzum.uz/api';
+const OPENAPI_BASE = 'https://api-seller.uzum.uz/api/seller-openapi';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, Accept-Language');
+}
+
+function isAllowedOpenApiPath(p) {
+  return /^(v1|v2|v3)\//i.test(p);
 }
 
 module.exports = async function handler(req, res) {
@@ -26,15 +33,21 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const rawPath = String(req.query?.path || '').trim().replace(/^\/+/, '');
-  if (!rawPath || !rawPath.startsWith('seller/')) {
+  let rawPath = String(req.query?.path || '').trim().replace(/^\/+/, '');
+  // Совместимость: если кто-то передал seller-openapi/v1/...
+  rawPath = rawPath.replace(/^seller-openapi\/+/i, '');
+
+  if (!rawPath || !isAllowedOpenApiPath(rawPath)) {
     res.statusCode = 400;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'Query path required, e.g. path=seller/products/?page=0&size=1' }));
+    res.end(
+      JSON.stringify({
+        error: 'Query path required, e.g. path=v1/shops or path=v1/product/shop/{shopId}'
+      })
+    );
     return;
   }
 
-  // Защита от path traversal / чужих хостов
   if (rawPath.includes('://') || rawPath.includes('..')) {
     res.statusCode = 400;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -42,15 +55,24 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const auth = req.headers.authorization || '';
-  if (!auth || !/^Bearer\s+\S+/i.test(auth)) {
+  // OpenAPI: Authorization = сырой API-ключ (без "Bearer ")
+  let auth = String(req.headers.authorization || '').trim();
+  if (!auth) {
     res.statusCode = 401;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'Missing Authorization Bearer token' }));
+    res.end(JSON.stringify({ error: 'Missing Authorization API key' }));
+    return;
+  }
+  // Если клиент по ошибке прислал Bearer — снимем префикс
+  auth = auth.replace(/^Bearer\s+/i, '').trim();
+  if (!auth) {
+    res.statusCode = 401;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: 'Empty Authorization API key' }));
     return;
   }
 
-  const url = `${UZUM_BASE}/${rawPath}`;
+  const url = `${OPENAPI_BASE}/${rawPath}`;
   const headers = {
     Authorization: auth,
     Accept: 'application/json',
