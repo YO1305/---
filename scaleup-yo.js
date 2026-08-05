@@ -34,6 +34,8 @@
   let _prodFilter = 'all';
   let _wired = false;
   let _assortTab = 'products';
+  let _selectedSkuKey = '';
+  let _syncBusy = false;
 
   try {
     _dismissed = new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]'));
@@ -225,31 +227,73 @@
     return map;
   }
 
+  function statusLabel(status) {
+    if (!status) return '';
+    if (typeof status === 'string') return status;
+    return String(status.value || status.name || status.title || status.description || '').trim();
+  }
+
+  function statusIsOnSale(status) {
+    const s = statusLabel(status).toUpperCase();
+    return /IN_STOCK|ON_SALE|ACTIVE|SALE|В ПРОДАЖ|ПРОДАЖ|AVAILABLE/.test(s) || s === '1';
+  }
+
   function flattenApiProducts(apiList) {
     const out = [];
+    const shopIdFallback = getSyncMeta().shopId || null;
     (apiList || []).forEach((card) => {
       const skus = Array.isArray(card.skuList) && card.skuList.length ? card.skuList : [null];
       skus.forEach((sku) => {
-        const skuCode = String(sku?.skuTitle || sku?.skuFullTitle || sku?.barcode || card.skuTitle || card.productId || '').trim();
-        const stock =
-          Number(sku?.quantityActive ?? sku?.quantityFull ?? card.quantityActive ?? card.quantityFbo ?? 0) || 0;
-        const price = Number(sku?.sellPrice ?? sku?.fullPrice ?? sku?.price ?? 0) || 0;
+        const skuCode = String(
+          sku?.skuTitle || sku?.skuFullTitle || sku?.article || sku?.barcode || card.skuTitle || card.productId || ''
+        ).trim();
+        if (!skuCode) return;
+        const qActive = Number(sku?.quantityActive ?? card.quantityActive ?? 0) || 0;
+        const qFbo = Number(sku?.quantityFbo ?? card.quantityFbo ?? 0) || 0;
+        const qFbs = Number(sku?.quantityFbs ?? card.quantityFbs ?? 0) || 0;
+        const stock = qActive || qFbo + qFbs;
+        const price = Number(sku?.price ?? sku?.sellPrice ?? sku?.fullPrice ?? card.price ?? 0) || 0;
+        const commission =
+          Number(
+            sku?.commission ??
+              card.commissionDto?.maxCommission ??
+              card.commissionDto?.minCommission ??
+              card.commission ??
+              0
+          ) || 0;
+        const avgd = Number(sku?.avgdsales ?? 0) || 0;
+        const turnoverDays = avgd > 0 ? Math.round(stock / avgd) : null;
+        const paidStorage =
+          sku?.pstorage || Number(sku?.paidStorageAmount ?? sku?.paidStoragePriceItem ?? 0) > 0;
+        const paidStorageAmount = Number(sku?.paidStorageAmount ?? sku?.paidStoragePriceItem ?? 0) || 0;
         out.push({
           id: sku?.skuId || card.productId,
           productId: card.productId,
-          sku: skuCode,
           skuId: sku?.skuId,
-          name: card.title || card.skuTitle || skuCode,
-          title: card.title || card.skuTitle || skuCode,
-          image: card.previewImg || card.image || '',
-          rating: card.rating,
-          status: card.status,
+          sku: skuCode,
+          barcode: sku?.barcode != null ? String(sku.barcode) : '',
+          name: card.title || sku?.productTitle || card.skuTitle || skuCode,
+          title: card.title || sku?.productTitle || card.skuTitle || skuCode,
+          image: card.previewImg || sku?.previewImage || card.image || '',
+          rating: card.rating != null ? Number(card.rating) : null,
+          reviews: Number(card.reviewsCount || card.feedbackQuantity || card.reviews || 0) || 0,
+          category: card.categoryTitle || card.category?.title || card.category || '',
+          status: statusLabel(card.status),
+          statusRaw: card.status,
+          commission,
           stockQty: stock,
-          quantityActive: stock,
+          quantityActive: qActive,
+          quantityFbo: qFbo,
+          quantityFbs: qFbs,
           price,
           sellPrice: price,
           cost: _yoCostMap[skuCode] || 0,
-          source: 'openapi'
+          shopId: card.shopId || shopIdFallback,
+          turnoverDays,
+          paidStorage,
+          paidStorageAmount,
+          source: 'openapi',
+          _key: `${card.productId || ''}:${sku?.skuId || skuCode}`
         });
       });
     });
@@ -285,26 +329,27 @@
     _expenses = readLocal(EXPENSES_KEY, []);
     _fbsOrders = readLocal(FBS_KEY, []);
     const apiProducts = readLocal(API_PRODUCTS_KEY, []);
+
+    // Ассортимент = Uzum OpenAPI. YO только для себестоимости (и fallback, если кэша API нет).
     if (apiProducts.length) {
       _products = flattenApiProducts(apiProducts);
-      // merge YO-only SKUs without API match
-      yoProducts.forEach((yp) => {
-        const sku = productSku(yp);
-        if (sku && !_products.some((p) => productSku(p) === sku)) {
-          _products.push({
-            ...yp,
-            name: yp.name || yp.title || sku,
-            stockQty: productStock(yp),
-            cost: productCost(yp),
-            source: 'yo'
-          });
-        }
-      });
+      _hasApiData = true;
     } else {
-      _products = yoProducts.slice();
+      _products = yoProducts.map((yp) => ({
+        ...yp,
+        name: yp.name || yp.title || productSku(yp),
+        title: yp.title || yp.name || productSku(yp),
+        stockQty: productStock(yp),
+        cost: productCost(yp),
+        source: 'yo',
+        _key: `yo:${productSku(yp)}`
+      }));
+      _hasApiData = _orders.length > 0;
     }
 
-    _hasApiData = _orders.length > 0 || apiProducts.length > 0;
+    if (_selectedSkuKey && !_products.some((p) => p._key === _selectedSkuKey || productSku(p) === _selectedSkuKey)) {
+      _selectedSkuKey = '';
+    }
     updateDataSourceBadge();
     render();
   }
@@ -348,20 +393,37 @@
     }
   }
 
+  async function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   async function uzumJson(apiPath) {
-    const res = await uzumFetch(apiPath);
-    const text = await res.text().catch(() => '');
-    if (!res.ok) {
-      const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-      err.status = res.status;
-      err.body = text;
-      throw err;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await uzumFetch(apiPath);
+      const text = await res.text().catch(() => '');
+      if (res.status === 429) {
+        lastErr = new Error(`HTTP 429: ${text.slice(0, 200)}`);
+        lastErr.status = 429;
+        lastErr.body = text;
+        const wait = Math.min(45000, 2000 * Math.pow(2, attempt) + Math.random() * 800);
+        setSyncBusy(true, `Лимит Uzum (429). Пауза ${Math.round(wait / 1000)}с…`);
+        await sleep(wait);
+        continue;
+      }
+      if (!res.ok) {
+        const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+        err.status = res.status;
+        err.body = text;
+        throw err;
+      }
+      try {
+        return text ? JSON.parse(text) : null;
+      } catch {
+        return null;
+      }
     }
-    try {
-      return text ? JSON.parse(text) : null;
-    } catch {
-      return null;
-    }
+    throw lastErr || new Error('HTTP 429: слишком много запросов к Uzum');
   }
 
   function unwrapList(data, keys) {
@@ -374,10 +436,12 @@
     return [];
   }
 
-  async function fetchPaged(buildPath, extract, maxPages) {
+  async function fetchPaged(buildPath, extract, maxPages, pageDelayMs) {
     const out = [];
-    const limit = maxPages || 15;
+    const limit = maxPages || 8;
+    const delay = pageDelayMs == null ? 900 : pageDelayMs;
     for (let page = 0; page < limit; page++) {
+      if (page > 0 && delay > 0) await sleep(delay);
       const data = await uzumJson(buildPath(page));
       const chunk = extract(data);
       if (!chunk.length) break;
@@ -390,6 +454,13 @@
   }
 
   function explainUzumHttpError(status, errText) {
+    if (status === 429 || /429|too many|rate/i.test(errText || '')) {
+      return (
+        'Uzum ограничил частоту запросов (HTTP 429).\n\n' +
+        'Подожди 2–5 минут и нажми «Синхронизировать» ещё раз.\n' +
+        'Товары сохраняются первыми — заказы/FBS можно дотянуть позже.'
+      );
+    }
     if (status === 401 || /unauthorized/i.test(errText || '')) {
       return (
         'Uzum отклонил API-ключ (HTTP 401).\n\n' +
@@ -404,63 +475,95 @@
   }
 
   async function syncUzum() {
+    if (_syncBusy) return;
     const token = cleanToken(getToken());
     if (!token) {
       alert('Сначала вставь API-ключ (Настройки → API ключи Uzum)');
       return;
     }
     localStorage.setItem(TOKEN_KEY, token);
+    _syncBusy = true;
+    setSyncBusy(true, 'Идёт синхронизация с Uzum OpenAPI…');
+
+    let productCards = readLocal(API_PRODUCTS_KEY, []);
+    let orders = readLocal(ORDERS_KEY, []);
+    let expenses = readLocal(EXPENSES_KEY, []);
+    let fbs = readLocal(FBS_KEY, []);
+    let shopId = getSyncMeta().shopId || null;
+    const warnings = [];
 
     try {
       const shopsRaw = await uzumJson('v1/shops');
       const shops = unwrapList(shopsRaw, ['shops', 'organizations']);
       const shop = shops[0] || null;
-      const shopId = shop?.id || shop?.shopId || null;
+      shopId = shop?.id || shop?.shopId || shopId;
       if (!shopId) throw new Error('Магазины не найдены по API-ключу');
 
-      const dateFrom = periodStartMs(Math.max(_periodDays, 90));
+      const dateFrom = periodStartMs(Math.min(Math.max(_periodDays, 30), 90));
       const dateTo = periodEndMs();
 
-      // Products
-      const productCards = await fetchPaged(
-        (page) =>
-          `v1/product/shop/${shopId}?searchQuery=&sortBy=DEFAULT&order=DESC&size=50&page=${page}`,
-        (data) => unwrapList(data, ['productList']),
-        20
-      );
-      writeLocal(API_PRODUCTS_KEY, productCards);
+      // 1) Товары — приоритет (карточки ScaleUp)
+      setSyncBusy(true, 'Загрузка товаров (медленно, без 429)…');
+      await sleep(400);
+      try {
+        productCards = await fetchPaged(
+          (page) =>
+            `v1/product/shop/${shopId}?searchQuery=&sortBy=DEFAULT&order=DESC&size=50&page=${page}`,
+          (data) => unwrapList(data, ['productList']),
+          8,
+          1100
+        );
+        writeLocal(API_PRODUCTS_KEY, productCards);
+      } catch (e) {
+        if (productCards.length) {
+          warnings.push(`Товары: ${e?.message || e} (оставлен прошлый кэш ${productCards.length})`);
+        } else {
+          throw e;
+        }
+      }
 
-      // Finance orders
-      const orders = await fetchPaged(
-        (page) =>
-          `v1/finance/orders?page=${page}&size=100&group=false&dateFrom=${dateFrom}&dateTo=${dateTo}`,
-        (data) => unwrapList(data, ['orderItems']),
-        25
-      );
-      writeLocal(ORDERS_KEY, orders);
+      // 2) Finance orders — меньше страниц
+      setSyncBusy(true, 'Загрузка заказов…');
+      await sleep(1200);
+      try {
+        orders = await fetchPaged(
+          (page) =>
+            `v1/finance/orders?page=${page}&size=50&group=false&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+          (data) => unwrapList(data, ['orderItems']),
+          6,
+          1200
+        );
+        writeLocal(ORDERS_KEY, orders);
+      } catch (e) {
+        warnings.push(`Заказы: ${e?.message || e}`);
+      }
 
-      // Expenses
-      let expenses = [];
+      // 3) Expenses — soft
+      setSyncBusy(true, 'Загрузка расходов…');
+      await sleep(1000);
       try {
         expenses = await fetchPaged(
           (page) =>
-            `v1/finance/expenses?page=${page}&size=100&dateFrom=${dateFrom}&dateTo=${dateTo}&shopIds=${shopId}`,
+            `v1/finance/expenses?page=${page}&size=50&dateFrom=${dateFrom}&dateTo=${dateTo}&shopIds=${shopId}`,
           (data) => {
             if (Array.isArray(data?.paymentList)) return data.paymentList;
             if (Array.isArray(data?.payload?.paymentList)) return data.payload.paymentList;
             return unwrapList(data, ['payments', 'expenses', 'items', 'content']);
           },
-          10
+          3,
+          1000
         );
+        writeLocal(EXPENSES_KEY, expenses);
       } catch (e) {
-        console.warn('expenses sync', e);
+        warnings.push(`Расходы: ${e?.message || e}`);
       }
-      writeLocal(EXPENSES_KEY, expenses);
 
-      // FBS orders (несколько статусов)
-      const fbs = [];
-      const statuses = ['CREATED', 'PACKING', 'PENDING_DELIVERY', 'DELIVERING', 'COMPLETED', 'CANCELED'];
+      // 4) FBS — только активные статусы, по 1 странице
+      setSyncBusy(true, 'Загрузка FBS…');
+      const fbsNew = [];
+      const statuses = ['CREATED', 'PACKING', 'DELIVERING'];
       for (const st of statuses) {
+        await sleep(900);
         try {
           const chunk = await fetchPaged(
             (page) =>
@@ -469,46 +572,60 @@
               const list = unwrapList(data, ['orders', 'payload']);
               return list.map((o) => ({ ...o, _status: st }));
             },
-            5
+            1,
+            0
           );
-          fbs.push(...chunk);
+          fbsNew.push(...chunk);
         } catch (e) {
-          console.warn('fbs', st, e?.message || e);
+          warnings.push(`FBS ${st}: ${e?.message || e}`);
         }
       }
-      writeLocal(FBS_KEY, fbs);
+      if (fbsNew.length || !warnings.some((w) => w.startsWith('FBS'))) {
+        fbs = fbsNew;
+        writeLocal(FBS_KEY, fbs);
+      }
 
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
-        lastStatus: 'ok',
+        lastStatus: warnings.length ? 'partial' : 'ok',
         shopId,
         shopsCount: shops.length,
         ordersCount: orders.length,
         productsCount: productCards.length,
         expensesCount: expenses.length,
         fbsCount: fbs.length,
-        api: 'seller-openapi'
+        api: 'seller-openapi',
+        lastError: warnings.join(' | ').slice(0, 500)
       });
 
-      alert(
-        `Синхронизация OK\nМагазинов: ${shops.length} (shop #${shopId})\n` +
-          `Товары: ${productCards.length}\nЗаказы finance: ${orders.length}\n` +
-          `Расходы: ${expenses.length}\nFBS: ${fbs.length}`
-      );
       await loadAllData();
-      if (typeof openPage === 'function') {
-        /* stay */
-      }
+      _syncBusy = false;
+      setSyncBusy(false);
+      const warnTxt = warnings.length ? `\n\nЧастично:\n${warnings.slice(0, 4).join('\n')}` : '';
+      alert(
+        `Синхронизация ${warnings.length ? 'частичная' : 'OK'}\n` +
+          `Магазин #${shopId}\nТовары OpenAPI: ${productCards.length}\n` +
+          `Заказы: ${orders.length}\nРасходы: ${expenses.length}\nFBS: ${fbs.length}` +
+          warnTxt
+      );
       renderSettingsPage();
     } catch (err) {
       const status = err?.status;
       const msg = explainUzumHttpError(status, err?.body || err?.message);
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
-        lastStatus: 'error',
+        lastStatus: productCards.length ? 'partial' : 'error',
+        shopId,
+        productsCount: productCards.length,
+        ordersCount: orders.length,
+        expensesCount: expenses.length,
+        fbsCount: fbs.length,
         lastError: String(err?.message || err)
       });
-      alert(msg.startsWith('Uzum') || msg.startsWith('Прокси') ? msg : String(err?.message || err));
+      if (productCards.length) await loadAllData();
+      _syncBusy = false;
+      setSyncBusy(false);
+      alert(msg);
       renderSettingsPage();
     }
   }
@@ -955,6 +1072,96 @@
     return map;
   }
 
+  function assortTabsHtml(active) {
+    const tabs = [
+      ['products', 'Товары'],
+      ['abcxyz', 'ABC/XYZ'],
+      ['profit-share', 'Доли прибыли'],
+      ['unit-economics', 'Юнит-экономика'],
+      ['cost', 'Себестоимость'],
+      ['new-calc', 'Калькулятор']
+    ];
+    return `<div class="sc-assort-tabs">${tabs
+      .map(
+        ([id, label]) =>
+          `<button type="button" class="sc-subtab${active === id ? ' active' : ''}" data-sc-assort="${id}">${label}</button>`
+      )
+      .join('')}</div>`;
+  }
+
+  function copyFieldHtml(label, value) {
+    const v = value == null || value === '' ? '—' : String(value);
+    return `<div class="sc-id-row">
+      <span class="sc-id-label">${esc(label)}</span>
+      <span class="sc-id-val">${esc(v)}</span>
+      ${v !== '—' ? `<button type="button" class="sc-copy-btn" data-sc-copy="${esc(v)}" title="Копировать">⧉</button>` : ''}
+    </div>`;
+  }
+
+  function productDetailHtml(p, sales) {
+    if (!p) {
+      return `<div class="sc-prod-panel-empty">Выбери карточку слева — здесь будет деталь как в ScaleUp</div>`;
+    }
+    const sku = productSku(p);
+    const s = sales[sku] || { qty: 0, revenue: 0, profit: 0 };
+    const stock = productStock(p);
+    const cost = productCost(p);
+    const price = Number(p.sellPrice || p.price || 0) || 0;
+    const onSale = statusIsOnSale(p.statusRaw || p.status);
+    const statusTxt = onSale ? 'В ПРОДАЖЕ' : p.status || (stock > 0 ? 'В ПРОДАЖЕ' : '—');
+    const img = p.image
+      ? `<img class="sc-prod-hero-img" src="${esc(p.image)}" alt="" loading="lazy" />`
+      : `<div class="sc-prod-hero-img sc-prod-hero-ph">нет фото</div>`;
+    const uzumUrl = p.productId ? `https://uzum.uz/ru/product/${p.productId}` : '';
+    return `
+      <div class="sc-prod-detail">
+        <button type="button" class="sc-prod-panel-close" data-sc-close-panel aria-label="Закрыть">×</button>
+        ${img}
+        <h3 class="sc-prod-detail-title">${esc(p.name || p.title || sku)}</h3>
+        <div class="sc-prod-detail-badges">
+          ${pill(onSale || stock > 0 ? 'ok' : 'bad', statusTxt)}
+          ${p.source === 'openapi' ? pill('ok', 'OpenAPI') : pill('warn', 'YO база')}
+        </div>
+        <div class="sc-prod-metrics">
+          <div><div class="sc-m-label">Цена</div><div class="sc-m-val">${money(price)}</div></div>
+          <div><div class="sc-m-label">Остаток</div><div class="sc-m-val ${stock > 0 ? 'ok' : 'bad'}">${stock} шт</div></div>
+          <div><div class="sc-m-label">Рейтинг</div><div class="sc-m-val">${p.rating != null ? Number(p.rating).toFixed(1) : '—'}</div></div>
+          <div><div class="sc-m-label">Отзывы</div><div class="sc-m-val">${p.reviews || 0}</div></div>
+        </div>
+        <button type="button" class="btn-secondary sc-prod-cost-btn" data-sc-open-cost>Редактировать себестоимость</button>
+        <div class="sc-prod-section">
+          <div class="sc-prod-section-title">Воронка товара</div>
+          <div class="sc-muted-note">Продажи за период: ${s.qty} шт · ${money(s.revenue)}
+            ${s.qty ? '' : '<br>Нет данных воронки по этому SKU за выбранный период'}</div>
+        </div>
+        <div class="sc-prod-section">
+          <div class="sc-prod-section-title">Идентификаторы</div>
+          ${copyFieldHtml('SKU', sku)}
+          ${copyFieldHtml('PRODUCT ID', p.productId)}
+          ${copyFieldHtml('ШК', p.barcode)}
+        </div>
+        <div class="sc-prod-section">
+          <div class="sc-prod-section-title">Данные карточки</div>
+          ${copyFieldHtml('Категория', p.category)}
+          ${copyFieldHtml('Комиссия', p.commission ? `${p.commission}%` : '')}
+          ${copyFieldHtml('Shop ID', p.shopId)}
+          ${copyFieldHtml('SKU ID', p.skuId)}
+          ${copyFieldHtml('Оборачиваемость', p.turnoverDays != null ? `${p.turnoverDays} дн.` : '')}
+          ${copyFieldHtml('Себестоимость YO', cost ? money(cost) : 'не задана')}
+          ${
+            p.paidStorage
+              ? `<div class="sc-paid-badge">Платно: ${esc(String(p.paidStorageAmount || '—'))}</div>`
+              : ''
+          }
+        </div>
+        ${
+          uzumUrl
+            ? `<a class="sc-uzum-link" href="${esc(uzumUrl)}" target="_blank" rel="noopener">Открыть на Uzum</a>`
+            : ''
+        }
+      </div>`;
+  }
+
   function viewProducts() {
     const sales = salesBySku();
     const rows = _products
@@ -963,53 +1170,67 @@
         const s = sales[sku] || { qty: 0, revenue: 0, profit: 0 };
         const cost = productCost(p);
         const stock = productStock(p);
-        return { p, sku, s, cost, stock, hasc: cost > 0 };
+        const key = p._key || sku;
+        return { p, sku, s, cost, stock, hasc: cost > 0, key };
       })
-      .sort((a, b) => b.s.revenue - a.s.revenue);
+      .sort((a, b) => b.stock - a.stock || b.s.revenue - a.s.revenue);
+
+    if (!_selectedSkuKey && rows[0]) _selectedSkuKey = rows[0].key;
+    const selected = rows.find((r) => r.key === _selectedSkuKey)?.p || null;
 
     const withStock = rows.filter((r) => r.stock > 0).length;
-    const withCost = rows.filter((r) => r.hasc).length;
+    const outStock = rows.filter((r) => r.stock <= 0).length;
+    const fromApi = _products.some((p) => p.source === 'openapi');
 
-    return `<div class="sc-assort-tabs">
-        <button type="button" class="sc-subtab active" data-sc-assort="products">Товары</button>
-        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
-        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
-        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
-        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
-        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+    return `${assortTabsHtml('products')}
+      <div class="sc-source-banner ${fromApi ? 'ok' : 'warn'}">
+        ${
+          fromApi
+            ? 'Карточки из <strong>Uzum OpenAPI</strong> · себестоимость подмешивается из YO'
+            : 'Кэш OpenAPI пуст — сейчас показана <strong>база YO</strong>. Подожди 2–5 мин после 429 и нажми Синхронизировать.'
+        }
       </div>
-      <div class="sc-kpi-row cols-4">
-        ${kpiCard('SKU', String(rows.length), '', 'blue')}
-        ${kpiCard('С остатком', String(withStock), '', 'green')}
-        ${kpiCard('С себестоимостью', String(withCost), '', 'orange')}
-        ${kpiCard('Выручка периода', money(rows.reduce((s, r) => s + r.s.revenue, 0)), '', 'blue')}
-      </div>
-      <div class="sc-toolbar">
-        <input class="sc-search" id="sc-prod-q" placeholder="Поиск по SKU, названию…" />
-        <button type="button" class="sc-chip active" data-f="all">Все</button>
-        <button type="button" class="sc-chip" data-f="cost">С себестоимостью</button>
-        <button type="button" class="sc-chip" data-f="nocost">Без</button>
-        <button type="button" class="sc-chip" data-f="stock">С остатком</button>
-        <button type="button" class="sc-export" data-sc-export="products">CSV</button>
-      </div>
-      <div class="sc-table-wrap"><table class="sc-table" id="sc-prod-table">
-        <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th><th>Цена</th><th>Себест.</th><th>Продажи</th><th>Выручка</th></tr></thead>
-        <tbody>
-          ${rows
-            .map(
-              (r) => `<tr class="sc-prod-row" data-hascost="${r.hasc}" data-hasstock="${r.stock > 0}">
-            <td>${esc(r.sku)}</td>
-            <td>${esc(r.p.name || r.p.title || '—')}</td>
-            <td>${r.stock}</td>
-            <td>${money(r.p.sellPrice || r.p.price || 0)}</td>
-            <td>${r.cost ? money(r.cost) : '—'}</td>
-            <td>${r.s.qty}</td>
-            <td>${money(r.s.revenue)}</td>
-          </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table></div>`;
+      <div class="sc-prod-layout">
+        <div class="sc-prod-main">
+          <div class="sc-kpi-row cols-4">
+            ${kpiCard('Всего', String(rows.length), '', 'blue')}
+            ${kpiCard('Без остатка', String(outStock), '', outStock ? 'orange' : 'green')}
+            ${kpiCard('С остатком', String(withStock), '', 'green')}
+            ${kpiCard('Выручка периода', money(rows.reduce((s, r) => s + r.s.revenue, 0)), '', 'blue')}
+          </div>
+          <div class="sc-toolbar">
+            <input class="sc-search" id="sc-prod-q" placeholder="Поиск по SKU, названию…" />
+            <button type="button" class="sc-chip active" data-f="all">Все</button>
+            <button type="button" class="sc-chip" data-f="cost">С себестоимостью</button>
+            <button type="button" class="sc-chip" data-f="nocost">Без</button>
+            <button type="button" class="sc-chip" data-f="stock">С остатком</button>
+            <button type="button" class="sc-export" data-sc-export="products">CSV</button>
+          </div>
+          <div class="sc-sku-grid" id="sc-prod-grid">
+            ${rows
+              .map((r) => {
+                const active = r.key === _selectedSkuKey ? ' active' : '';
+                const img = r.p.image
+                  ? `<img src="${esc(r.p.image)}" alt="" loading="lazy" />`
+                  : `<div class="sc-sku-ph">нет фото</div>`;
+                return `<button type="button" class="sc-sku-card${active}" data-sc-sku="${esc(r.key)}"
+                  data-hascost="${r.hasc}" data-hasstock="${r.stock > 0}">
+                  <div class="sc-sku-img">${img}</div>
+                  <div class="sc-sku-body">
+                    <div class="sc-sku-name">${esc(r.p.name || r.p.title || r.sku)}</div>
+                    <div class="sc-sku-row">
+                      <span class="sc-sku-stock ${r.stock > 0 ? 'ok' : 'bad'}">${r.stock}</span>
+                      <span class="sc-sku-price">${money(r.p.sellPrice || r.p.price || 0)}</span>
+                    </div>
+                    <div class="sc-sku-sku">${esc(r.sku)}</div>
+                  </div>
+                </button>`;
+              })
+              .join('')}
+          </div>
+        </div>
+        <aside class="sc-prod-panel" id="sc-prod-panel">${productDetailHtml(selected, sales)}</aside>
+      </div>`;
   }
 
   function classifyABC(rows) {
@@ -1329,12 +1550,51 @@
     set('nc-roi', pct(roi));
   }
 
+  function setSyncBusy(busy, msg) {
+    const saveBtn = document.querySelector('[data-sc-save-token]');
+    const syncBtn = document.querySelector('[data-sc-sync]');
+    const status = document.getElementById('sc-sync-status');
+    if (saveBtn) {
+      saveBtn.disabled = !!busy;
+      saveBtn.textContent = busy ? 'Синхронизация…' : 'Сохранить и синхронизировать';
+    }
+    if (syncBtn) {
+      syncBtn.disabled = !!busy;
+      syncBtn.textContent = busy ? 'Ждите…' : 'Синхронизировать';
+    }
+    if (status && msg) status.textContent = msg;
+  }
+
+  function wireSettingsButtons() {
+    const root = document.getElementById('settingsTabContent');
+    if (!root) return;
+    const on = (sel, fn) => {
+      const el = root.querySelector(sel);
+      if (!el || el.dataset.scWired === '1') return;
+      el.dataset.scWired = '1';
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        fn();
+      });
+    };
+    on('[data-sc-toggle-token]', () => toggleToken());
+    on('[data-sc-save-token]', () => saveToken());
+    on('[data-sc-sync]', () => {
+      void syncUzum();
+    });
+    on('[data-sc-clear-token]', () => clearToken());
+  }
+
   function renderSettingsPage() {
+    bindEvents();
     const root = document.getElementById('settingsTabContent');
     if (!root) return;
     const token = getToken();
     const meta = getSyncMeta();
+    const apiProducts = readLocal(API_PRODUCTS_KEY, []);
     const lastSync = meta.lastSyncAt ? new Date(meta.lastSyncAt).toLocaleString('ru-RU') : 'ещё не было';
+    const apiSkuCount = flattenApiProducts(apiProducts).length || meta.productsCount || 0;
     root.innerHTML = `
       <div class="sc-settings-wrap">
         <div class="sc-settings-block">
@@ -1345,6 +1605,9 @@
             Официальный OpenAPI (не сессия кабинета).<br>
             <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">Создать API-ключ</a> ·
             <a href="https://api-seller.uzum.uz/api/seller-openapi/swagger/swagger-ui/webjars/swagger-ui/index.html" target="_blank" rel="noopener">Swagger</a>
+            <br><br>
+            При <strong>HTTP 429</strong> Uzum режет частоту запросов. Синхронизация теперь медленная и с паузами —
+            подожди 2–5 минут и нажми ещё раз. Товары сохраняются первыми.
           </div>
           <label style="display:block;margin-bottom:12px">
             <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без Bearer)</div>
@@ -1358,17 +1621,19 @@
             <button type="button" class="btn-secondary" data-sc-sync>Синхронизировать</button>
             <button type="button" class="btn-danger" data-sc-clear-token>Удалить</button>
           </div>
-          <p class="sub" style="margin-top:12px">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
+          <p class="sub" style="margin-top:12px" id="sc-sync-status">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
+            ${meta.lastStatus ? ` · статус: ${esc(meta.lastStatus)}` : ''}
             ${meta.ordersCount != null ? ` · заказы: ${meta.ordersCount}` : ''}
             ${meta.productsCount != null ? ` · товары: ${meta.productsCount}` : ''}
             ${meta.fbsCount != null ? ` · FBS: ${meta.fbsCount}` : ''}
+            ${meta.lastError ? `<br><span style="color:var(--bad)">Ошибка/предупреждение: ${esc(meta.lastError)}</span>` : ''}
           </p>
         </div>
         <div class="sc-settings-block">
           <div class="sc-settings-title">Что тянем из OpenAPI</div>
           <div class="sc-sync-grid">
             <div class="sc-sync-item"><div class="sc-sync-icon">📋</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Товары</div><div class="sc-sync-stat">${_products.length} SKU</div>
+              <div class="sc-sync-name">Товары OpenAPI</div><div class="sc-sync-stat">${apiSkuCount} SKU</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">🛒</div><div class="sc-sync-body">
               <div class="sc-sync-name">Finance orders</div><div class="sc-sync-stat">${_orders.length}</div>
@@ -1380,6 +1645,7 @@
               <div class="sc-sync-name">FBS orders</div><div class="sc-sync-stat">${_fbsOrders.length}</div>
             </div></div>
           </div>
+          <p class="sub" style="margin-top:10px">Ассортимент в Аналитике строится из OpenAPI (не из Firebase YO). YO нужен только для себестоимости.</p>
         </div>
         <div class="sc-settings-block">
           <div class="sc-settings-title">Firebase</div>
@@ -1388,6 +1654,7 @@
           }</p>
         </div>
       </div>`;
+    wireSettingsButtons();
   }
 
   function assortView() {
@@ -1500,6 +1767,20 @@
     const q = String(document.getElementById('sc-prod-q')?.value || '')
       .toLowerCase()
       .trim();
+    const cards = document.querySelectorAll('#sc-prod-grid .sc-sku-card');
+    if (cards.length) {
+      cards.forEach((card) => {
+        const text = card.textContent.toLowerCase();
+        const hasc = card.getAttribute('data-hascost') === 'true';
+        const hasstock = card.getAttribute('data-hasstock') === 'true';
+        let ok = !q || text.includes(q);
+        if (_prodFilter === 'cost') ok = ok && hasc;
+        if (_prodFilter === 'nocost') ok = ok && !hasc;
+        if (_prodFilter === 'stock') ok = ok && hasstock;
+        card.style.display = ok ? '' : 'none';
+      });
+      return;
+    }
     document.querySelectorAll('#sc-prod-table .sc-prod-row').forEach((tr) => {
       const text = tr.textContent.toLowerCase();
       const hasc = tr.getAttribute('data-hascost') === 'true';
@@ -1639,6 +1920,29 @@
       const chip = e.target.closest('.sc-chip[data-f]');
       if (chip) {
         chipProd(chip);
+        return;
+      }
+      const skuCard = e.target.closest('[data-sc-sku]');
+      if (skuCard) {
+        _selectedSkuKey = skuCard.getAttribute('data-sc-sku') || '';
+        render();
+        return;
+      }
+      const copyBtn = e.target.closest('[data-sc-copy]');
+      if (copyBtn) {
+        const val = copyBtn.getAttribute('data-sc-copy') || '';
+        if (val && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(val);
+          copyBtn.textContent = '✓';
+          setTimeout(() => {
+            copyBtn.textContent = '⧉';
+          }, 900);
+        }
+        return;
+      }
+      if (e.target.closest('[data-sc-close-panel]')) {
+        _selectedSkuKey = '';
+        render();
         return;
       }
       const exp = e.target.closest('[data-sc-export]');

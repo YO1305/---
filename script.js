@@ -2466,8 +2466,11 @@ function openPage(pageId) {
   if (pageId === 'analytics-scaleup-tab' && window.ScaleUpYO) {
     if (typeof window.ScaleUpYO.init === 'function') window.ScaleUpYO.init();
   }
-  if (pageId === 'settings-tab' && window.ScaleUpYO && typeof window.ScaleUpYO.renderSettingsPage === 'function') {
-    window.ScaleUpYO.renderSettingsPage();
+  if (pageId === 'settings-tab' && window.ScaleUpYO) {
+    if (typeof window.ScaleUpYO.init === 'function') window.ScaleUpYO.init();
+    if (typeof window.ScaleUpYO.renderSettingsPage === 'function') {
+      window.ScaleUpYO.renderSettingsPage();
+    }
   }
   renderEverything();
 }
