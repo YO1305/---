@@ -1040,15 +1040,15 @@
         <div class="sc-settings-block">
           <div class="sc-settings-title">
             🔌 Uzum Market API
-            <span style="margin-left:auto">${token ? pill('ok', '✅ Токен есть') : pill('bad', '❌ Не подключён')}</span>
+            <span style="margin-left:auto">${tokenStatusHtml(token)}</span>
           </div>
           <label style="display:block;margin-bottom:12px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:6px">Bearer токен из кабинета Uzum Seller</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">Bearer access_token из кабинета seller.uzum.uz</div>
             <div style="display:flex;gap:8px">
-              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="eyJhbGciOiJSUzI1NiJ9..." value="">
+              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь свежий токен (eyJ...)" value="">
               <button type="button" class="btn-secondary" data-sc-toggle-token>👁</button>
             </div>
-            <div style="font-size:12px;color:var(--muted);margin-top:6px">⏱ Токен живёт ~40 минут. Обновляй перед синхронизацией.</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:6px">⏱ Сессионный токен живёт ~30–40 минут. При HTTP 401 — зайди в кабинет и возьми новый.</div>
           </label>
           <div style="background:var(--accent-soft);border:1px solid #c4b5fd;border-radius:12px;padding:16px;margin-bottom:16px">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px">⚡ Букмарклет для токена</div>
@@ -1342,14 +1342,22 @@
         alert('Вставьте Bearer токен');
         return;
       }
-      alert('Токен уже сохранён');
+      void syncUzum();
+      return;
+    }
+    raw = cleanToken(raw);
+    if (raw.length < 40) {
+      alert('Токен слишком короткий. Скопируй access_token целиком (обычно начинается с eyJ).');
+      return;
+    }
+    localStorage.setItem(TOKEN_KEY, raw);
+    const meta = readJwtMeta(raw);
+    if (meta?.expired) {
+      alert('Токен уже просрочен. Открой seller.uzum.uz и возьми свежий Authorization → Bearer.');
       renderSettingsPage();
       return;
     }
-    raw = raw.replace(/^Bearer\s+/i, '');
-    localStorage.setItem(TOKEN_KEY, raw);
-    alert('Токен сохранён');
-    renderSettingsPage();
+    void syncUzum();
   }
 
   function clearToken() {
@@ -1369,15 +1377,14 @@
     const headers = Object.assign(
       {
         Authorization: `Bearer ${token}`,
-        Accept: 'application/json'
+        Accept: 'application/json',
+        'Accept-Language': 'ru-RU'
       },
       options.headers || {}
     );
     const path = String(apiPath || '').replace(/^\/+/, '');
-    // Предпочитаем Vercel serverless-прокси (без CORS)
     try {
       const proxied = await fetch(uzumProxyUrl(path), { ...options, headers });
-      // 404 HTML = прокси ещё не задеплоен
       const ct = proxied.headers.get('content-type') || '';
       if (proxied.status === 404 && ct.includes('text/html')) {
         throw new Error('proxy-missing');
@@ -1385,49 +1392,120 @@
       return proxied;
     } catch (e) {
       if (String(e?.message) !== 'proxy-missing' && !(e instanceof TypeError)) throw e;
-      // Fallback: прямой запрос (часто падает из-за CORS в браузере)
       return fetch(`${UZUM_API}/${path}`, { ...options, headers });
     }
   }
 
+  function explainUzumHttpError(status, errText) {
+    if (status === 401 || /unauthorized/i.test(errText)) {
+      return (
+        'Uzum отклонил токен (HTTP 401 Unauthorized).\n\n' +
+        'Это не CORS и не поломка прокси — access_token недействителен или истёк (~30–40 мин).\n\n' +
+        'Что сделать:\n' +
+        '1) Открой https://seller.uzum.uz и обнови страницу\n' +
+        '2) F12 → Network → любой запрос к api-seller.uzum.uz\n' +
+        '3) Headers → Authorization → скопируй значение ПОСЛЕ Bearer\n' +
+        '4) Вставь в Настройки → «Сохранить и проверить» сразу'
+      );
+    }
+    if (status === 403) {
+      return 'Доступ запрещён (403). Проверь, что токен от нужного магазина/аккаунта продавца.';
+    }
+    if (String(errText).includes('proxy-missing') || status === 404) {
+      return 'Прокси /api/uzum-proxy не найден. Задеплой на Vercel папку api/.';
+    }
+    return `HTTP ${status}${errText ? ': ' + errText.slice(0, 220) : ''}`;
+  }
+
   async function syncUzum() {
-    const token = getToken();
+    const token = cleanToken(getToken());
     if (!token) {
       alert('Сначала сохрани Bearer токен');
       return;
     }
+    if (token !== getToken()) localStorage.setItem(TOKEN_KEY, token);
+
+    const meta = readJwtMeta(token);
+    if (meta?.expired) {
+      alert(
+        'Токен просрочен (поле exp в JWT уже в прошлом).\n\n' +
+          'Возьми новый access_token в seller.uzum.uz и сохрани снова.'
+      );
+      renderSettingsPage();
+      return;
+    }
+
     try {
-      const res = await uzumFetch('seller/products/?page=0&size=1');
+      // Правильный endpoint кабинета: список магазинов (не /seller/products/)
+      const res = await uzumFetch('seller/shop/');
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status}${errText ? ': ' + errText.slice(0, 180) : ''}`);
+        throw new Error(explainUzumHttpError(res.status, errText));
       }
       let data = null;
       try {
         data = await res.json();
       } catch (_) { /* ignore */ }
-      const countHint =
-        data && (data.totalElements != null || data.total != null || Array.isArray(data.content))
-          ? ` Ответ API получен${data.totalElements != null ? ` (total: ${data.totalElements})` : ''}.`
-          : ' Ответ API получен.';
+
+      const shops = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.payload)
+          ? data.payload
+          : Array.isArray(data?.content)
+            ? data.content
+            : [];
+      const shop = shops[0] || null;
+      const shopId = shop?.id || shop?.shopId || shop?.sellerId || null;
+      let productHint = '';
+
+      if (shopId) {
+        const q =
+          `seller/shop/${shopId}/product/getProducts?searchQuery=&filter=ALL&sortBy=id&order=descending&size=1&page=0`;
+        const pRes = await uzumFetch(q);
+        if (pRes.ok) {
+          let pData = null;
+          try {
+            pData = await pRes.json();
+          } catch (_) { /* ignore */ }
+          const total =
+            pData?.totalElements ??
+            pData?.payload?.totalElements ??
+            pData?.total ??
+            null;
+          productHint =
+            total != null
+              ? `\nТовары API: ${total} (магазин #${shopId}).`
+              : `\nКаталог магазина #${shopId} доступен.`;
+        } else {
+          productHint = `\nМагазин #${shopId} найден, каталог: HTTP ${pRes.status}.`;
+        }
+      }
+
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
         lastStatus: 'ok',
-        lastHttp: res.status
+        lastHttp: res.status,
+        shopId: shopId || null,
+        shopsCount: shops.length
       });
-      alert(`✅ Токен рабочий.${countHint}\nПолный импорт заказов и остатков можно добавить следующим шагом.`);
+      const left =
+        meta?.secondsLeft != null
+          ? `\nТокену осталось ~${Math.max(1, Math.ceil(meta.secondsLeft / 60))} мин.`
+          : '';
+      alert(
+        `✅ Токен рабочий. Магазинов: ${shops.length}.${productHint}${left}\n` +
+          'Полный импорт заказов/остатков — следующим шагом.'
+      );
     } catch (err) {
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
         lastStatus: 'error',
         lastError: String(err?.message || err)
       });
-      alert(
-        'Не удалось проверить токен через API.\n\n' +
-          String(err?.message || err) +
-          '\n\nЕсли сайт на Vercel — задеплой свежую версию с папкой /api (прокси). ' +
-          'Локально без прокси браузер часто блокирует CORS.'
-      );
+      const msg = String(err?.message || err);
+      alert(msg.startsWith('Uzum отклонил') || msg.startsWith('Токен') || msg.startsWith('Доступ') || msg.startsWith('Прокси')
+        ? msg
+        : 'Не удалось проверить токен через API.\n\n' + msg);
     }
     renderSettingsPage();
   }

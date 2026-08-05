@@ -54,6 +54,7 @@ module.exports = async function handler(req, res) {
   const headers = {
     Authorization: auth,
     Accept: 'application/json',
+    'Accept-Language': 'ru-RU',
     'Content-Type': 'application/json'
   };
 
