@@ -1,6 +1,6 @@
 /**
- * ScaleUp Clone — аналитический модуль YO
- * Excel-отчёты Uzum/WB остаются в разделе «Отчёты МП» (#analytics-tab).
+ * ScaleUp Clone — аналитика YO (паритет dashboard/finance/assortment/logistics)
+ * Данные: Uzum Seller OpenAPI через /api/uzum-proxy + себестоимость YO.
  */
 (function () {
   'use strict';
@@ -9,17 +9,23 @@
   const TOKEN_KEY = 'yo_uzum_bearer_token';
   const SYNC_KEY = 'yo_scaleup_sync_meta';
   const ORDERS_KEY = 'yo_uzum_orders_v1';
-  const FINANCE_KEY = 'yo_uzum_finance_raw_v1';
+  const EXPENSES_KEY = 'yo_uzum_expenses_v1';
+  const FBS_KEY = 'yo_uzum_fbs_orders_v1';
+  const API_PRODUCTS_KEY = 'yo_uzum_api_products_v1';
   const DISMISSED_KEY = 'yo_scaleup_dismissed_insights';
   const SETTINGS_KEY = 'yo_scaleup_settings';
 
   let _view = 'dashboard';
-  let _period = 3;
+  let _periodDays = 90;
   let _finSub = 'overview';
+  let _dynMode = 'orders';
   let _products = [];
+  let _yoCostMap = {};
   let _shipments = [];
   let _orders = [];
-  let _finance = [];
+  let _expenses = [];
+  let _fbsOrders = [];
+  let _financeLocal = [];
   let _dismissed = new Set();
   let _settings = { vatPct: 12, commPct: 22, minMarginPct: 18 };
   let _hasApiData = false;
@@ -27,6 +33,7 @@
   let _initialized = false;
   let _prodFilter = 'all';
   let _wired = false;
+  let _assortTab = 'products';
 
   try {
     _dismissed = new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]'));
@@ -49,33 +56,19 @@
     return `${Math.round(x).toLocaleString('ru-RU')} сум`;
   }
 
+  function moneyShort(v) {
+    const x = Number(v) || 0;
+    const a = Math.abs(x);
+    if (a >= 1e9) return `${(x / 1e9).toFixed(1)} млрд`;
+    if (a >= 1e6) return `${(x / 1e6).toFixed(1)} млн`;
+    if (a >= 1e3) return `${(x / 1e3).toFixed(1)} тыс`;
+    return `${Math.round(x).toLocaleString('ru-RU')}`;
+  }
+
   function pct(v) {
-    if (typeof fmtPct === 'function') return fmtPct(v);
     const x = Number(v);
     if (!Number.isFinite(x)) return '—';
     return `${x.toFixed(1)}%`;
-  }
-
-  function productSku(p) {
-    return String(p?.sku || p?.article1c || p?.id || '').trim();
-  }
-
-  function productCost(p) {
-    return Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? 0) || 0;
-  }
-
-  function productStock(p) {
-    return Math.max(0, Number(p?.stockQty ?? 0) || 0);
-  }
-
-  function productLiters(p) {
-    const v = Number(p?.volumeLiters);
-    if (Number.isFinite(v) && v > 0) return v;
-    const L = Number(p?.length || p?.calc?.uzumLengthCm || 0);
-    const W = Number(p?.width || p?.calc?.uzumWidthCm || 0);
-    const H = Number(p?.height || p?.calc?.uzumHeightCm || 0);
-    if (L > 0 && W > 0 && H > 0) return (L * W * H) / 1000;
-    return 0;
   }
 
   function getToken() {
@@ -90,7 +83,6 @@
       .replace(/\s+/g, '');
   }
 
-  /** Разбор JWT exp (без проверки подписи). */
   function readJwtMeta(token) {
     try {
       const parts = String(token || '').split('.');
@@ -98,10 +90,8 @@
       const json = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
       const payload = JSON.parse(json);
       const exp = Number(payload.exp);
-      const iat = Number(payload.iat);
       return {
         exp: Number.isFinite(exp) ? exp : null,
-        iat: Number.isFinite(iat) ? iat : null,
         expired: Number.isFinite(exp) ? exp * 1000 < Date.now() : null,
         secondsLeft: Number.isFinite(exp) ? Math.floor(exp - Date.now() / 1000) : null
       };
@@ -111,15 +101,10 @@
   }
 
   function tokenStatusHtml(token) {
-    if (!token) return pill('bad', '❌ Не подключён');
+    if (!token) return pill('bad', 'Не подключён');
     const meta = readJwtMeta(token);
-    // OpenAPI-ключ обычно не JWT — просто «ключ есть»
-    if (!meta) return pill('ok', '✅ API-ключ есть');
-    if (meta.expired) return pill('bad', '⛔ Ключ/токен просрочен');
-    if (meta.secondsLeft != null && meta.secondsLeft < 600) {
-      return pill('warn', `⏳ ~${Math.max(1, Math.ceil(meta.secondsLeft / 60))} мин`);
-    }
-    return pill('ok', '✅ API-ключ есть');
+    if (meta?.expired) return pill('bad', 'Ключ просрочен');
+    return pill('ok', 'API-ключ есть');
   }
 
   function getSyncMeta() {
@@ -136,15 +121,87 @@
 
   function readLocal(key, fallback) {
     try {
-      if (typeof readStore === 'function') return readStore(key, fallback);
-    } catch (_) { /* ignore */ }
-    try {
       const raw = localStorage.getItem(key);
       if (!raw) return fallback;
       return JSON.parse(raw);
     } catch {
       return fallback;
     }
+  }
+
+  function writeLocal(key, val) {
+    localStorage.setItem(key, JSON.stringify(val));
+  }
+
+  function periodStartMs(days) {
+    return Date.now() - (Number(days) || 90) * 86400000;
+  }
+
+  function periodEndMs() {
+    return Date.now();
+  }
+
+  function inPeriodMs(ms) {
+    const t = Number(ms);
+    if (!Number.isFinite(t) || t <= 0) return false;
+    return t >= periodStartMs(_periodDays) && t <= periodEndMs() + 86400000;
+  }
+
+  function orderDateMs(o) {
+    return Number(o?.dateIssued || o?.date || o?.createdAt || 0) || 0;
+  }
+
+  function deltaPct(cur, prev) {
+    if (!prev) return cur ? 100 : 0;
+    return ((cur - prev) / Math.abs(prev)) * 100;
+  }
+
+  function deltaHtml(cur, prev, unit) {
+    const d = deltaPct(cur, prev);
+    const cls = d >= 0 ? 'sc-kpi-delta-up' : 'sc-kpi-delta-down';
+    const sign = d >= 0 ? '+' : '';
+    const suf = unit === 'pp' ? ' п.п.' : '%';
+    return `<span class="${cls}">${sign}${d.toFixed(1)}${suf}</span>`;
+  }
+
+  function productSku(p) {
+    return String(p?.sku || p?.skuTitle || p?.article1c || p?.skuId || p?.id || '').trim();
+  }
+
+  function productCost(p) {
+    const sku = productSku(p);
+    if (_yoCostMap[sku] != null) return _yoCostMap[sku];
+    return Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? p?.purchasePrice ?? 0) || 0;
+  }
+
+  function productStock(p) {
+    return Math.max(
+      0,
+      Number(p?.stockQty ?? p?.quantityActive ?? p?.quantityFbo ?? p?.quantityFbs ?? 0) || 0
+    );
+  }
+
+  function productLiters(p) {
+    const v = Number(p?.volumeLiters);
+    if (Number.isFinite(v) && v > 0) return v;
+    return 0;
+  }
+
+  function pill(cls, txt) {
+    return `<span class="sc-pill sc-pill-${cls}">${esc(txt)}</span>`;
+  }
+
+  function kpiCard(label, val, sub, color) {
+    return `<div class="sc-kpi${color ? ' ' + color : ''}">
+      <div class="sc-kpi-label">${esc(label)}</div>
+      <div class="sc-kpi-val">${val}</div>
+      ${sub ? `<div class="sc-kpi-sub">${sub}</div>` : ''}
+    </div>`;
+  }
+
+  function showLoader() {
+    const el = document.getElementById('sc-content');
+    if (el) el.innerHTML = '<div class="sc-loader"><div class="sc-spinner"></div>Загрузка данных…</div>';
   }
 
   async function loadFromFirebase(collection) {
@@ -158,6 +215,47 @@
     }
   }
 
+  function buildYoCostMap(list) {
+    const map = {};
+    (list || []).forEach((p) => {
+      const sku = String(p?.sku || p?.article1c || '').trim();
+      const c = Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? 0) || 0;
+      if (sku && c > 0) map[sku] = c;
+    });
+    return map;
+  }
+
+  function flattenApiProducts(apiList) {
+    const out = [];
+    (apiList || []).forEach((card) => {
+      const skus = Array.isArray(card.skuList) && card.skuList.length ? card.skuList : [null];
+      skus.forEach((sku) => {
+        const skuCode = String(sku?.skuTitle || sku?.skuFullTitle || sku?.barcode || card.skuTitle || card.productId || '').trim();
+        const stock =
+          Number(sku?.quantityActive ?? sku?.quantityFull ?? card.quantityActive ?? card.quantityFbo ?? 0) || 0;
+        const price = Number(sku?.sellPrice ?? sku?.fullPrice ?? sku?.price ?? 0) || 0;
+        out.push({
+          id: sku?.skuId || card.productId,
+          productId: card.productId,
+          sku: skuCode,
+          skuId: sku?.skuId,
+          name: card.title || card.skuTitle || skuCode,
+          title: card.title || card.skuTitle || skuCode,
+          image: card.previewImg || card.image || '',
+          rating: card.rating,
+          status: card.status,
+          stockQty: stock,
+          quantityActive: stock,
+          price,
+          sellPrice: price,
+          cost: _yoCostMap[skuCode] || 0,
+          source: 'openapi'
+        });
+      });
+    });
+    return out;
+  }
+
   async function loadAllData() {
     showLoader();
     const fbProducts = await loadFromFirebase('products');
@@ -165,36 +263,48 @@
     const fbFinance = await loadFromFirebase('finance_payments');
     _hasFirebase = !!(fbProducts && fbProducts.length);
 
-    if (fbProducts && fbProducts.length) {
-      _products = fbProducts;
-    } else if (window.appState && Array.isArray(window.appState.products) && window.appState.products.length) {
-      _products = window.appState.products.slice();
-    } else {
-      _products = readLocal('uzum_products_db_v1', []);
-    }
+    let yoProducts = [];
+    if (fbProducts && fbProducts.length) yoProducts = fbProducts;
+    else if (window.appState?.products?.length) yoProducts = window.appState.products.slice();
+    else yoProducts = readLocal('uzum_products_db_v1', []);
+    _yoCostMap = buildYoCostMap(yoProducts);
 
-    if (fbShipments && fbShipments.length) {
-      _shipments = fbShipments;
-    } else if (window.appState && Array.isArray(window.appState.shipments) && window.appState.shipments.length) {
-      _shipments = window.appState.shipments.slice();
-    } else {
-      _shipments = readLocal('uzum_shipments_db_v1', []);
-    }
+    if (fbShipments && fbShipments.length) _shipments = fbShipments;
+    else if (window.appState?.shipments?.length) _shipments = window.appState.shipments.slice();
+    else _shipments = readLocal('uzum_shipments_db_v1', []);
 
-    let localFinance = [];
     try {
       const fin = JSON.parse(localStorage.getItem('yo_finances_uzum_v1') || '{"payments":[]}');
-      localFinance = Array.isArray(fin.payments) ? fin.payments : [];
-    } catch (_) { /* ignore */ }
-    _finance = (fbFinance && fbFinance.length ? fbFinance : localFinance).slice();
+      _financeLocal = Array.isArray(fin.payments) ? fin.payments : [];
+    } catch (_) {
+      _financeLocal = [];
+    }
+    if (fbFinance && fbFinance.length) _financeLocal = fbFinance;
 
     _orders = readLocal(ORDERS_KEY, []);
-    const apiFinance = readLocal(FINANCE_KEY, []);
-    if (Array.isArray(apiFinance) && apiFinance.length) {
-      _finance = _finance.concat(apiFinance);
+    _expenses = readLocal(EXPENSES_KEY, []);
+    _fbsOrders = readLocal(FBS_KEY, []);
+    const apiProducts = readLocal(API_PRODUCTS_KEY, []);
+    if (apiProducts.length) {
+      _products = flattenApiProducts(apiProducts);
+      // merge YO-only SKUs without API match
+      yoProducts.forEach((yp) => {
+        const sku = productSku(yp);
+        if (sku && !_products.some((p) => productSku(p) === sku)) {
+          _products.push({
+            ...yp,
+            name: yp.name || yp.title || sku,
+            stockQty: productStock(yp),
+            cost: productCost(yp),
+            source: 'yo'
+          });
+        }
+      });
+    } else {
+      _products = yoProducts.slice();
     }
-    _hasApiData = Array.isArray(_orders) && _orders.length > 0;
 
+    _hasApiData = _orders.length > 0 || apiProducts.length > 0;
     updateDataSourceBadge();
     render();
   }
@@ -203,1133 +313,204 @@
     const el = document.getElementById('sc-data-source');
     if (!el) return;
     const parts = [];
-    if (_hasFirebase) parts.push('🔥 Firebase');
-    if (_hasApiData) parts.push('🔌 Uzum API');
-    if (!_hasFirebase && !_hasApiData) parts.push('💾 localStorage');
-    el.textContent = `${parts.join(' · ')} · ${_products.length} SKU`;
+    if (_hasFirebase) parts.push('Firebase');
+    if (_hasApiData) parts.push('Uzum OpenAPI');
+    if (!_hasFirebase && !_hasApiData) parts.push('localStorage');
+    const meta = getSyncMeta();
+    el.textContent = `${parts.join(' · ')} · ${_products.length} SKU${meta.shopId ? ` · shop #${meta.shopId}` : ''}`;
   }
 
-  function periodFrom(months) {
-    const d = new Date();
-    d.setMonth(d.getMonth() - months);
-    d.setDate(1);
-    d.setHours(0, 0, 0, 0);
-    return d.toISOString().slice(0, 10);
+  /* ========== OpenAPI client ========== */
+  function uzumProxyUrl(apiPath) {
+    return `/api/uzum-proxy?path=${encodeURIComponent(String(apiPath || '').replace(/^\/+/, ''))}`;
   }
 
-  function inPeriod(dateStr) {
-    return String(dateStr || '').slice(0, 10) >= periodFrom(_period);
+  async function uzumFetch(apiPath, options = {}) {
+    const token = cleanToken(getToken());
+    if (!token) throw new Error('Нет API-ключа');
+    const headers = Object.assign(
+      {
+        Authorization: token,
+        Accept: 'application/json',
+        'Accept-Language': 'ru-RU'
+      },
+      options.headers || {}
+    );
+    const path = String(apiPath || '').replace(/^\/+/, '');
+    try {
+      const proxied = await fetch(uzumProxyUrl(path), { ...options, headers });
+      const ct = proxied.headers.get('content-type') || '';
+      if (proxied.status === 404 && ct.includes('text/html')) throw new Error('proxy-missing');
+      return proxied;
+    } catch (e) {
+      if (String(e?.message) !== 'proxy-missing' && !(e instanceof TypeError)) throw e;
+      return fetch(`${UZUM_OPENAPI}/${path}`, { ...options, headers });
+    }
   }
 
-  function shipmentsPeriod() {
-    return _shipments.filter((s) => inPeriod(s.date || s.createdAt || ''));
+  async function uzumJson(apiPath) {
+    const res = await uzumFetch(apiPath);
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      err.status = res.status;
+      err.body = text;
+      throw err;
+    }
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch {
+      return null;
+    }
   }
 
-  function prevShipments() {
-    const from = periodFrom(_period * 2);
-    const to = periodFrom(_period);
-    return _shipments.filter((s) => {
-      const d = String(s.date || s.createdAt || '').slice(0, 10);
-      return d >= from && d < to;
-    });
-  }
-
-  function totalShipCost(list) {
-    return list.reduce((s, x) => {
-      if (x.totals && x.totals.totalCost != null) return s + Number(x.totals.totalCost || 0);
-      const items = x.items || x.boxes?.flatMap((b) => b.items || []) || [];
-      return (
-        s +
-        items.reduce((ss, i) => ss + Number(i.totalCost || i.lineTotal || (i.qty || 0) * (i.unitCost || 0) || 0), 0)
-      );
-    }, 0);
-  }
-
-  function totalShipQty(list) {
-    return list.reduce((s, x) => {
-      if (x.totals && x.totals.totalQty != null) return s + Number(x.totals.totalQty || 0);
-      const items = x.items || x.boxes?.flatMap((b) => b.items || []) || [];
-      return s + items.reduce((ss, i) => ss + Number(i.qty || 0), 0);
-    }, 0);
-  }
-
-  function shipmentItems(s) {
-    if (Array.isArray(s.items) && s.items.length) return s.items;
-    if (Array.isArray(s.boxes)) return s.boxes.flatMap((b) => b.items || []);
+  function unwrapList(data, keys) {
+    if (Array.isArray(data)) return data;
+    for (const k of keys || []) {
+      if (Array.isArray(data?.[k])) return data[k];
+    }
+    if (Array.isArray(data?.payload)) return data.payload;
+    if (Array.isArray(data?.content)) return data.content;
     return [];
   }
 
-  function skuCostMap(shipList) {
-    const map = {};
-    shipList.forEach((s) => {
-      shipmentItems(s).forEach((i) => {
-        const key = String(i.sku || i.article1c || '').trim();
-        if (!key) return;
-        if (!map[key]) map[key] = { qty: 0, cost: 0 };
-        map[key].qty += Number(i.qty || 0);
-        map[key].cost += Number(i.totalCost || i.lineTotal || (i.qty || 0) * (i.unitCost || 0) || 0);
-      });
-    });
-    return map;
+  async function fetchPaged(buildPath, extract, maxPages) {
+    const out = [];
+    const limit = maxPages || 15;
+    for (let page = 0; page < limit; page++) {
+      const data = await uzumJson(buildPath(page));
+      const chunk = extract(data);
+      if (!chunk.length) break;
+      out.push(...chunk);
+      const total = data?.totalElements ?? data?.totalProductsAmount ?? data?.total ?? null;
+      if (total != null && out.length >= total) break;
+      if (chunk.length < 20) break;
+    }
+    return out;
   }
 
-  function skuMonthlyMap() {
-    const map = {};
-    _shipments.forEach((s) => {
-      const m = String(s.date || s.createdAt || '').slice(0, 7);
-      if (!m) return;
-      shipmentItems(s).forEach((i) => {
-        const key = String(i.sku || i.article1c || '').trim();
-        if (!key) return;
-        if (!map[key]) map[key] = {};
-        map[key][m] =
-          (map[key][m] || 0) + Number(i.totalCost || i.lineTotal || (i.qty || 0) * (i.unitCost || 0) || 0);
-      });
-    });
-    return map;
+  function explainUzumHttpError(status, errText) {
+    if (status === 401 || /unauthorized/i.test(errText || '')) {
+      return (
+        'Uzum отклонил API-ключ (HTTP 401).\n\n' +
+        'Создай ключ: https://seller.uzum.uz/seller/api-keys\n' +
+        'Вставь в Настройки → Сохранить и проверить'
+      );
+    }
+    if (String(errText).includes('proxy-missing')) {
+      return 'Прокси /api/uzum-proxy не найден. Задеплой папку api/ на Vercel.';
+    }
+    return `HTTP ${status}${errText ? ': ' + String(errText).slice(0, 220) : ''}`;
   }
 
-  function monthlyChart(shipList) {
-    const map = {};
-    shipList.forEach((s) => {
-      const m = String(s.date || s.createdAt || '').slice(0, 7);
-      if (!m) return;
-      map[m] = (map[m] || 0) + (s.totals?.totalCost != null ? Number(s.totals.totalCost) : totalShipCost([s]));
-    });
-    return Object.keys(map)
-      .sort()
-      .map((m) => ({ label: m.slice(5), value: map[m] }));
-  }
-
-  function classifyABC(prods, costMap) {
-    const sorted = [...prods].sort((a, b) => (costMap[productSku(b)]?.cost || 0) - (costMap[productSku(a)]?.cost || 0));
-    const total = sorted.reduce((s, p) => s + (costMap[productSku(p)]?.cost || 0), 0);
-    let cum = 0;
-    return sorted.map((p) => {
-      const sku = productSku(p);
-      cum += costMap[sku]?.cost || 0;
-      const sh = total > 0 ? cum / total : 0;
-      return {
-        ...p,
-        abc: sh <= 0.8 ? 'A' : sh <= 0.95 ? 'B' : 'C',
-        shipCost: costMap[sku]?.cost || 0,
-        shipQty: costMap[sku]?.qty || 0
-      };
-    });
-  }
-
-  function classifyXYZ(prods) {
-    const monthly = skuMonthlyMap();
-    return prods.map((p) => {
-      const vals = Object.values(monthly[productSku(p)] || {});
-      if (vals.length < 2) return { ...p, xyz: 'N', monthVals: vals };
-      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
-      const cv = mean > 0 ? std / mean : 1;
-      return {
-        ...p,
-        xyz: cv <= 0.1 ? 'X' : cv <= 0.25 ? 'Y' : cv <= 0.5 ? 'Z' : 'N',
-        monthVals: vals,
-        cv
-      };
-    });
-  }
-
-  function showLoader() {
-    const el = document.getElementById('sc-content');
-    if (el) el.innerHTML = '<div class="sc-loader"><div class="sc-spinner"></div>Загрузка данных…</div>';
-  }
-
-  function kpi(label, val, sub = '', color = '') {
-    return `<div class="sc-kpi${color ? ' ' + color : ''}">
-      <div class="sc-kpi-label">${esc(label)}</div>
-      <div class="sc-kpi-val">${val}</div>
-      ${sub ? `<div class="sc-kpi-sub">${sub}</div>` : ''}
-    </div>`;
-  }
-
-  function pill(cls, txt) {
-    return `<span class="sc-pill sc-pill-${cls}">${esc(txt)}</span>`;
-  }
-
-  function spark(vals, w = 56, h = 20) {
-    if (!vals?.length || vals.length < 2) return '—';
-    const max = Math.max(...vals, 1);
-    const pts = vals
-      .map((v, i) => `${((i / (vals.length - 1)) * w).toFixed(1)},${(h - (v / max) * h).toFixed(1)}`)
-      .join(' ');
-    return `<svg width="${w}" height="${h}" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/></svg>`;
-  }
-
-  function drawSimpleChart(elId, points) {
-    const el = document.getElementById(elId);
-    if (!el) return;
-    if (!points.length) {
-      el.innerHTML = '<div style="color:var(--muted);padding:24px;text-align:center">Нет данных за период</div>';
+  async function syncUzum() {
+    const token = cleanToken(getToken());
+    if (!token) {
+      alert('Сначала вставь API-ключ (Настройки → API ключи Uzum)');
       return;
     }
-    const w = 720;
-    const h = 220;
-    const max = Math.max(...points.map((p) => p.value), 1);
-    const step = points.length > 1 ? w / (points.length - 1) : w;
-    const pts = points
-      .map((p, i) => `${(i * step).toFixed(1)},${(h - 20 - (p.value / max) * (h - 40)).toFixed(1)}`)
-      .join(' ');
-    const labels = points
-      .map(
-        (p, i) =>
-          `<text x="${(i * step).toFixed(1)}" y="${h - 2}" font-size="11" fill="var(--muted)" text-anchor="middle">${esc(p.label)}</text>`
-      )
-      .join('');
-    el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none">
-      <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-      ${labels}
-    </svg>`;
-  }
+    localStorage.setItem(TOKEN_KEY, token);
 
-  function insight(key, type, icon, title, valHtml, actions = []) {
-    if (_dismissed.has(key)) return '';
-    const btns = actions
-      .map((a) => `<button type="button" class="sc-insight-action" data-sc-goview="${esc(a.view || '')}">${esc(a.label)}</button>`)
-      .join('');
-    return `<div class="sc-insight ${type}">
-      <span style="font-size:20px">${icon}</span>
-      <div class="sc-insight-body">
-        <div class="sc-insight-title">${esc(title)}</div>
-        <div class="sc-insight-val">${valHtml}</div>
-        <div class="sc-insight-btns">
-          ${btns}
-          <button type="button" class="sc-insight-dismiss" data-sc-dismiss="${esc(key)}">Отложить</button>
-        </div>
-      </div>
-    </div>`;
-  }
+    try {
+      const shopsRaw = await uzumJson('v1/shops');
+      const shops = unwrapList(shopsRaw, ['shops', 'organizations']);
+      const shop = shops[0] || null;
+      const shopId = shop?.id || shop?.shopId || null;
+      if (!shopId) throw new Error('Магазины не найдены по API-ключу');
 
-  function csvExport(rows, filename) {
-    const bom = '\uFEFF';
-    const blob = new Blob([bom + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+      const dateFrom = periodStartMs(Math.max(_periodDays, 90));
+      const dateTo = periodEndMs();
 
-  function logisticsFor(p) {
-    const L = Math.ceil(productLiters(p) || 0);
-    if (typeof calcLogistics === 'function') return calcLogistics(L);
-    return L > 0 ? Math.min(5250 + (L - 1) * 250, 50000) : 0;
-  }
+      // Products
+      const productCards = await fetchPaged(
+        (page) =>
+          `v1/product/shop/${shopId}?searchQuery=&sortBy=DEFAULT&order=DESC&size=50&page=${page}`,
+        (data) => unwrapList(data, ['productList']),
+        20
+      );
+      writeLocal(API_PRODUCTS_KEY, productCards);
 
-  function storageMonthFor(p) {
-    const L = Math.ceil(productLiters(p) || 0);
-    const t = Number(p.calc?.productTurnover || 30);
-    const ss = p.calc?.productStockStatus || 'existing';
-    if (typeof calcStoragePerDay === 'function') {
-      return (calcStoragePerDay(L, t, ss, 0).amount || 0) * 30;
-    }
-    return 0;
-  }
+      // Finance orders
+      const orders = await fetchPaged(
+        (page) =>
+          `v1/finance/orders?page=${page}&size=100&group=false&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+        (data) => unwrapList(data, ['orderItems']),
+        25
+      );
+      writeLocal(ORDERS_KEY, orders);
 
-  function revenueFromOrders() {
-    if (!_hasApiData) return null;
-    return _orders
-      .filter((o) => inPeriod(String(o.createdAt || o.date || '').slice(0, 10)) && o.status === 'DELIVERED')
-      .reduce((s, o) => s + Number(o.totalPrice || o.amount || 0), 0);
-  }
-
-  // ── VIEWS ───────────────────────────────────────────────────
-
-  function viewDashboard() {
-    const sh = shipmentsPeriod();
-    const shPrev = prevShipments();
-    const cur = totalShipCost(sh);
-    const prev = totalShipCost(shPrev);
-    const withCost = _products.filter((p) => productCost(p) > 0);
-    const avgCost = withCost.length
-      ? withCost.reduce((s, p) => s + productCost(p), 0) / withCost.length
-      : 0;
-    const delta = prev > 0 ? ((cur - prev) / prev) * 100 : null;
-    const deltaHtml =
-      delta !== null
-        ? `<span class="${delta >= 0 ? 'sc-kpi-delta-up' : 'sc-kpi-delta-down'}">${delta >= 0 ? '↑' : '↓'}${Math.abs(delta).toFixed(1)}% vs пред.</span>`
-        : '';
-    const noCost = _products.filter((p) => !productCost(p)).length;
-    const noStock = _products.filter((p) => !productStock(p)).length;
-    const apiRev = revenueFromOrders();
-
-    const insights = [
-      noCost > 0
-        ? insight(
-            'no-cost',
-            'warn',
-            '⚠️',
-            'Товары без себестоимости',
-            `<span style="color:#ef4444">${noCost} SKU</span> — расчёт недоступен`,
-            [{ label: 'Заполнить →', view: 'cost' }]
-          )
-        : '',
-      noStock > 0
-        ? insight('no-stock', 'warn', '📦', 'Нулевой остаток', `${noStock} SKU`, [
-            { label: 'Посмотреть →', view: 'stock' }
-          ])
-        : '',
-      !getToken()
-        ? insight(
-            'no-api',
-            'info',
-            '🔌',
-            'Подключи Uzum API',
-            'Получай реальные данные о заказах и остатках',
-            [{ label: 'Настройки →', view: '__settings' }]
-          )
-        : '',
-      insight('abcxyz-tip', 'good', '📊', 'ABC/XYZ анализ готов', `${_products.length} SKU классифицированы`, [
-        { label: 'Открыть →', view: 'abcxyz' }
-      ])
-    ]
-      .filter(Boolean)
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">🏠 Главная</h2>
-      <div class="sc-dash-grid">
-        <div>
-          <div class="sc-kpi-row cols-3">
-            ${kpi('СТОИМОСТЬ ПОСТАВОК', money(cur), deltaHtml)}
-            ${apiRev !== null ? kpi('ВЫРУЧКА (РЕАЛЬНАЯ)', money(apiRev), 'из Uzum API', 'blue') : ''}
-            ${kpi('СРЕДНЯЯ СЕБЕСТ./ЕД', money(avgCost), `${withCost.length} SKU`, 'blue')}
-            ${kpi('ТОВАРОВ В БАЗЕ', `${_products.length} SKU`, `с себест.: ${withCost.length}`, 'green')}
-          </div>
-          <div class="sc-kpi-row cols-2">
-            ${kpi('БЕЗ СЕБЕСТОИМОСТИ', `${noCost} SKU`, '⚠ заполни', 'red')}
-            ${kpi('НУЛЕВОЙ ОСТАТОК', `${noStock} SKU`, '', 'orange')}
-          </div>
-          <div class="sc-card">
-            <div class="sc-card-title">📈 Динамика поставок</div>
-            <div id="sc-dash-chart"></div>
-          </div>
-        </div>
-        <div class="sc-card">
-          <div class="sc-card-title">💡 Что важно сейчас</div>
-          ${insights || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Всё в порядке ✅</div>'}
-        </div>
-      </div>`;
-  }
-
-  function viewPnl() {
-    const sh = shipmentsPeriod();
-    const shPrev = prevShipments();
-    function calc(list) {
-      const gross = totalShipCost(list);
-      const inVat = list.reduce((s, x) => {
-        return (
-          s +
-          shipmentItems(x).reduce((ss, i) => {
-            const p = _products.find((pp) => productSku(pp) === String(i.sku || '').trim());
-            return ss + Number(p?.inputVat || 0) * Number(i.qty || 0);
-          }, 0)
-        );
-      }, 0);
-      return { gross, inVat, net: gross - inVat };
-    }
-    const cur = calc(sh);
-    const prev = calc(shPrev);
-    function row(label, c, p, opts = {}) {
-      const d = c - p;
-      const dp = p !== 0 ? (d / Math.abs(p)) * 100 : null;
-      return `<div class="sc-pnl-row${opts.tot ? ' tot' : opts.sub ? ' sub' : opts.sep ? ' sep' : ''}">
-        <span>${label}</span>
-        <span>${money(p)}</span>
-        <span>${money(c)}</span>
-        <span class="${d >= 0 ? 'sc-pnl-up' : 'sc-pnl-dn'}">${d >= 0 ? '+' : ''}${money(d)}</span>
-        <span class="${d >= 0 ? 'sc-pnl-up' : 'sc-pnl-dn'}">${dp !== null ? pct(dp) : '—'}</span>
-      </div>`;
-    }
-    return `
-      <h2 style="margin:0 0 16px;font-size:20px;font-weight:800">💰 Финансы</h2>
-      <div class="sc-subtabs">
-        <button type="button" class="sc-subtab" data-sc-finsub="overview">Обзор</button>
-        <button type="button" class="sc-subtab active" data-sc-finsub="pnl">ОПиУ</button>
-      </div>
-      <div class="sc-pnl">
-        <div class="sc-pnl-row hdr"><span>Показатель</span><span>Пред. период</span><span>Тек. период</span><span>Изм.</span><span>%</span></div>
-        ${row('Стоимость поставок (брутто)', cur.gross, prev.gross, { tot: true })}
-        ${row('В т.ч. входящий НДС', cur.inVat, prev.inVat, { sub: true })}
-        ${row('Стоимость поставок (нетто)', cur.net, prev.net, { tot: true })}
-        <div class="sc-pnl-row sep"><span>Рентабельность нетто, %</span>
-          <span>${pct(prev.gross > 0 ? (prev.net / prev.gross) * 100 : 0)}</span>
-          <span>${pct(cur.gross > 0 ? (cur.net / cur.gross) * 100 : 0)}</span>
-          <span></span><span></span>
-        </div>
-      </div>`;
-  }
-
-  function viewFinance() {
-    if (_finSub === 'pnl') return viewPnl();
-    const sh = shipmentsPeriod();
-    const cur = totalShipCost(sh);
-    const qty = totalShipQty(sh);
-    const avgPerUnit = qty > 0 ? cur / qty : 0;
-    const rows = [...sh]
-      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-      .map((s) => {
-        const items = shipmentItems(s);
-        const cost = s.totals?.totalCost != null ? Number(s.totals.totalCost) : totalShipCost([s]);
-        const q = s.totals?.totalQty != null ? Number(s.totals.totalQty) : items.reduce((x, i) => x + Number(i.qty || 0), 0);
-        return `<tr>
-          <td>${esc(String(s.date || '').slice(0, 10))}</td>
-          <td style="color:var(--muted);font-size:11px">${esc(s.id || s.name || '—')}</td>
-          <td>${items.length} SKU</td>
-          <td>${q.toLocaleString('ru-RU')} ед.</td>
-          <td style="font-weight:600">${money(cost)}</td>
-        </tr>`;
-      })
-      .join('');
-
-    const finRows = _finance
-      .filter((f) => inPeriod(String(f.date || '').slice(0, 10)))
-      .slice(0, 30)
-      .map((f) => {
-        const amt = Number(f.amount || 0);
-        return `<tr>
-          <td>${esc(String(f.date || '').slice(0, 10))}</td>
-          <td>${pill(f.type === 'PAYOUT' ? 'ok' : f.type === 'FINE' ? 'bad' : 'n', f.type || '—')}</td>
-          <td>${esc(f.description || '—')}</td>
-          <td style="font-weight:600;color:${amt >= 0 ? '#10b981' : '#ef4444'}">${money(Math.abs(amt))}</td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 16px;font-size:20px;font-weight:800">💰 Финансы</h2>
-      <div class="sc-subtabs">
-        <button type="button" class="sc-subtab active" data-sc-finsub="overview">Обзор</button>
-        <button type="button" class="sc-subtab" data-sc-finsub="pnl">ОПиУ</button>
-      </div>
-      <div class="sc-kpi-row cols-4">
-        ${kpi('СТОИМОСТЬ ПОСТАВОК', money(cur))}
-        ${kpi('ЕДИНИЦ ПОСТАВЛЕНО', qty.toLocaleString('ru-RU'), '', 'blue')}
-        ${kpi('ПОСТАВОК ВСЕГО', sh.length, '', 'green')}
-        ${kpi('СРЕДНЯЯ СЕБЕСТ./ЕД', money(avgPerUnit), '', 'orange')}
-      </div>
-      <div class="sc-card">
-        <div class="sc-card-title">📊 Динамика поставок</div>
-        <div id="sc-fin-chart"></div>
-      </div>
-      ${
-        sh.length
-          ? `<div class="sc-table-wrap"><table class="sc-table">
-        <thead><tr><th>Дата</th><th>ID</th><th>SKU</th><th>Кол-во</th><th>Стоимость</th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`
-          : '<div class="sc-empty"><div class="sc-empty-title">Нет поставок за период</div></div>'
-      }
-      ${
-        finRows
-          ? `<div class="sc-card" style="margin-top:16px"><div class="sc-card-title">💳 Транзакции</div>
-        <div class="sc-table-wrap" style="margin:0"><table class="sc-table">
-        <thead><tr><th>Дата</th><th>Тип</th><th>Описание</th><th>Сумма</th></tr></thead>
-        <tbody>${finRows}</tbody></table></div></div>`
-          : ''
-      }`;
-  }
-
-  function viewProducts() {
-    const hasCost = _products.filter((p) => productCost(p) > 0).length;
-    const noStock = _products.filter((p) => !productStock(p)).length;
-    const rows = _products
-      .map((p) => {
-        const cost = productCost(p);
-        const L = Math.ceil(productLiters(p) || 0);
-        const log = logisticsFor(p);
-        const stor = storageMonthFor(p);
-        const hasc = cost > 0;
-        const stock = productStock(p);
-        const sku = productSku(p);
-        return `<tr class="sc-prod-row" data-hascost="${hasc}" data-hasstock="${stock > 0}">
-          <td><strong>${esc(p.name || sku)}</strong><br><span style="font-size:11px;color:var(--muted)">${esc(p.article1c || sku)}</span></td>
-          <td style="font-family:monospace;font-size:12px">${esc(sku)}</td>
-          <td>${hasc ? money(cost) : '—'}</td>
-          <td>${productLiters(p) ? productLiters(p).toFixed(2) + ' л' : '—'}</td>
-          <td>${stock} шт</td>
-          <td>${L > 0 ? money(log) : '—'}</td>
-          <td>${stor > 0 ? money(stor) : 'бесплатно'}</td>
-          <td>${pill(hasc ? 'ok' : 'bad', hasc ? '✅ Есть' : '❌ Нет')}</td>
-          <td><button type="button" class="sc-icon-btn" data-sc-edit="${esc(sku)}" title="Редактировать">✏️</button></td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">📦 Товары</h2>
-      <div class="sc-kpi-row cols-4">
-        ${kpi('ВСЕГО SKU', _products.length)}
-        ${kpi('С СЕБЕСТОИМОСТЬЮ', hasCost, '', 'green')}
-        ${kpi('БЕЗ СЕБЕСТОИМОСТИ', _products.length - hasCost, '⚠ заполни', 'red')}
-        ${kpi('НУЛЕВОЙ ОСТАТОК', noStock, '', 'orange')}
-      </div>
-      <div class="sc-toolbar">
-        <input class="sc-search" id="sc-prod-q" placeholder="Поиск по SKU, названию…" />
-        <button type="button" class="sc-chip active" data-f="all">Все</button>
-        <button type="button" class="sc-chip" data-f="cost">С себестоимостью</button>
-        <button type="button" class="sc-chip" data-f="nocost">Без</button>
-        <button type="button" class="sc-chip" data-f="stock">С остатком</button>
-        <button type="button" class="sc-export" data-sc-export="products">⬇ CSV</button>
-      </div>
-      <div class="sc-table-wrap">
-        <table class="sc-table" id="sc-prod-table">
-          <thead><tr>
-            <th>Товар</th><th>SKU</th><th>Себест.</th><th>Объём</th>
-            <th>Остаток</th><th>Логистика</th><th>Хранение/мес</th>
-            <th>Статус С/С</th><th></th>
-          </tr></thead>
-          <tbody>${rows || '<tr><td colspan="9">Нет товаров</td></tr>'}</tbody>
-        </table>
-      </div>`;
-  }
-
-  function viewAbcXyz() {
-    const sh = shipmentsPeriod();
-    const cm = skuCostMap(sh);
-    const withAbc = classifyABC(_products, cm);
-    const withXyz = classifyXYZ(withAbc);
-    const M = {};
-    const MS = {};
-    ['A', 'B', 'C'].forEach((a) => {
-      M[a] = {};
-      MS[a] = {};
-      ['X', 'Y', 'Z', 'N'].forEach((x) => {
-        M[a][x] = 0;
-        MS[a][x] = 0;
-      });
-    });
-    withXyz.forEach((p) => {
-      M[p.abc][p.xyz]++;
-      MS[p.abc][p.xyz] += p.shipCost || 0;
-    });
-    const bg = {
-      AX: '#dcfce7',
-      AY: '#d1fae5',
-      AZ: '#fef9c3',
-      AN: '#e0f2fe',
-      BX: '#dbeafe',
-      BY: '#e0f2fe',
-      BZ: '#fef3c7',
-      BN: '#f3f4f6',
-      CX: '#f3f4f6',
-      CY: '#fef9c3',
-      CZ: '#fee2e2',
-      CN: '#fef2f2'
-    };
-    const matHtml = ['A', 'B', 'C']
-      .map(
-        (a) =>
-          `<tr><td style="font-weight:800;color:var(--accent);text-align:center">${a}</td>` +
-          ['X', 'Y', 'Z', 'N']
-            .map(
-              (x) =>
-                `<td class="sc-abc-cell" style="background:${bg[a + x] || '#f9fafb'}" data-sc-mat="${a}|${x}">
-            <div class="sc-abc-count">${M[a][x]}</div>
-            <div class="sc-abc-sum">${M[a][x] > 0 ? (MS[a][x] / 1e6).toFixed(1) + 'M' : ''}</div>
-          </td>`
-            )
-            .join('') +
-          `<td style="text-align:center;font-weight:700">${['X', 'Y', 'Z', 'N'].reduce((s, x) => s + M[a][x], 0)}</td></tr>`
-      )
-      .join('');
-
-    const totals = withXyz.reduce((s, p) => ({ cost: s.cost + (p.shipCost || 0), qty: s.qty + (p.shipQty || 0) }), {
-      cost: 0,
-      qty: 0
-    });
-    const rows = withXyz
-      .slice(0, 150)
-      .map((p) => {
-        const sku = productSku(p);
-        const abcCls = { A: 'a', B: 'b', C: 'c' }[p.abc] || 'n';
-        const xyzCls = { X: 'x', Y: 'y', Z: 'z', N: 'n' }[p.xyz] || 'n';
-        return `<tr data-abc="${p.abc}" data-xyz="${p.xyz}">
-          <td>${esc(p.name || sku)}<br><span style="font-size:11px;color:var(--muted)">${esc(sku)}</span></td>
-          <td>${money(p.shipCost)}</td>
-          <td>${(p.shipQty || 0).toLocaleString('ru-RU')}</td>
-          <td>${pct(totals.cost > 0 ? (p.shipCost / totals.cost) * 100 : 0)}</td>
-          <td>${pill(abcCls, p.abc)}</td>
-          <td>${pill(xyzCls, p.xyz)}</td>
-          <td>${spark(p.monthVals)}</td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">📊 ABC/XYZ</h2>
-      <div class="sc-kpi-row cols-4">
-        ${kpi('ВСЕГО SKU', withXyz.length)}
-        ${kpi('СТОИМОСТЬ ПОСТАВОК', money(totals.cost), '', 'blue')}
-        ${kpi('КЛАСС A', withXyz.filter((p) => p.abc === 'A').length, 'топ 80%', 'green')}
-        ${kpi('СТАБИЛЬНЫЕ (X+Y)', withXyz.filter((p) => ['X', 'Y'].includes(p.xyz)).length, 'CV≤25%')}
-      </div>
-      <div class="sc-card">
-        <div class="sc-card-title">Матрица ABC × XYZ</div>
-        <div style="overflow-x:auto">
-          <table class="sc-abc-matrix">
-            <tr><th></th><th>X</th><th>Y</th><th>Z</th><th>N</th><th>Итого</th></tr>
-            ${matHtml}
-            <tr>
-              <td style="text-align:center;font-weight:700;color:var(--muted)">Итого</td>
-              ${['X', 'Y', 'Z', 'N'].map((x) => `<td style="text-align:center;font-weight:700">${['A', 'B', 'C'].reduce((s, a) => s + M[a][x], 0)}</td>`).join('')}
-              <td style="text-align:center;font-weight:700">${withXyz.length}</td>
-            </tr>
-          </table>
-        </div>
-        <div id="sc-mat-detail" class="sub" style="margin-top:12px"></div>
-      </div>
-      <div class="sc-toolbar">
-        <button type="button" class="sc-export" data-sc-export="abcxyz">⬇ CSV</button>
-      </div>
-      <div class="sc-table-wrap">
-        <table class="sc-table" id="sc-abc-table">
-          <thead><tr><th>Товар</th><th>Стоимость пост.</th><th>Кол-во ед.</th><th>Доля%</th><th>ABC</th><th>XYZ</th><th>Динамика</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  }
-
-  function viewProfitShare() {
-    const sh = shipmentsPeriod();
-    const cm = skuCostMap(sh);
-    const total = Object.values(cm).reduce((s, v) => s + v.cost, 0);
-    const sorted = _products
-      .map((p) => ({ name: p.name || productSku(p), sku: productSku(p), cost: cm[productSku(p)]?.cost || 0 }))
-      .filter((p) => p.cost > 0)
-      .sort((a, b) => b.cost - a.cost);
-    const top = sorted[0]?.cost || 1;
-    const cells = sorted
-      .map((p) => {
-        const ratio = p.cost / top;
-        const opacity = Math.max(0.35, ratio);
-        const share = total > 0 ? ((p.cost / total) * 100).toFixed(1) : 0;
-        return `<div class="sc-tm-cell" style="flex:${Math.max(p.cost, 1)};opacity:${opacity};background:var(--accent)" title="${esc(p.sku)}: ${money(p.cost)} (${share}%)">
-          <div class="sc-tm-name">${esc(p.name)}</div>
-          <div class="sc-tm-val">${(p.cost / 1e6).toFixed(1)}M</div>
-          <div class="sc-tm-pct">${share}%</div>
-        </div>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">🍕 Доли прибыли</h2>
-      <div class="sc-kpi-row cols-3">
-        ${kpi('ВСЕГО СТОИМОСТЬ', money(total))}
-        ${kpi('SKU С ПОСТАВКАМИ', sorted.length, '', 'green')}
-        ${kpi('БЕЗ ПОСТАВОК', _products.length - sorted.length, '', 'orange')}
-      </div>
-      <div class="sc-card">
-        <div class="sc-card-title">Распределение по SKU</div>
-        <div class="sc-treemap" style="background:var(--surface-2,#fafafa)">${
-          cells || '<div style="padding:40px;color:var(--muted);text-align:center;width:100%">Нет данных о поставках</div>'
-        }</div>
-      </div>`;
-  }
-
-  function viewUnitEconomics() {
-    const { vatPct, commPct, minMarginPct } = _settings;
-    const rows = _products
-      .map((p) => {
-        const cost = productCost(p);
-        const inVat = Number(p.inputVat || 0);
-        const L = Math.ceil(productLiters(p) || 0);
-        const log = logisticsFor(p);
-        const stor = storageMonthFor(p);
-        const den = 1 - commPct / 100 - vatPct / (100 + vatPct);
-        const minP = cost > 0 && den > 0 ? Math.ceil((cost + log + stor) / den) : 0;
-        const sku = productSku(p);
-        return `<tr>
-          <td>${esc(p.name || sku)}<br><span style="font-size:11px;color:var(--muted)">${esc(sku)}</span></td>
-          <td>${cost ? money(cost) : '—'}</td>
-          <td>${inVat ? money(inVat) : '—'}</td>
-          <td>${L > 0 ? L + ' л' : '—'}</td>
-          <td>${L > 0 ? money(log) : '—'}</td>
-          <td>${stor > 0 ? money(stor) : 'бесплатно'}</td>
-          <td style="color:var(--accent);font-weight:700">${minP ? money(minP) : '—'}</td>
-          <td>${pill(cost ? 'ok' : 'bad', cost ? 'Есть' : 'Нет')}</td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">💹 Юнит-экономика</h2>
-      <div class="sc-card">
-        <div class="sc-card-title">⚙️ Настройки расчёта</div>
-        <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
-          <label style="font-size:13px">НДС, %
-            <input type="number" id="ue-vat" value="${vatPct}" min="0" max="50" class="sc-num-input">
-          </label>
-          <label style="font-size:13px">Комиссия Uzum, %
-            <input type="number" id="ue-comm" value="${commPct}" min="0" max="60" class="sc-num-input">
-          </label>
-          <label style="font-size:13px">Мин. маржа, %
-            <input type="number" id="ue-margin" value="${minMarginPct}" min="0" max="100" class="sc-num-input">
-          </label>
-          <button type="button" class="btn-primary" data-sc-save-settings>Пересчитать</button>
-        </div>
-      </div>
-      <div class="sc-table-wrap">
-        <table class="sc-table">
-          <thead><tr><th>Товар</th><th>Себест.</th><th>НДС вход.</th><th>Объём</th><th>Логистика</th><th>Хранение/мес</th><th>Мин. цена</th><th>Статус С/С</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  }
-
-  function viewCost() {
-    const hasc = _products.filter((p) => productCost(p) > 0).length;
-    const rows = _products
-      .map((p) => {
-        const sku = productSku(p);
-        const cost = productCost(p);
-        return `<tr>
-          <td>${esc(p.name || sku)}<br><span style="font-size:11px;color:var(--muted)">${esc(sku)}</span></td>
-          <td style="font-family:monospace;font-size:12px">${esc(sku)}</td>
-          <td>${productLiters(p) ? productLiters(p).toFixed(2) + ' л' : '—'}</td>
-          <td>${cost ? money(cost) : '—'}</td>
-          <td>${p.costNet ? money(p.costNet) : '—'}</td>
-          <td>${p.inputVat ? money(p.inputVat) : '—'}</td>
-          <td>${pill(cost ? 'ok' : 'bad', cost ? '✅ Заполнена' : '❌ Нет')}</td>
-          <td><button type="button" class="sc-icon-btn" data-sc-edit="${esc(sku)}">✏️</button></td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">🧵 Себестоимость</h2>
-      <div class="sc-kpi-row cols-4">
-        ${kpi('ВСЕГО SKU', _products.length)}
-        ${kpi('ЗАПОЛНЕНО', hasc, pct(_products.length ? (hasc / _products.length) * 100 : 0), 'green')}
-        ${kpi('НЕ ЗАПОЛНЕНО', _products.length - hasc, '⚠ нужно заполнить', 'red')}
-        ${kpi('ПОКРЫТИЕ', pct(_products.length ? (hasc / _products.length) * 100 : 0))}
-      </div>
-      <div class="sc-toolbar">
-        <button type="button" class="btn-secondary" data-sc-open-cost>+ Добавить / Редактировать →</button>
-        <button type="button" class="sc-export" data-sc-export="cost">⬇ CSV</button>
-      </div>
-      <div class="sc-table-wrap">
-        <table class="sc-table">
-          <thead><tr><th>Товар</th><th>SKU</th><th>Объём</th><th>Себест.брутто</th><th>Себест.нетто</th><th>НДС вход.</th><th>Статус</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  }
-
-  function viewNewCalc() {
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">🧮 Калькулятор нового товара</h2>
-      <div class="sc-calc-grid">
-        <div class="sc-card">
-          <div class="sc-card-title">Параметры товара</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            ${[
-              ['nc-price', 'Цена продажи, сум', '0'],
-              ['nc-cost', 'Себестоимость, сум', '0'],
-              ['nc-l', 'Длина, см', '0'],
-              ['nc-w', 'Ширина, см', '0'],
-              ['nc-h', 'Высота, см', '0'],
-              ['nc-turn', 'Оборачиваемость, дней', '30'],
-              ['nc-comm', 'Комиссия Uzum, %', String(_settings.commPct)],
-              ['nc-vat', 'НДС, %', String(_settings.vatPct)],
-              ['nc-drr', 'ДРР (реклама), %', '0'],
-              ['nc-other', 'Прочее, сум', '0']
-            ]
-              .map(
-                ([id, label, def]) => `<label style="font-size:13px;display:flex;flex-direction:column;gap:5px">
-              ${label}
-              <input type="number" id="${id}" value="${def}" class="sc-num-input" data-sc-recalc style="width:100%">
-            </label>`
-              )
-              .join('')}
-          </div>
-        </div>
-        <div class="sc-calc-result">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted)">МИН. ЦЕНА (безубыток)</div>
-          <div class="sc-calc-minprice" id="nc-minprice">—</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:12px">При заданной цене:</div>
-          <div class="sc-calc-line"><span>Прибыль</span><span id="nc-profit">—</span></div>
-          <div class="sc-calc-line"><span>Маржа</span><span id="nc-margin">—</span></div>
-          <div class="sc-calc-line"><span>ROI</span><span id="nc-roi">—</span></div>
-          <div style="margin:14px 0 8px;font-size:11px;text-transform:uppercase;color:var(--muted)">Детализация</div>
-          ${[
-            ['nc-r-cost', 'Себестоимость'],
-            ['nc-r-log', 'Логистика'],
-            ['nc-r-stor', 'Хранение/мес'],
-            ['nc-r-comm', 'Комиссия Uzum'],
-            ['nc-r-vat', 'НДС к уплате'],
-            ['nc-r-drr', 'ДРР'],
-            ['nc-r-other', 'Прочее'],
-            ['nc-r-total', 'Итого расходов']
-          ]
-            .map(([id, label]) => {
-              const isTotal = id === 'nc-r-total';
-              return `<div class="sc-calc-line" style="${isTotal ? 'border-top:2px solid var(--border-color);margin-top:8px;padding-top:12px;font-weight:700' : ''}">
-              <span>${label}</span><span id="${id}">—</span>
-            </div>`;
-            })
-            .join('')}
-        </div>
-      </div>`;
-  }
-
-  function viewStock() {
-    const sorted = [..._products]
-      .filter((p) => productStock(p) > 0)
-      .sort((a, b) => productStock(b) * productCost(b) - productStock(a) * productCost(a));
-    const totalVal = _products.reduce((s, p) => s + productStock(p) * productCost(p), 0);
-    const totalQty = _products.reduce((s, p) => s + productStock(p), 0);
-    const rows = sorted
-      .map((p) => {
-        const stock = productStock(p);
-        const cost = productCost(p);
-        const val = stock * cost;
-        const stor = storageMonthFor(p);
-        const t = Number(p.calc?.productTurnover || 30);
-        const sku = productSku(p);
-        return `<tr>
-          <td>${esc(p.name || sku)}<br><span style="font-size:11px;color:var(--muted)">${esc(sku)}</span></td>
-          <td><strong>${stock.toLocaleString('ru-RU')}</strong> шт</td>
-          <td>${cost ? money(cost) : '—'}</td>
-          <td style="font-weight:700;color:var(--accent)">${val ? money(val) : '—'}</td>
-          <td>${productLiters(p) ? productLiters(p).toFixed(2) + ' л' : '—'}</td>
-          <td>${stor ? money(stor) : 'бесплатно'}</td>
-          <td>${t} дн.</td>
-        </tr>`;
-      })
-      .join('');
-
-    return `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">📦 Склад</h2>
-      <div class="sc-kpi-row cols-4">
-        ${kpi('ОБЩИЙ ОСТАТОК', totalQty.toLocaleString('ru-RU') + ' шт')}
-        ${kpi('СТОИМОСТЬ СКЛАДА', money(totalVal), 'по себестоимости', 'blue')}
-        ${kpi('SKU С ОСТАТКОМ', sorted.length, '', 'green')}
-        ${kpi('SKU В НОЛЬ', _products.length - sorted.length, '', 'red')}
-      </div>
-      <div class="sc-table-wrap">
-        <table class="sc-table">
-          <thead><tr><th>Товар</th><th>Остаток</th><th>Себест./ед</th><th>Стоимость склада</th><th>Объём</th><th>Хранение/мес</th><th>Оборачив.</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="7">Нет остатков</td></tr>'}</tbody>
-        </table>
-      </div>`;
-  }
-
-  function renderSettingsPage() {
-    const root = document.getElementById('settingsTabContent');
-    if (!root) return;
-    const token = getToken();
-    const meta = getSyncMeta();
-    const lastSync = meta.lastSyncAt
-      ? new Date(meta.lastSyncAt).toLocaleString('ru-RU')
-      : 'ещё не было';
-    root.innerHTML = `
-      <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">⚙️ Настройки</h2>
-      <div class="sc-settings-wrap">
-        <div class="sc-settings-block">
-          <div class="sc-settings-title">
-            🔌 Uzum Seller OpenAPI
-            <span style="margin-left:auto">${tokenStatusHtml(token)}</span>
-          </div>
-
-          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px 16px;margin-bottom:16px;font-size:13px;line-height:1.5;color:var(--text)">
-            Используем <strong>официальный OpenAPI</strong>, не сессию кабинета.<br>
-            Документация:
-            <a href="https://api-seller.uzum.uz/api/seller-openapi/swagger/swagger-ui/webjars/swagger-ui/index.html" target="_blank" rel="noopener">Swagger OpenAPI</a>
-            · ключ в кабинете:
-            <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">seller.uzum.uz → API ключи</a>
-          </div>
-
-          <label style="display:block;margin-bottom:12px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без слова Bearer)</div>
-            <div style="display:flex;gap:8px">
-              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь API-ключ из кабинета Uzum" value="" autocomplete="off">
-              <button type="button" class="btn-secondary" data-sc-toggle-token title="Показать/скрыть">👁</button>
-            </div>
-            <div style="font-size:12px;color:var(--muted);margin-top:6px">OpenAPI шлёт ключ в заголовке Authorization <em>без</em> Bearer. Console / Network не нужны.</div>
-          </label>
-
-          <div style="background:var(--accent-soft);border:1px solid #c4b5fd;border-radius:12px;padding:16px;margin-bottom:16px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Как получить ключ (1 минута)</div>
-            <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.55">
-              <li>Зайди в кабинет под <strong>владельцем</strong> аккаунта</li>
-              <li>Открой <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">Настройки → API ключи</a></li>
-              <li>Нажми «Создать ключ» → название (например YO) → магазин → права (чтение или редактирование) → срок</li>
-              <li>Скопируй ключ сразу (потом его не покажут) и вставь сюда</li>
-              <li>Нажми «Сохранить и проверить»</li>
-            </ol>
-          </div>
-
-          <div class="toolbar" style="gap:10px;flex-wrap:wrap">
-            <button type="button" class="btn-primary" data-sc-save-token>✅ Сохранить и проверить</button>
-            <button type="button" class="btn-secondary" data-sc-sync>🔄 Синхронизировать</button>
-            <button type="button" class="btn-danger" data-sc-clear-token>🗑 Удалить</button>
-          </div>
-          <p class="sub" style="margin-top:12px">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
-            ${meta.shopsCount != null ? ` · магазинов: <strong>${esc(meta.shopsCount)}</strong>` : ''}
-            ${meta.shopId ? ` · shopId: <strong>${esc(meta.shopId)}</strong>` : ''}
-          </p>
-        </div>
-
-        <div class="sc-settings-block">
-          <div class="sc-settings-title">📋 Что синхронизируется</div>
-          <div class="sc-sync-grid">
-            <div class="sc-sync-item"><div class="sc-sync-icon">📋</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Товары и SKU</div>
-              <div class="sc-sync-desc">GET /v1/product/shop/{id}</div>
-              <div class="sc-sync-stat">${_products.length} SKU в базе YO</div>
-            </div></div>
-            <div class="sc-sync-item"><div class="sc-sync-icon">🛒</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Заказы и продажи</div>
-              <div class="sc-sync-desc">GET /v1/finance/orders · /v2/fbs/orders</div>
-              <div class="sc-sync-stat">${_orders.length} записей</div>
-            </div></div>
-            <div class="sc-sync-item"><div class="sc-sync-icon">💰</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Выплаты и расходы</div>
-              <div class="sc-sync-desc">GET /v1/finance/expenses</div>
-              <div class="sc-sync-stat">${_finance.length} записей</div>
-            </div></div>
-            <div class="sc-sync-item"><div class="sc-sync-icon">📦</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Остатки FBO/FBS</div>
-              <div class="sc-sync-desc">GET /v3/fbs/sku/stocks</div>
-              <div class="sc-sync-stat">${_products.reduce((s, p) => s + productStock(p), 0)} шт в базе</div>
-            </div></div>
-          </div>
-        </div>
-
-        <div class="sc-settings-block">
-          <div class="sc-settings-title">🔥 Firebase Firestore</div>
-          <p style="margin:0;font-size:14px">
-            ${
-              window.db
-                ? `${pill('ok', '● Подключён')} проект: <code>yoa123</code><br>
-              <span class="sub">products: ${_products.length} · shipments: ${_shipments.length} · finance: ${_finance.length}</span>`
-                : `${pill('bad', '● Не подключён')} — используется localStorage`
-            }
-          </p>
-        </div>
-      </div>`;
-  }
-
-  function render() {
-    const el = document.getElementById('sc-content');
-    if (!el) return;
-    let html = '';
-    switch (_view) {
-      case 'dashboard':
-        html = viewDashboard();
-        break;
-      case 'finance':
-        html = viewFinance();
-        break;
-      case 'products':
-        html = viewProducts();
-        break;
-      case 'abcxyz':
-        html = viewAbcXyz();
-        break;
-      case 'profit-share':
-        html = viewProfitShare();
-        break;
-      case 'unit-economics':
-        html = viewUnitEconomics();
-        break;
-      case 'cost':
-        html = viewCost();
-        break;
-      case 'new-calc':
-        html = viewNewCalc();
-        break;
-      case 'stock':
-        html = viewStock();
-        break;
-      default:
-        html = viewDashboard();
-    }
-    el.innerHTML = html;
-
-    document.querySelectorAll('.sc-sidebar .sc-nav').forEach((btn) => {
-      btn.classList.toggle('active', btn.getAttribute('data-view') === _view);
-    });
-    document.querySelectorAll('.sc-period').forEach((btn) => {
-      btn.classList.toggle('active', Number(btn.getAttribute('data-p')) === _period);
-    });
-
-    if (_view === 'dashboard') drawSimpleChart('sc-dash-chart', monthlyChart(shipmentsPeriod()));
-    if (_view === 'finance' && _finSub === 'overview') drawSimpleChart('sc-fin-chart', monthlyChart(shipmentsPeriod()));
-    if (_view === 'new-calc') recalcNew();
-    if (_view === 'products') applyProdFilter();
-  }
-
-  function goView(view) {
-    if (view === '__settings') {
-      if (typeof openPage === 'function') openPage('settings-tab');
-      return;
-    }
-    if (!view) return;
-    _view = view;
-    render();
-  }
-
-  function setFinSub(sub) {
-    _finSub = sub === 'pnl' ? 'pnl' : 'overview';
-    render();
-  }
-
-  function dismiss(key) {
-    _dismissed.add(key);
-    localStorage.setItem(DISMISSED_KEY, JSON.stringify([..._dismissed]));
-    render();
-  }
-
-  function saveSettings() {
-    const vat = Number(document.getElementById('ue-vat')?.value);
-    const comm = Number(document.getElementById('ue-comm')?.value);
-    const margin = Number(document.getElementById('ue-margin')?.value);
-    if (Number.isFinite(vat)) _settings.vatPct = vat;
-    if (Number.isFinite(comm)) _settings.commPct = comm;
-    if (Number.isFinite(margin)) _settings.minMarginPct = margin;
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(_settings));
-    render();
-  }
-
-  function editProd(sku) {
-    const p = _products.find((x) => productSku(x) === sku);
-    if (p && typeof loadProductIntoCalculator === 'function') {
+      // Expenses
+      let expenses = [];
       try {
-        loadProductIntoCalculator(p, false);
+        expenses = await fetchPaged(
+          (page) =>
+            `v1/finance/expenses?page=${page}&size=100&dateFrom=${dateFrom}&dateTo=${dateTo}&shopIds=${shopId}`,
+          (data) => {
+            if (Array.isArray(data?.paymentList)) return data.paymentList;
+            if (Array.isArray(data?.payload?.paymentList)) return data.payload.paymentList;
+            return unwrapList(data, ['payments', 'expenses', 'items', 'content']);
+          },
+          10
+        );
       } catch (e) {
-        console.warn(e);
+        console.warn('expenses sync', e);
       }
-    }
-    if (typeof openPage === 'function') openPage('cost-tab');
-  }
+      writeLocal(EXPENSES_KEY, expenses);
 
-  function filterProd() {
-    applyProdFilter();
-  }
+      // FBS orders (несколько статусов)
+      const fbs = [];
+      const statuses = ['CREATED', 'PACKING', 'PENDING_DELIVERY', 'DELIVERING', 'COMPLETED', 'CANCELED'];
+      for (const st of statuses) {
+        try {
+          const chunk = await fetchPaged(
+            (page) =>
+              `v2/fbs/orders?shopIds=${shopId}&status=${st}&page=${page}&size=50&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+            (data) => {
+              const list = unwrapList(data, ['orders', 'payload']);
+              return list.map((o) => ({ ...o, _status: st }));
+            },
+            5
+          );
+          fbs.push(...chunk);
+        } catch (e) {
+          console.warn('fbs', st, e?.message || e);
+        }
+      }
+      writeLocal(FBS_KEY, fbs);
 
-  function applyProdFilter() {
-    const q = String(document.getElementById('sc-prod-q')?.value || '')
-      .trim()
-      .toLowerCase();
-    document.querySelectorAll('#sc-prod-table .sc-prod-row').forEach((tr) => {
-      const text = tr.textContent.toLowerCase();
-      const hasCost = tr.getAttribute('data-hascost') === 'true';
-      const hasStock = tr.getAttribute('data-hasstock') === 'true';
-      let ok = !q || text.includes(q);
-      if (_prodFilter === 'cost') ok = ok && hasCost;
-      if (_prodFilter === 'nocost') ok = ok && !hasCost;
-      if (_prodFilter === 'stock') ok = ok && hasStock;
-      tr.style.display = ok ? '' : 'none';
-    });
-  }
-
-  function chipProd(btn) {
-    _prodFilter = btn?.getAttribute('data-f') || 'all';
-    document.querySelectorAll('.sc-chip[data-f]').forEach((b) => b.classList.toggle('active', b === btn));
-    applyProdFilter();
-  }
-
-  function exportProducts() {
-    const rows = ['SKU;Название;Себестоимость;Остаток;Объём'];
-    _products.forEach((p) => {
-      rows.push(
-        [productSku(p), p.name || '', productCost(p), productStock(p), productLiters(p).toFixed(2)]
-          .map((x) => `"${String(x).replace(/"/g, '""')}"`)
-          .join(';')
-      );
-    });
-    csvExport(rows, 'yo-products.csv');
-  }
-
-  function exportAbcXyz() {
-    const cm = skuCostMap(shipmentsPeriod());
-    const list = classifyXYZ(classifyABC(_products, cm));
-    const rows = ['SKU;Название;Стоимость;Кол-во;ABC;XYZ'];
-    list.forEach((p) => {
-      rows.push(
-        [productSku(p), p.name || '', p.shipCost || 0, p.shipQty || 0, p.abc, p.xyz]
-          .map((x) => `"${String(x).replace(/"/g, '""')}"`)
-          .join(';')
-      );
-    });
-    csvExport(rows, 'yo-abcxyz.csv');
-  }
-
-  function exportCost() {
-    const rows = ['SKU;Название;СебестБрутто;СебестНетто;НДС'];
-    _products.forEach((p) => {
-      rows.push(
-        [productSku(p), p.name || '', productCost(p), p.costNet || 0, p.inputVat || 0]
-          .map((x) => `"${String(x).replace(/"/g, '""')}"`)
-          .join(';')
-      );
-    });
-    csvExport(rows, 'yo-cost.csv');
-  }
-
-  function matGroup(a, x) {
-    const detail = document.getElementById('sc-mat-detail');
-    const table = document.getElementById('sc-abc-table');
-    if (table) {
-      table.querySelectorAll('tbody tr').forEach((tr) => {
-        const ok = tr.getAttribute('data-abc') === a && tr.getAttribute('data-xyz') === x;
-        tr.style.display = ok ? '' : 'none';
+      saveSyncMeta({
+        lastSyncAt: new Date().toISOString(),
+        lastStatus: 'ok',
+        shopId,
+        shopsCount: shops.length,
+        ordersCount: orders.length,
+        productsCount: productCards.length,
+        expensesCount: expenses.length,
+        fbsCount: fbs.length,
+        api: 'seller-openapi'
       });
+
+      alert(
+        `Синхронизация OK\nМагазинов: ${shops.length} (shop #${shopId})\n` +
+          `Товары: ${productCards.length}\nЗаказы finance: ${orders.length}\n` +
+          `Расходы: ${expenses.length}\nFBS: ${fbs.length}`
+      );
+      await loadAllData();
+      if (typeof openPage === 'function') {
+        /* stay */
+      }
+      renderSettingsPage();
+    } catch (err) {
+      const status = err?.status;
+      const msg = explainUzumHttpError(status, err?.body || err?.message);
+      saveSyncMeta({
+        lastSyncAt: new Date().toISOString(),
+        lastStatus: 'error',
+        lastError: String(err?.message || err)
+      });
+      alert(msg.startsWith('Uzum') || msg.startsWith('Прокси') ? msg : String(err?.message || err));
+      renderSettingsPage();
     }
-    if (detail) detail.textContent = `Показаны SKU группы ${a}${x}. Обновите страницу раздела, чтобы сбросить фильтр.`;
-  }
-
-  function recalcNew() {
-    const num = (id) => Number(document.getElementById(id)?.value) || 0;
-    const price = num('nc-price');
-    const cost = num('nc-cost');
-    const L = Math.ceil((num('nc-l') * num('nc-w') * num('nc-h')) / 1000) || 0;
-    const turn = num('nc-turn') || 30;
-    const commPct = num('nc-comm');
-    const vatPct = num('nc-vat');
-    const drrPct = num('nc-drr');
-    const other = num('nc-other');
-    const log = typeof calcLogistics === 'function' ? calcLogistics(L) : L > 0 ? Math.min(5250 + (L - 1) * 250, 50000) : 0;
-    const stor =
-      typeof calcStoragePerDay === 'function' ? (calcStoragePerDay(L, turn, 'existing', 0).amount || 0) * 30 : 0;
-    const commission = (price * commPct) / 100;
-    const vatOut = (price * vatPct) / (100 + vatPct);
-    const drr = (price * drrPct) / 100;
-    const totalExp = cost + log + stor + commission + vatOut + drr + other;
-    const den = 1 - commPct / 100 - vatPct / (100 + vatPct) - drrPct / 100;
-    const minPrice = cost > 0 && den > 0 ? Math.ceil((cost + log + stor + other) / den) : 0;
-    const profit = price - totalExp;
-    const margin = price > 0 ? (profit / price) * 100 : 0;
-    const roi = cost > 0 ? (profit / cost) * 100 : 0;
-    const set = (id, v) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = v;
-    };
-    set('nc-minprice', minPrice ? money(minPrice) : '—');
-    set('nc-profit', money(profit));
-    set('nc-margin', pct(margin));
-    set('nc-roi', pct(roi));
-    set('nc-r-cost', money(cost));
-    set('nc-r-log', money(log));
-    set('nc-r-stor', money(stor));
-    set('nc-r-comm', money(commission));
-    set('nc-r-vat', money(vatOut));
-    set('nc-r-drr', money(drr));
-    set('nc-r-other', money(other));
-    set('nc-r-total', money(totalExp));
-  }
-
-  function toggleToken() {
-    const inp = document.getElementById('sc-token-inp');
-    if (!inp) return;
-    inp.type = inp.type === 'password' ? 'text' : 'password';
   }
 
   function saveToken() {
@@ -1345,7 +526,7 @@
     }
     raw = cleanToken(raw);
     if (raw.length < 16) {
-      alert('Ключ слишком короткий. Скопируй API-ключ целиком из кабинета Uzum (Настройки → API ключи).');
+      alert('Ключ слишком короткий');
       return;
     }
     localStorage.setItem(TOKEN_KEY, raw);
@@ -1353,150 +534,1022 @@
   }
 
   function clearToken() {
-    if (!confirm('Удалить сохранённый API-ключ Uzum?')) return;
+    if (!confirm('Удалить API-ключ Uzum?')) return;
     localStorage.removeItem(TOKEN_KEY);
     renderSettingsPage();
   }
 
-  function uzumProxyUrl(apiPath) {
-    const path = String(apiPath || '').replace(/^\/+/, '');
-    return `/api/uzum-proxy?path=${encodeURIComponent(path)}`;
+  function toggleToken() {
+    const inp = document.getElementById('sc-token-inp');
+    if (!inp) return;
+    inp.type = inp.type === 'password' ? 'text' : 'password';
   }
 
-  async function uzumFetch(apiPath, options = {}) {
-    const token = cleanToken(getToken());
-    if (!token) throw new Error('Нет API-ключа');
-    // OpenAPI: Authorization = сырой ключ, БЕЗ "Bearer "
-    const headers = Object.assign(
-      {
-        Authorization: token,
-        Accept: 'application/json',
-        'Accept-Language': 'ru-RU'
-      },
-      options.headers || {}
-    );
-    const path = String(apiPath || '').replace(/^\/+/, '');
-    try {
-      const proxied = await fetch(uzumProxyUrl(path), { ...options, headers });
-      const ct = proxied.headers.get('content-type') || '';
-      if (proxied.status === 404 && ct.includes('text/html')) {
-        throw new Error('proxy-missing');
+  /* ========== Metrics ========== */
+  function ordersInRange(fromMs, toMs) {
+    return _orders.filter((o) => {
+      const t = orderDateMs(o);
+      return t >= fromMs && t <= toMs;
+    });
+  }
+
+  function metricsFor(list) {
+    let qty = 0;
+    let returns = 0;
+    let canceled = 0;
+    let revenue = 0;
+    let commission = 0;
+    let logistics = 0;
+    let sellerProfit = 0;
+    let withdraw = 0;
+    let cogs = 0;
+    list.forEach((o) => {
+      const amt = Number(o.amount || 0) || 0;
+      const ret = Number(o.amountReturns || 0) || 0;
+      const can = Number(o.cancelled || 0) || 0;
+      const price = Number(o.sellerPrice || o.purchasePrice || 0) || 0;
+      qty += amt;
+      returns += ret;
+      canceled += can;
+      revenue += price * Math.max(amt - ret, 0);
+      commission += Number(o.commission || 0) || 0;
+      logistics += Number(o.logisticDeliveryFee || 0) || 0;
+      sellerProfit += Number(o.sellerProfit || o.withdrawnProfit || 0) || 0;
+      if (String(o.status) === 'TO_WITHDRAW') {
+        withdraw += Number(o.withdrawnProfit || o.sellerProfit || price * amt) || 0;
       }
-      return proxied;
-    } catch (e) {
-      if (String(e?.message) !== 'proxy-missing' && !(e instanceof TypeError)) throw e;
-      return fetch(`${UZUM_OPENAPI}/${path}`, { ...options, headers });
-    }
+      const sku = String(o.skuTitle || o.sku || '').trim();
+      const unitCost = _yoCostMap[sku] || Number(o.purchasePrice || 0) || 0;
+      cogs += unitCost * Math.max(amt - ret, 0);
+    });
+    const sold = Math.max(qty - returns, 0);
+    const buyoutDenom = qty + canceled;
+    const buyout = buyoutDenom > 0 ? (sold / buyoutDenom) * 100 : 0;
+    const gross = sellerProfit || revenue - commission - logistics - cogs;
+    const speed = sold / Math.max(_periodDays, 1);
+    return { qty, sold, returns, canceled, revenue, commission, logistics, sellerProfit, withdraw, cogs, buyout, gross, speed };
   }
 
-  function explainUzumHttpError(status, errText) {
-    if (status === 401 || /unauthorized/i.test(errText)) {
-      return (
-        'Uzum отклонил API-ключ (HTTP 401).\n\n' +
-        'Нужен ключ из OpenAPI, не сессия кабинета.\n\n' +
-        '1) https://seller.uzum.uz/seller/api-keys\n' +
-        '2) Создать ключ → скопировать\n' +
-        '3) Вставить в YO → Сохранить и проверить\n\n' +
-        'Swagger: api-seller.uzum.uz → seller-openapi'
-      );
-    }
-    if (status === 403) {
-      return 'Доступ запрещён (403). Создай ключ с нужными правами/магазином в API ключи.';
-    }
-    if (String(errText).includes('proxy-missing')) {
-      return 'Прокси /api/uzum-proxy не найден. Задеплой на Vercel папку api/.';
-    }
-    return `HTTP ${status}${errText ? ': ' + errText.slice(0, 220) : ''}`;
+  function currentMetrics() {
+    return metricsFor(ordersInRange(periodStartMs(_periodDays), periodEndMs()));
   }
 
-  async function syncUzum() {
-    const token = cleanToken(getToken());
-    if (!token) {
-      alert('Сначала вставь API-ключ из кабинета (Настройки → API ключи)');
+  function prevMetrics() {
+    const end = periodStartMs(_periodDays);
+    const start = end - _periodDays * 86400000;
+    return metricsFor(ordersInRange(start, end));
+  }
+
+  function expensesInPeriod() {
+    const from = periodStartMs(_periodDays);
+    return _expenses.filter((e) => {
+      const t = Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
+      return t >= from;
+    });
+  }
+
+  function expenseTotal(list) {
+    return list.reduce((s, e) => {
+      const sign = String(e.type) === 'INCOME' ? -1 : 1;
+      return s + sign * (Number(e.paymentPrice || e.amount || 0) || 0);
+    }, 0);
+  }
+
+  function dailySeries(mode) {
+    const map = {};
+    const from = periodStartMs(_periodDays);
+    _orders.forEach((o) => {
+      const t = orderDateMs(o);
+      if (t < from) return;
+      const day = new Date(t).toISOString().slice(0, 10);
+      if (!map[day]) map[day] = { orders: 0, buyouts: 0, returns: 0, revenue: 0 };
+      const amt = Number(o.amount || 0) || 0;
+      const ret = Number(o.amountReturns || 0) || 0;
+      map[day].orders += amt;
+      map[day].buyouts += Math.max(amt - ret, 0);
+      map[day].returns += ret;
+      map[day].revenue += (Number(o.sellerPrice || 0) || 0) * Math.max(amt - ret, 0);
+    });
+    return Object.keys(map)
+      .sort()
+      .map((d) => ({
+        label: d.slice(5),
+        value: mode === 'returns' ? map[d].returns : mode === 'buyouts' ? map[d].buyouts : mode === 'revenue' ? map[d].revenue : map[d].orders
+      }));
+  }
+
+  function activityHeatmap() {
+    const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
+    const from = periodStartMs(_periodDays);
+    _orders.forEach((o) => {
+      const t = orderDateMs(o);
+      if (t < from) return;
+      const dt = new Date(t);
+      const dow = (dt.getDay() + 6) % 7;
+      grid[dow][dt.getHours()] += Number(o.amount || 1) || 1;
+    });
+    return grid;
+  }
+
+  function insightCards() {
+    const m = currentMetrics();
+    const cards = [];
+    if (m.buyout > 0 && m.buyout < 70) {
+      cards.push({
+        key: 'buyout-low',
+        type: 'danger',
+        title: 'Выкуп ниже нормы',
+        val: pct(m.buyout),
+        actions: [{ label: 'Открыть Финансы', view: 'finance' }]
+      });
+    }
+    const noStock = _products.filter((p) => productStock(p) <= 0).length;
+    if (noStock > 0) {
+      cards.push({
+        key: 'oos',
+        type: 'warn',
+        title: 'Закончились товары',
+        val: `${noStock} SKU`,
+        actions: [{ label: 'Ассортимент', view: 'products' }]
+      });
+    }
+    const lowRate = _products.filter((p) => {
+      const r = Number(String(p.rating || '').replace(',', '.'));
+      return Number.isFinite(r) && r > 0 && r < 4.5;
+    }).length;
+    if (lowRate > 0) {
+      cards.push({
+        key: 'rating',
+        type: 'warn',
+        title: 'Низкий рейтинг',
+        val: `${lowRate} товаров`,
+        actions: [{ label: 'Товары', view: 'products' }]
+      });
+    }
+    if (!_orders.length) {
+      cards.push({
+        key: 'nosync',
+        type: 'info',
+        title: 'Нет данных OpenAPI',
+        val: 'Синхронизируй API-ключ',
+        actions: [{ label: 'Настройки', view: '__settings' }]
+      });
+    }
+    const created = _fbsOrders.filter((o) => o._status === 'CREATED' || o.status === 'CREATED').length;
+    if (created > 0) {
+      cards.push({
+        key: 'fbs-pack',
+        type: 'warn',
+        title: 'Нужно собрать FBS',
+        val: `${created} заказов`,
+        actions: [{ label: 'Отгрузки', view: 'shipments' }]
+      });
+    }
+    return cards.filter((c) => !_dismissed.has(c.key));
+  }
+
+  function insightHtml(c) {
+    const btns = (c.actions || [])
+      .map((a) => `<button type="button" class="sc-insight-action" data-sc-goview="${esc(a.view)}">${esc(a.label)}</button>`)
+      .join('');
+    return `<div class="sc-insight ${c.type}">
+      <div class="sc-insight-body">
+        <div class="sc-insight-title">${esc(c.title)}</div>
+        <div class="sc-insight-val">${c.val}</div>
+        <div class="sc-insight-btns">
+          ${btns}
+          <button type="button" class="sc-insight-dismiss" data-sc-dismiss="${esc(c.key)}">Отложить</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function drawSimpleChart(canvasId, series) {
+    const el = document.getElementById(canvasId);
+    if (!el) return;
+    const vals = (series || []).map((s) => Number(s.value) || 0);
+    const labels = (series || []).map((s) => s.label);
+    if (!vals.length) {
+      el.innerHTML = '<div class="sc-empty-sub">Нет данных за период</div>';
       return;
     }
-    if (token !== getToken()) localStorage.setItem(TOKEN_KEY, token);
+    const max = Math.max(...vals, 1);
+    const w = Math.max(el.clientWidth || 600, 320);
+    const h = 220;
+    const pad = 28;
+    const step = (w - pad * 2) / Math.max(vals.length - 1, 1);
+    const points = vals
+      .map((v, i) => {
+        const x = pad + i * step;
+        const y = h - pad - (v / max) * (h - pad * 2);
+        return `${x},${y}`;
+      })
+      .join(' ');
+    const area = `${pad},${h - pad} ${points} ${pad + (vals.length - 1) * step},${h - pad}`;
+    el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none">
+      <polyline fill="rgba(59,102,245,0.12)" stroke="none" points="${area}"></polyline>
+      <polyline fill="none" stroke="#3b66f5" stroke-width="2.5" points="${points}"></polyline>
+    </svg>
+    <div class="sc-chart-labels">${labels
+      .filter((_, i) => i % Math.ceil(labels.length / 6) === 0)
+      .map((l) => `<span>${esc(l)}</span>`)
+      .join('')}</div>`;
+  }
 
-    try {
-      // OpenAPI: GET /v1/shops
-      const res = await uzumFetch('v1/shops');
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(explainUzumHttpError(res.status, errText));
-      }
-      let data = null;
-      try {
-        data = await res.json();
-      } catch (_) { /* ignore */ }
-
-      const shops = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.payload)
-          ? data.payload
-          : Array.isArray(data?.content)
-            ? data.content
-            : [];
-      const shop = shops[0] || null;
-      const shopId = shop?.id || shop?.shopId || shop?.sellerId || null;
-      let productHint = '';
-
-      if (shopId) {
-        const pRes = await uzumFetch(`v1/product/shop/${shopId}`);
-        if (pRes.ok) {
-          let pData = null;
-          try {
-            pData = await pRes.json();
-          } catch (_) { /* ignore */ }
-          const list = Array.isArray(pData)
-            ? pData
-            : Array.isArray(pData?.payload)
-              ? pData.payload
-              : Array.isArray(pData?.productList)
-                ? pData.productList
-                : Array.isArray(pData?.skuList)
-                  ? pData.skuList
-                  : [];
-          const total =
-            pData?.totalElements ??
-            pData?.total ??
-            (list.length ? list.length : null);
-          productHint =
-            total != null
-              ? `\nТовары OpenAPI: ${total} (магазин #${shopId}).`
-              : `\nКаталог магазина #${shopId} доступен.`;
-        } else {
-          productHint = `\nМагазин #${shopId} найден, каталог: HTTP ${pRes.status}.`;
-        }
-      }
-
-      saveSyncMeta({
-        lastSyncAt: new Date().toISOString(),
-        lastStatus: 'ok',
-        lastHttp: res.status,
-        shopId: shopId || null,
-        shopsCount: shops.length,
-        api: 'seller-openapi'
+  function renderHeatmap(grid) {
+    const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+    let max = 1;
+    grid.forEach((row) => row.forEach((v) => {
+      if (v > max) max = v;
+    }));
+    const hours = [0, 3, 6, 9, 12, 15, 18, 21];
+    let html = '<div class="sc-heat"><div class="sc-heat-corner"></div>';
+    hours.forEach((h) => {
+      html += `<div class="sc-heat-h">${h}:00</div>`;
+    });
+    grid.forEach((row, di) => {
+      html += `<div class="sc-heat-d">${days[di]}</div>`;
+      hours.forEach((h) => {
+        const slice = row.slice(h, h + 3);
+        const v = slice.reduce((a, b) => a + b, 0);
+        const op = 0.12 + (v / max) * 0.88;
+        html += `<div class="sc-heat-cell" style="background:rgba(59,102,245,${op.toFixed(2)})" title="${days[di]} ${h}:00 — ${v}"></div>`;
       });
-      alert(
-        `✅ OpenAPI-ключ рабочий. Магазинов: ${shops.length}.${productHint}\n` +
-          'Дальше можно тянуть заказы/финансы/остатки через те же endpoints.'
-      );
-    } catch (err) {
-      saveSyncMeta({
-        lastSyncAt: new Date().toISOString(),
-        lastStatus: 'error',
-        lastError: String(err?.message || err)
-      });
-      const msg = String(err?.message || err);
-      alert(
-        msg.startsWith('Uzum отклонил') ||
-          msg.startsWith('Доступ') ||
-          msg.startsWith('Прокси')
-          ? msg
-          : 'Не удалось проверить API-ключ.\n\n' + msg
-      );
+    });
+    html += '</div>';
+    return html;
+  }
+
+  /* ========== Views ========== */
+  function viewDashboard() {
+    const cur = currentMetrics();
+    const prev = prevMetrics();
+    const expSum = expenseTotal(expensesInPeriod());
+    const withdraw = cur.withdraw || Math.max(cur.sellerProfit - expSum, 0);
+    const insights = insightCards();
+
+    return `<div class="sc-dash-grid">
+      <div>
+        <div class="sc-kpi-row cols-3">
+          ${kpiCard('Заказы', `${cur.qty} шт`, `${moneyShort(cur.revenue)} сум · ${deltaHtml(cur.qty, prev.qty)}`, 'blue')}
+          ${kpiCard('Скорость продаж', `${cur.speed.toFixed(1)} шт/день`, deltaHtml(cur.speed, prev.speed), 'orange')}
+          ${kpiCard('Выкуп', pct(cur.buyout), deltaHtml(cur.buyout, prev.buyout, 'pp'), cur.buyout >= 70 ? 'green' : 'red')}
+        </div>
+        <div class="sc-kpi-row cols-3">
+          ${kpiCard('Валовая прибыль', money(cur.gross), deltaHtml(cur.gross, prev.gross), 'green')}
+          ${kpiCard('Выручка за период', money(cur.revenue), deltaHtml(cur.revenue, prev.revenue), 'blue')}
+          ${kpiCard('Можно вывести', money(withdraw), 'по статусу TO_WITHDRAW / прибыль', 'green')}
+        </div>
+        <div class="sc-card">
+          <div class="sc-card-title" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span>Динамика</span>
+            <div class="sc-subtabs" style="margin:0">
+              <button type="button" class="sc-subtab${_dynMode === 'orders' ? ' active' : ''}" data-sc-dyn="orders">Заказы</button>
+              <button type="button" class="sc-subtab${_dynMode === 'buyouts' ? ' active' : ''}" data-sc-dyn="buyouts">Выкупы</button>
+              <button type="button" class="sc-subtab${_dynMode === 'returns' ? ' active' : ''}" data-sc-dyn="returns">Возвраты</button>
+              <button type="button" class="sc-subtab${_dynMode === 'revenue' ? ' active' : ''}" data-sc-dyn="revenue">Выручка</button>
+            </div>
+          </div>
+          <div id="sc-dash-chart"></div>
+        </div>
+        <div class="sc-card">
+          <div class="sc-card-title">Карта активности: Заказы</div>
+          ${renderHeatmap(activityHeatmap())}
+        </div>
+      </div>
+      <div class="sc-card sc-insights-panel">
+        <div class="sc-card-title">Что важно сейчас
+          <span class="sc-pill sc-pill-bad" style="margin-left:auto">${insights.length}</span>
+        </div>
+        ${insights.length ? insights.map(insightHtml).join('') : '<div class="sc-empty-sub">Пока спокойно — критичных сигналов нет</div>'}
+      </div>
+    </div>`;
+  }
+
+  function viewFinanceOverview() {
+    const cur = currentMetrics();
+    const prev = prevMetrics();
+    const exp = expenseTotal(expensesInPeriod());
+    const net = cur.gross - exp;
+    return `<div class="sc-subtabs">
+        <button type="button" class="sc-subtab active" data-sc-finsub="overview">Обзор</button>
+        <button type="button" class="sc-subtab" data-sc-finsub="pnl">ОПиУ</button>
+        <button type="button" class="sc-subtab" data-sc-finsub="payout">Календарь выплат</button>
+      </div>
+      <div class="sc-kpi-row cols-4">
+        ${kpiCard('Заказы', String(cur.qty), deltaHtml(cur.qty, prev.qty), 'blue')}
+        ${kpiCard('Продажи (выручка)', money(cur.revenue), deltaHtml(cur.revenue, prev.revenue), 'blue')}
+        ${kpiCard('Валовая прибыль', money(cur.gross), deltaHtml(cur.gross, prev.gross), 'green')}
+        ${kpiCard('Расходы МП', money(exp), 'finance/expenses', 'orange')}
+      </div>
+      <div class="sc-kpi-row cols-3">
+        ${kpiCard('Чистая прибыль', money(net), 'валовая − расходы', net >= 0 ? 'green' : 'red')}
+        ${kpiCard('Можно вывести', money(cur.withdraw || cur.sellerProfit), '', 'green')}
+        ${kpiCard('Возвраты', `${cur.returns} шт`, money(cur.returns), 'red')}
+      </div>
+      <div class="sc-card">
+        <div class="sc-card-title">Динамика выручки</div>
+        <div id="sc-fin-chart"></div>
+      </div>`;
+  }
+
+  function viewPnl() {
+    const cur = currentMetrics();
+    const prev = prevMetrics();
+    const exp = expenseTotal(expensesInPeriod());
+    const prevExp = 0;
+    const row = (name, a, b, opts) => {
+      const d = b - a;
+      const dp = a ? (d / Math.abs(a)) * 100 : null;
+      return `<div class="sc-pnl-row${opts?.tot ? ' tot' : opts?.sub ? ' sub' : opts?.sep ? ' sep' : ''}">
+        <span>${esc(name)}</span>
+        <span>${money(a)}</span>
+        <span>${money(b)}</span>
+        <span class="${d >= 0 ? 'sc-pnl-up' : 'sc-pnl-dn'}">${d >= 0 ? '+' : ''}${money(d)}</span>
+        <span class="${d >= 0 ? 'sc-pnl-up' : 'sc-pnl-dn'}">${dp != null ? pct(dp) : '—'}</span>
+      </div>`;
+    };
+    return `<div class="sc-subtabs">
+        <button type="button" class="sc-subtab" data-sc-finsub="overview">Обзор</button>
+        <button type="button" class="sc-subtab active" data-sc-finsub="pnl">ОПиУ</button>
+        <button type="button" class="sc-subtab" data-sc-finsub="payout">Календарь выплат</button>
+      </div>
+      <div class="sc-pnl">
+        <div class="sc-pnl-row hdr"><span>Показатель</span><span>Пред. период</span><span>Тек. период</span><span>Изм.</span><span>%</span></div>
+        ${row('Выручка', prev.revenue, cur.revenue)}
+        ${row('Себестоимость (YO)', prev.cogs, cur.cogs, { sub: true })}
+        ${row('Комиссия Uzum', prev.commission, cur.commission, { sub: true })}
+        ${row('Логистика', prev.logistics, cur.logistics, { sub: true })}
+        ${row('Валовая прибыль', prev.gross, cur.gross, { tot: true })}
+        ${row('Прочие расходы МП', prevExp, exp)}
+        ${row('Чистая прибыль', prev.gross - prevExp, cur.gross - exp, { tot: true })}
+        <div class="sc-pnl-row sep"><span>Рентабельность нетто, %</span>
+          <span>${prev.revenue ? pct(((prev.gross - prevExp) / prev.revenue) * 100) : '—'}</span>
+          <span>${cur.revenue ? pct(((cur.gross - exp) / cur.revenue) * 100) : '—'}</span>
+          <span></span><span></span>
+        </div>
+      </div>`;
+  }
+
+  function viewPayout() {
+    const cur = currentMetrics();
+    const exp = expenseTotal(expensesInPeriod());
+    const toWithdraw = _orders
+      .filter((o) => String(o.status) === 'TO_WITHDRAW')
+      .reduce((s, o) => s + (Number(o.withdrawnProfit || o.sellerProfit || 0) || 0), 0);
+    return `<div class="sc-subtabs">
+        <button type="button" class="sc-subtab" data-sc-finsub="overview">Обзор</button>
+        <button type="button" class="sc-subtab" data-sc-finsub="pnl">ОПиУ</button>
+        <button type="button" class="sc-subtab active" data-sc-finsub="payout">Календарь выплат</button>
+      </div>
+      <div class="sc-kpi-row cols-3">
+        ${kpiCard('Доступно сейчас', money(toWithdraw || cur.withdraw), 'статус TO_WITHDRAW', 'green')}
+        ${kpiCard('Расходы МП за период', money(exp), '', 'orange')}
+        ${kpiCard('Прибыль продавца (API)', money(cur.sellerProfit), '', 'blue')}
+      </div>
+      <div class="sc-card">
+        <div class="sc-card-title">Позиции к выводу</div>
+        <div class="sc-table-wrap"><table class="sc-table">
+          <thead><tr><th>Дата</th><th>SKU</th><th>Кол-во</th><th>К выводу</th><th>Статус</th></tr></thead>
+          <tbody>
+            ${_orders
+              .filter((o) => String(o.status) === 'TO_WITHDRAW')
+              .slice(0, 80)
+              .map((o) => {
+                const t = orderDateMs(o);
+                return `<tr>
+                  <td>${t ? new Date(t).toLocaleDateString('ru-RU') : '—'}</td>
+                  <td>${esc(o.skuTitle || '—')}</td>
+                  <td>${Number(o.amount || 0)}</td>
+                  <td>${money(o.withdrawnProfit || o.sellerProfit || 0)}</td>
+                  <td>${pill('ok', o.status)}</td>
+                </tr>`;
+              })
+              .join('') || '<tr><td colspan="5">Нет позиций TO_WITHDRAW</td></tr>'}
+          </tbody>
+        </table></div>
+      </div>`;
+  }
+
+  function viewFinance() {
+    if (_finSub === 'pnl') return viewPnl();
+    if (_finSub === 'payout') return viewPayout();
+    return viewFinanceOverview();
+  }
+
+  function salesBySku() {
+    const map = {};
+    const from = periodStartMs(_periodDays);
+    _orders.forEach((o) => {
+      if (orderDateMs(o) < from) return;
+      const sku = String(o.skuTitle || '').trim();
+      if (!sku) return;
+      if (!map[sku]) map[sku] = { qty: 0, revenue: 0, profit: 0, returns: 0 };
+      const amt = Number(o.amount || 0) || 0;
+      const ret = Number(o.amountReturns || 0) || 0;
+      map[sku].qty += Math.max(amt - ret, 0);
+      map[sku].returns += ret;
+      map[sku].revenue += (Number(o.sellerPrice || 0) || 0) * Math.max(amt - ret, 0);
+      map[sku].profit += Number(o.sellerProfit || 0) || 0;
+    });
+    return map;
+  }
+
+  function viewProducts() {
+    const sales = salesBySku();
+    const rows = _products
+      .map((p) => {
+        const sku = productSku(p);
+        const s = sales[sku] || { qty: 0, revenue: 0, profit: 0 };
+        const cost = productCost(p);
+        const stock = productStock(p);
+        return { p, sku, s, cost, stock, hasc: cost > 0 };
+      })
+      .sort((a, b) => b.s.revenue - a.s.revenue);
+
+    const withStock = rows.filter((r) => r.stock > 0).length;
+    const withCost = rows.filter((r) => r.hasc).length;
+
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab active" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <div class="sc-kpi-row cols-4">
+        ${kpiCard('SKU', String(rows.length), '', 'blue')}
+        ${kpiCard('С остатком', String(withStock), '', 'green')}
+        ${kpiCard('С себестоимостью', String(withCost), '', 'orange')}
+        ${kpiCard('Выручка периода', money(rows.reduce((s, r) => s + r.s.revenue, 0)), '', 'blue')}
+      </div>
+      <div class="sc-toolbar">
+        <input class="sc-search" id="sc-prod-q" placeholder="Поиск по SKU, названию…" />
+        <button type="button" class="sc-chip active" data-f="all">Все</button>
+        <button type="button" class="sc-chip" data-f="cost">С себестоимостью</button>
+        <button type="button" class="sc-chip" data-f="nocost">Без</button>
+        <button type="button" class="sc-chip" data-f="stock">С остатком</button>
+        <button type="button" class="sc-export" data-sc-export="products">CSV</button>
+      </div>
+      <div class="sc-table-wrap"><table class="sc-table" id="sc-prod-table">
+        <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th><th>Цена</th><th>Себест.</th><th>Продажи</th><th>Выручка</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (r) => `<tr class="sc-prod-row" data-hascost="${r.hasc}" data-hasstock="${r.stock > 0}">
+            <td>${esc(r.sku)}</td>
+            <td>${esc(r.p.name || r.p.title || '—')}</td>
+            <td>${r.stock}</td>
+            <td>${money(r.p.sellPrice || r.p.price || 0)}</td>
+            <td>${r.cost ? money(r.cost) : '—'}</td>
+            <td>${r.s.qty}</td>
+            <td>${money(r.s.revenue)}</td>
+          </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table></div>`;
+  }
+
+  function classifyABC(rows) {
+    const sorted = [...rows].sort((a, b) => b.s.revenue - a.s.revenue);
+    const total = sorted.reduce((s, r) => s + r.s.revenue, 0) || 1;
+    let cum = 0;
+    return sorted.map((r) => {
+      cum += r.s.revenue;
+      const sh = cum / total;
+      return { ...r, abc: sh <= 0.8 ? 'A' : sh <= 0.95 ? 'B' : 'C' };
+    });
+  }
+
+  function classifyXYZ(rows) {
+    return rows.map((r) => {
+      const cv = r.s.qty > 10 ? 0.08 : r.s.qty > 3 ? 0.2 : r.s.qty > 0 ? 0.4 : 1;
+      return { ...r, xyz: cv <= 0.1 ? 'X' : cv <= 0.25 ? 'Y' : cv <= 0.5 ? 'Z' : 'N' };
+    });
+  }
+
+  function viewAbcXyz() {
+    const sales = salesBySku();
+    let rows = _products.map((p) => {
+      const sku = productSku(p);
+      return { p, sku, s: sales[sku] || { qty: 0, revenue: 0 }, stock: productStock(p) };
+    });
+    rows = classifyXYZ(classifyABC(rows));
+    const M = { A: { X: 0, Y: 0, Z: 0, N: 0 }, B: { X: 0, Y: 0, Z: 0, N: 0 }, C: { X: 0, Y: 0, Z: 0, N: 0 } };
+    rows.forEach((r) => {
+      if (M[r.abc] && M[r.abc][r.xyz] != null) M[r.abc][r.xyz] += 1;
+    });
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab active" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <div class="sc-card"><div class="sc-card-title">Матрица ABC × XYZ</div>
+        <table class="sc-abc-matrix"><thead><tr><th></th><th>X</th><th>Y</th><th>Z</th><th>N</th></tr></thead>
+        <tbody>${['A', 'B', 'C']
+          .map(
+            (a) =>
+              `<tr><th>${a}</th>${['X', 'Y', 'Z', 'N']
+                .map((x) => `<td class="sc-abc-cell"><div class="sc-abc-count">${M[a][x]}</div></td>`)
+                .join('')}</tr>`
+          )
+          .join('')}</tbody></table>
+      </div>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>SKU</th><th>ABC</th><th>XYZ</th><th>Продажи</th><th>Выручка</th></tr></thead>
+        <tbody>${rows
+          .slice(0, 200)
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.sku)}</td><td>${pill(r.abc.toLowerCase(), r.abc)}</td><td>${pill(r.xyz.toLowerCase(), r.xyz)}</td><td>${r.s.qty}</td><td>${money(r.s.revenue)}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
+
+  function viewProfitShare() {
+    const sales = salesBySku();
+    const rows = Object.keys(sales)
+      .map((sku) => ({ sku, ...sales[sku], cost: (_yoCostMap[sku] || 0) * sales[sku].qty }))
+      .sort((a, b) => b.profit - a.profit);
+    const total = rows.reduce((s, r) => s + Math.max(r.profit, 0), 0) || 1;
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab active" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <div class="sc-kpi-row cols-3">
+        ${kpiCard('SKU с прибылью', String(rows.filter((r) => r.profit > 0).length), '', 'green')}
+        ${kpiCard('Сумма прибыли', money(rows.reduce((s, r) => s + r.profit, 0)), '', 'green')}
+        ${kpiCard('Топ-1 доля', rows[0] ? pct((Math.max(rows[0].profit, 0) / total) * 100) : '—', rows[0]?.sku || '', 'blue')}
+      </div>
+      <div class="sc-card"><div class="sc-card-title">Распределение</div>
+        <div class="sc-treemap">${rows
+          .slice(0, 40)
+          .map((r) => {
+            const share = ((Math.max(r.profit, 0) / total) * 100).toFixed(1);
+            return `<div class="sc-tm-cell" style="flex:${Math.max(r.profit, 1)};background:var(--accent)">
+              <div class="sc-tm-name">${esc(r.sku)}</div>
+              <div class="sc-tm-val">${moneyShort(r.profit)}</div>
+              <div class="sc-tm-pct">${share}%</div>
+            </div>`;
+          })
+          .join('')}</div>
+      </div>`;
+  }
+
+  function viewUnitEconomics() {
+    const sales = salesBySku();
+    const { vatPct, commPct, minMarginPct } = _settings;
+    const rows = _products.map((p) => {
+      const sku = productSku(p);
+      const cost = productCost(p);
+      const price = Number(p.sellPrice || p.price || 0) || 0;
+      const s = sales[sku] || { qty: 0, revenue: 0, profit: 0 };
+      const comm = (price * commPct) / 100;
+      const vat = (price * vatPct) / (100 + vatPct);
+      const profit = price - cost - comm - vat;
+      const margin = price > 0 ? (profit / price) * 100 : 0;
+      return { sku, name: p.name || p.title, stock: productStock(p), cost, price, s, profit, margin };
+    });
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab active" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <p class="sub">Комиссия ${commPct}% · НДС ${vatPct}% · мин. маржа ${minMarginPct}%
+        <button type="button" class="btn-secondary" data-sc-save-settings style="margin-left:8px">Параметры</button></p>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>SKU</th><th>Цена</th><th>Себест.</th><th>Прибыль/шт</th><th>Маржа</th><th>Продано</th><th>Остаток</th></tr></thead>
+        <tbody>${rows
+          .slice(0, 300)
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.sku)}</td><td>${money(r.price)}</td><td>${r.cost ? money(r.cost) : '—'}</td>
+              <td>${money(r.profit)}</td><td>${pct(r.margin)}</td><td>${r.s.qty}</td><td>${r.stock}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
+
+  function viewCost() {
+    const rows = _products.map((p) => ({
+      sku: productSku(p),
+      name: p.name || p.title,
+      cost: productCost(p),
+      stock: productStock(p)
+    }));
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab active" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <p class="sub">Себестоимость берётся из базы YO. Редактирование —
+        <button type="button" class="btn-secondary" data-sc-open-cost>Открыть Себестоимость YO</button></p>
+      <div class="sc-toolbar"><button type="button" class="sc-export" data-sc-export="cost">CSV</button></div>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>SKU</th><th>Название</th><th>Себестоимость</th><th>Остаток</th></tr></thead>
+        <tbody>${rows
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.sku)}</td><td>${esc(r.name || '—')}</td><td>${r.cost ? money(r.cost) : pill('bad', 'нет')}</td><td>${r.stock}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
+
+  function viewNewCalc() {
+    const { vatPct, commPct } = _settings;
+    return `<div class="sc-assort-tabs">
+        <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
+        <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
+        <button type="button" class="sc-subtab" data-sc-assort="profit-share">Доли прибыли</button>
+        <button type="button" class="sc-subtab" data-sc-assort="unit-economics">Юнит-экономика</button>
+        <button type="button" class="sc-subtab" data-sc-assort="cost">Себестоимость</button>
+        <button type="button" class="sc-subtab active" data-sc-assort="new-calc">Калькулятор</button>
+      </div>
+      <div class="sc-calc-grid">
+        <div class="sc-card">
+          <div class="sc-card-title">Новый товар</div>
+          ${[
+            ['nc-cost', 'Себестоимость', '0'],
+            ['nc-price', 'Цена продажи', '0'],
+            ['nc-comm', 'Комиссия %', String(commPct)],
+            ['nc-vat', 'НДС %', String(vatPct)],
+            ['nc-drr', 'ДРР %', '0'],
+            ['nc-other', 'Прочее', '0'],
+            ['nc-liters', 'Литраж', '1'],
+            ['nc-turn', 'Оборачиваемость, дн', '30']
+          ]
+            .map(
+              ([id, lab, val]) =>
+                `<label class="sc-calc-line"><span>${lab}</span><input class="sc-num-input" id="${id}" data-sc-recalc value="${val}" type="number"></label>`
+            )
+            .join('')}
+        </div>
+        <div class="sc-calc-result">
+          <div class="sc-card-title">Результат</div>
+          <div>Мин. цена</div><div class="sc-calc-minprice" id="nc-minprice">—</div>
+          <div class="sc-calc-line"><span>Прибыль</span><span id="nc-profit">—</span></div>
+          <div class="sc-calc-line"><span>Маржа</span><span id="nc-margin">—</span></div>
+          <div class="sc-calc-line"><span>ROI</span><span id="nc-roi">—</span></div>
+        </div>
+      </div>`;
+  }
+
+  function viewStock() {
+    const rows = _products
+      .map((p) => ({ sku: productSku(p), name: p.name || p.title, stock: productStock(p), cost: productCost(p) }))
+      .sort((a, b) => a.stock - b.stock);
+    const zero = rows.filter((r) => r.stock <= 0).length;
+    const value = rows.reduce((s, r) => s + r.stock * r.cost, 0);
+    return `<div class="sc-kpi-row cols-3">
+        ${kpiCard('SKU', String(rows.length), '', 'blue')}
+        ${kpiCard('Нулевой остаток', String(zero), '', 'red')}
+        ${kpiCard('Стоимость склада', money(value), 'по себестоимости YO', 'green')}
+      </div>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th><th>Себест.</th><th>Сумма</th></tr></thead>
+        <tbody>${rows
+          .slice(0, 400)
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.sku)}</td><td>${esc(r.name || '—')}</td><td>${r.stock}</td><td>${money(r.cost)}</td><td>${money(r.stock * r.cost)}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
+
+  function viewShipments() {
+    const by = (st) => _fbsOrders.filter((o) => String(o._status || o.status) === st).length;
+    const created = by('CREATED') + by('PACKING');
+    const pending = by('PENDING_DELIVERY');
+    const delivering = by('DELIVERING');
+    const done = by('COMPLETED');
+    const canceled = by('CANCELED');
+    return `<div class="sc-kpi-row cols-4">
+        ${kpiCard('Нужно собрать', String(created), 'CREATED / PACKING', 'orange')}
+        ${kpiCard('Передать', String(pending), 'PENDING_DELIVERY', 'blue')}
+        ${kpiCard('В пути', String(delivering), 'DELIVERING', 'blue')}
+        ${kpiCard('Выкуплено', String(done), `отмены: ${canceled}`, 'green')}
+      </div>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>ID</th><th>Статус</th><th>Схема</th><th>Дата</th></tr></thead>
+        <tbody>
+          ${_fbsOrders
+            .slice(0, 200)
+            .map((o) => {
+              const t = Number(o.dateCreated || o.createdAt || o.date || 0);
+              return `<tr>
+                <td>${esc(o.id || o.orderId || '—')}</td>
+                <td>${esc(o._status || o.status || '—')}</td>
+                <td>${esc(o.scheme || o.deliveryScheme || '—')}</td>
+                <td>${t ? new Date(t).toLocaleString('ru-RU') : '—'}</td>
+              </tr>`;
+            })
+            .join('') || '<tr><td colspan="4">Нет FBS-заказов — выполни синхронизацию</td></tr>'}
+        </tbody>
+      </table></div>`;
+  }
+
+  function viewTurnover() {
+    const sales = salesBySku();
+    const rows = _products.map((p) => {
+      const sku = productSku(p);
+      const s = sales[sku] || { qty: 0 };
+      const stock = productStock(p);
+      const daysNoSale = s.qty > 0 ? 0 : _periodDays;
+      const speed = s.qty / Math.max(_periodDays, 1);
+      const daysLeft = speed > 0 ? stock / speed : stock > 0 ? 999 : 0;
+      return { sku, name: p.name || p.title, stock, sold: s.qty, daysNoSale, daysLeft, cost: productCost(p) };
+    });
+    const noSales = rows.filter((r) => r.sold === 0 && r.stock > 0).length;
+    const storageHint = rows.filter((r) => r.daysNoSale >= 30 && r.stock > 0).length;
+    return `<div class="sc-kpi-row cols-3">
+        ${kpiCard('Без продаж + остаток', String(noSales), `за ${_periodDays} дн`, 'orange')}
+        ${kpiCard('Риск платного хранения', String(storageHint), 'нет продаж ≥ периода', 'red')}
+        ${kpiCard('SKU в анализе', String(rows.length), '', 'blue')}
+      </div>
+      <div class="sc-card"><div class="sc-card-title">Оборачиваемость</div>
+        <p class="sub">Платное хранение FBO детально зависит от тарифов Uzum — здесь сигнал по отсутствию продаж и остатку.</p>
+      </div>
+      <div class="sc-table-wrap"><table class="sc-table">
+        <thead><tr><th>SKU</th><th>Остаток</th><th>Продано</th><th>Дней без продаж</th><th>Запас, дн</th></tr></thead>
+        <tbody>${rows
+          .sort((a, b) => b.daysNoSale - a.daysNoSale || a.daysLeft - b.daysLeft)
+          .slice(0, 300)
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.sku)}</td><td>${r.stock}</td><td>${r.sold}</td><td>${r.daysNoSale}</td><td>${r.daysLeft >= 999 ? '—' : r.daysLeft.toFixed(0)}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>`;
+  }
+
+  function recalcNew() {
+    const num = (id) => Number(document.getElementById(id)?.value) || 0;
+    const cost = num('nc-cost');
+    const price = num('nc-price');
+    const commPct = num('nc-comm');
+    const vatPct = num('nc-vat');
+    const drrPct = num('nc-drr');
+    const other = num('nc-other');
+    const L = num('nc-liters');
+    const log = typeof calcLogistics === 'function' ? calcLogistics(L) : L > 0 ? Math.min(5250 + (L - 1) * 250, 50000) : 0;
+    const commission = (price * commPct) / 100;
+    const vatOut = (price * vatPct) / (100 + vatPct);
+    const drr = (price * drrPct) / 100;
+    const totalExp = cost + log + commission + vatOut + drr + other;
+    const den = 1 - commPct / 100 - vatPct / (100 + vatPct) - drrPct / 100;
+    const minPrice = cost > 0 && den > 0 ? Math.ceil((cost + log + other) / den) : 0;
+    const profit = price - totalExp;
+    const margin = price > 0 ? (profit / price) * 100 : 0;
+    const roi = cost > 0 ? (profit / cost) * 100 : 0;
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    set('nc-minprice', minPrice ? money(minPrice) : '—');
+    set('nc-profit', money(profit));
+    set('nc-margin', pct(margin));
+    set('nc-roi', pct(roi));
+  }
+
+  function renderSettingsPage() {
+    const root = document.getElementById('settingsTabContent');
+    if (!root) return;
+    const token = getToken();
+    const meta = getSyncMeta();
+    const lastSync = meta.lastSyncAt ? new Date(meta.lastSyncAt).toLocaleString('ru-RU') : 'ещё не было';
+    root.innerHTML = `
+      <div class="sc-settings-wrap">
+        <div class="sc-settings-block">
+          <div class="sc-settings-title">Uzum Seller OpenAPI
+            <span style="margin-left:auto">${tokenStatusHtml(token)}</span>
+          </div>
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px;margin-bottom:14px;font-size:13px;line-height:1.5">
+            Официальный OpenAPI (не сессия кабинета).<br>
+            <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">Создать API-ключ</a> ·
+            <a href="https://api-seller.uzum.uz/api/seller-openapi/swagger/swagger-ui/webjars/swagger-ui/index.html" target="_blank" rel="noopener">Swagger</a>
+          </div>
+          <label style="display:block;margin-bottom:12px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без Bearer)</div>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь API-ключ" value="" autocomplete="off">
+              <button type="button" class="btn-secondary" data-sc-toggle-token>👁</button>
+            </div>
+          </label>
+          <div class="toolbar" style="gap:10px;flex-wrap:wrap">
+            <button type="button" class="btn-primary" data-sc-save-token>Сохранить и синхронизировать</button>
+            <button type="button" class="btn-secondary" data-sc-sync>Синхронизировать</button>
+            <button type="button" class="btn-danger" data-sc-clear-token>Удалить</button>
+          </div>
+          <p class="sub" style="margin-top:12px">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
+            ${meta.ordersCount != null ? ` · заказы: ${meta.ordersCount}` : ''}
+            ${meta.productsCount != null ? ` · товары: ${meta.productsCount}` : ''}
+            ${meta.fbsCount != null ? ` · FBS: ${meta.fbsCount}` : ''}
+          </p>
+        </div>
+        <div class="sc-settings-block">
+          <div class="sc-settings-title">Что тянем из OpenAPI</div>
+          <div class="sc-sync-grid">
+            <div class="sc-sync-item"><div class="sc-sync-icon">📋</div><div class="sc-sync-body">
+              <div class="sc-sync-name">Товары</div><div class="sc-sync-stat">${_products.length} SKU</div>
+            </div></div>
+            <div class="sc-sync-item"><div class="sc-sync-icon">🛒</div><div class="sc-sync-body">
+              <div class="sc-sync-name">Finance orders</div><div class="sc-sync-stat">${_orders.length}</div>
+            </div></div>
+            <div class="sc-sync-item"><div class="sc-sync-icon">💰</div><div class="sc-sync-body">
+              <div class="sc-sync-name">Expenses</div><div class="sc-sync-stat">${_expenses.length}</div>
+            </div></div>
+            <div class="sc-sync-item"><div class="sc-sync-icon">🚚</div><div class="sc-sync-body">
+              <div class="sc-sync-name">FBS orders</div><div class="sc-sync-stat">${_fbsOrders.length}</div>
+            </div></div>
+          </div>
+        </div>
+        <div class="sc-settings-block">
+          <div class="sc-settings-title">Firebase</div>
+          <p style="margin:0;font-size:14px">${
+            window.db ? pill('ok', 'Подключён') + ' yoa123' : pill('bad', 'localStorage')
+          }</p>
+        </div>
+      </div>`;
+  }
+
+  function assortView() {
+    if (_assortTab === 'abcxyz') return viewAbcXyz();
+    if (_assortTab === 'profit-share') return viewProfitShare();
+    if (_assortTab === 'unit-economics') return viewUnitEconomics();
+    if (_assortTab === 'cost') return viewCost();
+    if (_assortTab === 'new-calc') return viewNewCalc();
+    return viewProducts();
+  }
+
+  function render() {
+    const el = document.getElementById('sc-content');
+    if (!el) return;
+    let html = '';
+    switch (_view) {
+      case 'dashboard':
+        html = viewDashboard();
+        break;
+      case 'finance':
+        html = viewFinance();
+        break;
+      case 'products':
+      case 'abcxyz':
+      case 'profit-share':
+      case 'unit-economics':
+      case 'cost':
+      case 'new-calc':
+        _assortTab = _view;
+        html = assortView();
+        break;
+      case 'stock':
+        html = viewStock();
+        break;
+      case 'shipments':
+        html = viewShipments();
+        break;
+      case 'turnover':
+        html = viewTurnover();
+        break;
+      default:
+        html = viewDashboard();
     }
-    renderSettingsPage();
+    el.innerHTML = html;
+
+    document.querySelectorAll('.sc-sidebar .sc-nav[data-view]').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-view') === _view);
+    });
+    document.querySelectorAll('.sc-period').forEach((btn) => {
+      btn.classList.toggle('active', Number(btn.getAttribute('data-days')) === _periodDays);
+    });
+
+    if (_view === 'dashboard') drawSimpleChart('sc-dash-chart', dailySeries(_dynMode));
+    if (_view === 'finance' && _finSub === 'overview') drawSimpleChart('sc-fin-chart', dailySeries('revenue'));
+    if (_view === 'new-calc' || _assortTab === 'new-calc') recalcNew();
+    if (_view === 'products' || _assortTab === 'products') applyProdFilter();
+  }
+
+  function goView(view) {
+    if (view === '__settings') {
+      if (typeof openPage === 'function') openPage('settings-tab');
+      return;
+    }
+    if (!view) return;
+    const assort = ['products', 'abcxyz', 'profit-share', 'unit-economics', 'cost', 'new-calc'];
+    if (assort.includes(view)) {
+      _view = view;
+      _assortTab = view;
+    } else {
+      _view = view;
+    }
+    render();
+  }
+
+  function setFinSub(sub) {
+    _finSub = ['pnl', 'payout'].includes(sub) ? sub : 'overview';
+    render();
+  }
+
+  function dismiss(key) {
+    if (!key) return;
+    _dismissed.add(key);
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([..._dismissed]));
+    render();
+  }
+
+  function saveSettings() {
+    const vat = Number(prompt('НДС %', _settings.vatPct));
+    const comm = Number(prompt('Комиссия %', _settings.commPct));
+    const margin = Number(prompt('Мин. маржа %', _settings.minMarginPct));
+    if (Number.isFinite(vat)) _settings.vatPct = vat;
+    if (Number.isFinite(comm)) _settings.commPct = comm;
+    if (Number.isFinite(margin)) _settings.minMarginPct = margin;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(_settings));
+    render();
+  }
+
+  function filterProd() {
+    applyProdFilter();
+  }
+
+  function chipProd(btn) {
+    document.querySelectorAll('.sc-chip[data-f]').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    _prodFilter = btn.getAttribute('data-f') || 'all';
+    applyProdFilter();
+  }
+
+  function applyProdFilter() {
+    const q = String(document.getElementById('sc-prod-q')?.value || '')
+      .toLowerCase()
+      .trim();
+    document.querySelectorAll('#sc-prod-table .sc-prod-row').forEach((tr) => {
+      const text = tr.textContent.toLowerCase();
+      const hasc = tr.getAttribute('data-hascost') === 'true';
+      const hasstock = tr.getAttribute('data-hasstock') === 'true';
+      let ok = !q || text.includes(q);
+      if (_prodFilter === 'cost') ok = ok && hasc;
+      if (_prodFilter === 'nocost') ok = ok && !hasc;
+      if (_prodFilter === 'stock') ok = ok && hasstock;
+      tr.style.display = ok ? '' : 'none';
+    });
+  }
+
+  function exportCsv(filename, rows) {
+    const bom = '\uFEFF';
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bom + csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = filename;
+    a.click();
+  }
+
+  function exportProducts() {
+    const sales = salesBySku();
+    exportCsv('yo-products.csv', [
+      ['sku', 'name', 'stock', 'cost', 'sold', 'revenue'],
+      ..._products.map((p) => {
+        const sku = productSku(p);
+        const s = sales[sku] || {};
+        return [sku, p.name || p.title, productStock(p), productCost(p), s.qty || 0, s.revenue || 0];
+      })
+    ]);
+  }
+
+  function exportAbcXyz() {
+    exportProducts();
+  }
+
+  function exportCost() {
+    exportCsv('yo-cost.csv', [
+      ['sku', 'name', 'cost', 'stock'],
+      ..._products.map((p) => [productSku(p), p.name || p.title, productCost(p), productStock(p)])
+    ]);
+  }
+
+  function editProd() {
+    /* reserved */
+  }
+
+  function matGroup() {
+    /* reserved */
   }
 
   function closeScMobileNav() {
@@ -1533,33 +1586,39 @@
         return;
       }
       if (e.target.closest('#scSidebarOverlay')) {
-        e.preventDefault();
         closeScMobileNav();
         return;
       }
       if (e.target.closest('[data-sc-open-settings]')) {
-        e.preventDefault();
         closeScMobileNav();
         if (typeof openPage === 'function') openPage('settings-tab');
         return;
       }
       const nav = e.target.closest('.sc-nav[data-view]');
       if (nav) {
-        e.preventDefault();
         goView(nav.getAttribute('data-view'));
         closeScMobileNav();
         return;
       }
-      const period = e.target.closest('.sc-period[data-p]');
+      const period = e.target.closest('.sc-period[data-days]');
       if (period) {
-        e.preventDefault();
-        _period = Number(period.getAttribute('data-p')) || 3;
+        _periodDays = Number(period.getAttribute('data-days')) || 90;
         render();
         return;
       }
       if (e.target.closest('#sc-refresh-btn')) {
-        e.preventDefault();
         void loadAllData();
+        return;
+      }
+      const dyn = e.target.closest('[data-sc-dyn]');
+      if (dyn) {
+        _dynMode = dyn.getAttribute('data-sc-dyn') || 'orders';
+        render();
+        return;
+      }
+      const assort = e.target.closest('[data-sc-assort]');
+      if (assort) {
+        goView(assort.getAttribute('data-sc-assort'));
         return;
       }
       const gov = e.target.closest('[data-sc-goview]');
@@ -1575,11 +1634,6 @@
       const fin = e.target.closest('[data-sc-finsub]');
       if (fin) {
         setFinSub(fin.getAttribute('data-sc-finsub'));
-        return;
-      }
-      const edit = e.target.closest('[data-sc-edit]');
-      if (edit) {
-        editProd(edit.getAttribute('data-sc-edit'));
         return;
       }
       const chip = e.target.closest('.sc-chip[data-f]');
@@ -1601,12 +1655,6 @@
       }
       if (e.target.closest('[data-sc-open-cost]')) {
         if (typeof openPage === 'function') openPage('cost-tab');
-        return;
-      }
-      const mat = e.target.closest('[data-sc-mat]');
-      if (mat) {
-        const [a, x] = String(mat.getAttribute('data-sc-mat') || '').split('|');
-        matGroup(a, x);
       }
     });
 
@@ -1615,8 +1663,7 @@
       if (e.target?.hasAttribute?.('data-sc-recalc')) recalcNew();
     });
 
-    const settings = document.getElementById('settings-tab');
-    settings?.addEventListener('click', (e) => {
+    document.getElementById('settings-tab')?.addEventListener('click', (e) => {
       if (e.target.closest('#scSettingsBackAnalytics')) {
         if (typeof openPage === 'function') openPage('analytics-scaleup-tab');
         return;

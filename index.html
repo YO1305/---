@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-05-fs" />
+  <link rel="stylesheet" href="style.css?v=2026-08-05-parity1" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -2062,6 +2062,8 @@
             </div>
             <div class="sc-sidebar-group">
               <div class="sc-group-label">ЛОГИСТИКА</div>
+              <button type="button" class="sc-nav" data-view="shipments">🚚 Отгрузки</button>
+              <button type="button" class="sc-nav" data-view="turnover">📉 Товарооборот</button>
               <button type="button" class="sc-nav" data-view="stock">📦 Склад</button>
             </div>
             <div class="sc-sidebar-group">
@@ -2077,11 +2079,10 @@
             </button>
             <div class="sc-topbar-meta" id="sc-data-source">Загрузка…</div>
             <div class="sc-period-wrap">
-              <button type="button" class="sc-period" data-p="1">1 мес</button>
-              <button type="button" class="sc-period active" data-p="3">3 мес</button>
-              <button type="button" class="sc-period" data-p="6">6 мес</button>
-              <button type="button" class="sc-period" data-p="9">9 мес</button>
-              <button type="button" class="sc-period" data-p="12">12 мес</button>
+              <button type="button" class="sc-period" data-days="30">30 дн</button>
+              <button type="button" class="sc-period active" data-days="90">90 дн</button>
+              <button type="button" class="sc-period" data-days="180">180 дн</button>
+              <button type="button" class="sc-period" data-days="365">365 дн</button>
             </div>
             <button type="button" class="btn-secondary sc-refresh" id="sc-refresh-btn">🔄 Обновить</button>
           </div>
@@ -2160,6 +2161,6 @@
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
   <script src="script.js?v=wb-v4-2026-08-05-fs"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-08-05-openapi"></script>
+  <script src="scaleup-yo.js?v=2026-08-05-parity1"></script>
 </body>
 </html>

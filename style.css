@@ -4348,3 +4348,52 @@ body.dark-mode .sc-insight.warn  { background: #2a2110; }
 body.dark-mode .sc-insight.danger{ background: #2f1818; }
 body.dark-mode .sc-insight.info  { background: #172554; }
 body.dark-mode .sc-insight.good  { background: #0f2419; }
+
+.sc-chart-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  padding: 0 8px;
+}
+.sc-heat {
+  display: grid;
+  grid-template-columns: 36px repeat(8, minmax(0, 1fr));
+  gap: 4px;
+  align-items: center;
+}
+.sc-heat-corner { height: 18px; }
+.sc-heat-h {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+.sc-heat-d {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sc-heat-cell {
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(59, 102, 245, 0.15);
+}
+.sc-insights-panel { position: sticky; top: 12px; }
+.sc-assort-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  background: var(--chip-bg);
+  border-radius: 10px;
+  padding: 3px;
+  margin-bottom: 16px;
+  width: fit-content;
+  max-width: 100%;
+}
+.sc-assort-tabs .sc-subtab { white-space: nowrap; }
+@media (max-width: 980px) {
+  .sc-insights-panel { position: static; }
+  .sc-heat { grid-template-columns: 28px repeat(8, minmax(0, 1fr)); }
+  .sc-heat-cell { height: 16px; }
+}
