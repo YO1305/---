@@ -2444,6 +2444,12 @@ function openPage(pageId) {
   updateMpContextHint();
   if (pageId === 'unit-tab') renderUnit();
   if (pageId === 'finances-tab' && typeof renderFinancesPage === 'function') renderFinancesPage();
+  if (pageId === 'analytics-scaleup-tab' && window.ScaleUpYO) {
+    if (typeof window.ScaleUpYO.init === 'function') window.ScaleUpYO.init();
+  }
+  if (pageId === 'settings-tab' && window.ScaleUpYO && typeof window.ScaleUpYO.renderSettingsPage === 'function') {
+    window.ScaleUpYO.renderSettingsPage();
+  }
   renderEverything();
 }
 

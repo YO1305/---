@@ -80,9 +80,13 @@
             <span class="nav-icon">📈</span>
             <span>Отчёты МП</span>
           </button>
-          <button class="nav-btn" data-page="analytics-yo-tab">
+          <button class="nav-btn" data-page="analytics-scaleup-tab">
             <span class="nav-icon">📊</span>
-            <span>Аналитика YO</span>
+            <span>Аналитика</span>
+          </button>
+          <button class="nav-btn" data-page="settings-tab">
+            <span class="nav-icon">⚙️</span>
+            <span>Настройки</span>
           </button>
           <ul class="nav-menu-addon">
             <li id="nav-generator" class="nav-item nav-btn" data-page="generator-section" role="button" tabindex="0">
@@ -2027,9 +2031,50 @@
       </div>
     </section>
 
-    <section class="page-panel" id="analytics-yo-tab" aria-label="Аналитика YO">
-      <div id="analyticsYoRoot" class="analytics-yo-root">
-        <div class="analytics-loader">Загрузка модуля аналитики…</div>
+    <section class="page-panel" id="analytics-scaleup-tab" aria-label="Аналитика ScaleUp">
+      <div class="sc-wrap">
+        <aside class="sc-sidebar">
+          <div class="sc-sidebar-group">
+            <div class="sc-group-label">АНАЛИТИКА</div>
+            <button type="button" class="sc-nav active" data-view="dashboard">🏠 Главная</button>
+            <button type="button" class="sc-nav" data-view="finance">💰 Финансы</button>
+          </div>
+          <div class="sc-sidebar-group">
+            <div class="sc-group-label">АССОРТИМЕНТ</div>
+            <button type="button" class="sc-nav" data-view="products">📦 Товары</button>
+            <button type="button" class="sc-nav" data-view="abcxyz">📊 ABC/XYZ</button>
+            <button type="button" class="sc-nav" data-view="profit-share">🍕 Доли прибыли</button>
+            <button type="button" class="sc-nav" data-view="unit-economics">💹 Юнит-экономика</button>
+            <button type="button" class="sc-nav" data-view="cost">🧵 Себестоимость</button>
+            <button type="button" class="sc-nav" data-view="new-calc">🧮 Калькулятор</button>
+          </div>
+          <div class="sc-sidebar-group">
+            <div class="sc-group-label">ЛОГИСТИКА</div>
+            <button type="button" class="sc-nav" data-view="stock">📦 Склад</button>
+          </div>
+        </aside>
+        <main class="sc-main">
+          <div class="sc-topbar">
+            <div style="font-size:13px;color:var(--muted)" id="sc-data-source">Загрузка…</div>
+            <div class="sc-period-wrap">
+              <button type="button" class="sc-period" data-p="1">1 мес</button>
+              <button type="button" class="sc-period active" data-p="3">3 мес</button>
+              <button type="button" class="sc-period" data-p="6">6 мес</button>
+              <button type="button" class="sc-period" data-p="9">9 мес</button>
+              <button type="button" class="sc-period" data-p="12">12 мес</button>
+            </div>
+            <button type="button" class="btn-secondary" id="sc-refresh-btn">🔄 Обновить</button>
+          </div>
+          <div id="sc-content">
+            <div class="sc-loader"><div class="sc-spinner"></div>Загрузка данных…</div>
+          </div>
+        </main>
+      </div>
+    </section>
+
+    <section class="page-panel" id="settings-tab" aria-label="Настройки">
+      <div id="settingsTabContent" class="sc-settings-page">
+        <div class="sc-loader"><div class="sc-spinner"></div>Загрузка настроек…</div>
       </div>
     </section>
 
@@ -2088,6 +2133,6 @@
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
   <script src="script.js?v=wb-v4-2026-07-06"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="analytics-yo.js?v=2026-08-05"></script>
+  <script src="scaleup-yo.js?v=2026-08-05"></script>
 </body>
 </html>
