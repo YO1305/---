@@ -1,0 +1,26 @@
+---
+description: Always commit and push to GitHub after meaningful code changes
+alwaysApply: true
+---
+
+# Auto commit & push
+
+The user has granted standing permission: after completing meaningful code changes in this project, **commit and push to GitHub** without waiting for them to ask each time.
+
+## When to commit & push
+- After finishing a user-requested feature, fix, or deploy-relevant change
+- Include related files in one commit when they belong to the same change
+- Skip trivial-only edits (typo in chat reply with no file changes)
+
+## How
+1. `git status`, `git diff`, `git log -5 --oneline` in parallel
+2. Stage relevant files (never `.env`, credentials, secrets, `node_modules`)
+3. Commit with a concise message focused on why
+4. `git push -u origin HEAD` (or the tracked remote/branch) — **push is allowed**
+5. Report the commit hash and that push succeeded (or the error)
+
+## Safety
+- Never `git push --force` to main/master unless the user explicitly asks in that message
+- Never update git config
+- Never skip hooks unless explicitly asked
+- If there is no git remote yet, say so and ask for the GitHub repo URL once

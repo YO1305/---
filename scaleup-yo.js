@@ -1022,8 +1022,14 @@
   }
 
   function bookmarkletHref() {
-    const code = `(function(){function pick(){var keys=['access_token','accessToken','token','sellerToken','bearerToken','id_token'];var i,v,k;for(i=0;i<keys.length;i++){v=localStorage.getItem(keys[i]);if(v&&String(v).length>80)return String(v);}try{for(i=0;i<localStorage.length;i++){k=localStorage.key(i)||'';v=localStorage.getItem(k);if(!v||v.length<80)continue;if(/access.?token|bearer|auth/i.test(k)&&/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/.test(v)){var m=v.match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/);if(m)return m[0];if(v.indexOf('{')===0){try{var o=JSON.parse(v);if(o.access_token)return o.access_token;if(o.accessToken)return o.accessToken;}catch(e){}}}}}catch(e){}var cookies=document.cookie.split(';');for(var c of cookies){var p=c.trim().split('=');if(keys.indexOf(p[0])>=0&&p[1]&&p[1].length>80)return decodeURIComponent(p[1]);}return null;}var t=pick();if(t){t=String(t).replace(/^Bearer\\s+/i,'').trim();localStorage.setItem('yo_uzum_bearer_token',t);alert('✅ Токен Uzum получен (~40 мин). Вернись в YO → Настройки → Синхронизировать.');}else{var manual=prompt('Токен не найден автоматически.\\nF12 → Network → любой api-seller.uzum.uz → Headers → Authorization → скопируй ПОСЛЕ Bearer:');if(manual){localStorage.setItem('yo_uzum_bearer_token',String(manual).replace(/^Bearer\\s+/i,'').trim());alert('✅ Токен сохранён!');}}})();`;
+    // Важно: код выполняется на seller.uzum.uz — токен кладём в буфер + показываем,
+    // чтобы пользователь вставил его в YO (localStorage чужого домена недоступен).
+    const code = `(function(){function pick(){var keys=['access_token','accessToken','token','sellerToken','bearerToken','id_token','access-token'];var i,v,k,m,o;function jwt(s){m=String(s||'').match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/);return m?m[0]:null;}for(i=0;i<keys.length;i++){v=localStorage.getItem(keys[i]);if(v&&v.length>80){m=jwt(v)||String(v).replace(/^Bearer\\s+/i,'').trim();if(m&&m.length>80)return m;}}try{for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i)||'';v=sessionStorage.getItem(k);m=jwt(v);if(m&&/token|auth|bearer|oauth|keycloak/i.test(k+v))return m;}}catch(e){}try{for(i=0;i<localStorage.length;i++){k=localStorage.key(i)||'';v=localStorage.getItem(k);if(!v||v.length<40)continue;m=jwt(v);if(!m)continue;if(/token|auth|bearer|oauth|oidc|keycloak|access/i.test(k)||k.indexOf('oidc')>=0)return m;if(v.charAt(0)==='{'){try{o=JSON.parse(v);if(o.access_token)return jwt(o.access_token)||o.access_token;if(o.accessToken)return jwt(o.accessToken)||o.accessToken;}catch(e){}}}}catch(e){}return null;}var t=pick();if(!t){alert('❌ Токен не найден.\\n\\nСделай так:\\n1) F12 → Console\\n2) Вставь код из YO → Настройки\\nИли Application → Local Storage → ищи access_token');return;}t=String(t).replace(/^Bearer\\s+/i,'').trim();function done(ok){prompt((ok?'✅ Скопировано в буфер. ':'')+'Вставь этот токен в YO → Настройки:',t);}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){done(true);}).catch(function(){done(false);});}else{done(false);}})();`;
     return 'javascript:' + encodeURIComponent(code);
+  }
+
+  function consoleSnippet() {
+    return `(() => { const jwt = s => (String(s||'').match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/)||[])[0]; const keys=['access_token','accessToken','token','sellerToken','bearerToken']; for (const k of keys) { const v = localStorage.getItem(k); const t = jwt(v)||v; if (t && t.length>80) { console.log('KEY',k); copy(t); return alert('Токен скопирован (ключ '+k+'). Вставь в YO → Настройки'); } } for (const store of [localStorage, sessionStorage]) { for (let i=0;i<store.length;i++){ const k=store.key(i); const v=store.getItem(k); const t=jwt(v); if(t && /token|auth|oauth|access|oidc|keycloak/i.test(k+String(v).slice(0,200))){ console.log('FOUND',k); copy(t); return alert('Токен скопирован из '+k+'. Вставь в YO'); } } } alert('Токен не найден. Обнови seller.uzum.uz и попробуй снова'); })();`;
   }
 
   function renderSettingsPage() {
@@ -1034,6 +1040,7 @@
     const lastSync = meta.lastSyncAt
       ? new Date(meta.lastSyncAt).toLocaleString('ru-RU')
       : 'ещё не было';
+    const snip = consoleSnippet();
     root.innerHTML = `
       <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">⚙️ Настройки</h2>
       <div class="sc-settings-wrap">
@@ -1043,22 +1050,38 @@
             <span style="margin-left:auto">${tokenStatusHtml(token)}</span>
           </div>
           <label style="display:block;margin-bottom:12px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:6px">Bearer access_token из кабинета seller.uzum.uz</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">Вставь access_token сюда</div>
             <div style="display:flex;gap:8px">
-              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь свежий токен (eyJ...)" value="">
-              <button type="button" class="btn-secondary" data-sc-toggle-token>👁</button>
+              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь токен (начинается с eyJ...)" value="" autocomplete="off">
+              <button type="button" class="btn-secondary" data-sc-toggle-token title="Показать/скрыть">👁</button>
             </div>
-            <div style="font-size:12px;color:var(--muted);margin-top:6px">⏱ Сессионный токен живёт ~30–40 минут. При HTTP 401 — зайди в кабинет и возьми новый.</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:6px">⏱ Живёт ~30–40 мин. Network искать не нужно — используй Console или закладку ниже.</div>
           </label>
+
           <div style="background:var(--accent-soft);border:1px solid #c4b5fd;border-radius:12px;padding:16px;margin-bottom:16px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">⚡ Букмарклет для токена</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">✅ Способ 1 — Console (самый простой)</div>
+            <ol style="margin:0 0 12px;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.55">
+              <li>Открой <a href="https://seller.uzum.uz" target="_blank" rel="noopener">seller.uzum.uz</a> и войди</li>
+              <li>Нажми <strong>F12</strong> → вкладка <strong>Console</strong> (не Network)</li>
+              <li>Вставь код ниже и Enter — токен скопируется</li>
+              <li>Вернись сюда → Ctrl+V в поле → «Сохранить и проверить»</li>
+            </ol>
+            <textarea id="sc-console-snip" class="sc-token-input" readonly rows="4" style="font-size:11px;line-height:1.35;resize:vertical">${esc(snip)}</textarea>
+            <div class="toolbar" style="margin-top:10px;gap:8px">
+              <button type="button" class="btn-primary" data-sc-copy-console>📋 Скопировать код для Console</button>
+            </div>
+          </div>
+
+          <div style="background:var(--surface-2);border:1px solid var(--border-color);border-radius:12px;padding:16px;margin-bottom:16px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">⚡ Способ 2 — закладка</div>
             <ol style="margin:0 0 12px;padding-left:18px;font-size:13px;color:var(--muted);line-height:1.5">
-              <li>Перетащи кнопку в закладки браузера</li>
-              <li>Открой seller.uzum.uz (войди в кабинет)</li>
-              <li>Нажми закладку — токен сохранится</li>
+              <li>Перетащи кнопку в панель закладок</li>
+              <li>На вкладке seller.uzum.uz нажми закладку</li>
+              <li>В окне будет токен — скопируй и вставь сюда</li>
             </ol>
             <a class="sc-bookmarklet" href="${bookmarkletHref()}">📎 YO: Получить токен Uzum</a>
           </div>
+
           <div class="toolbar" style="gap:10px;flex-wrap:wrap">
             <button type="button" class="btn-primary" data-sc-save-token>✅ Сохранить и проверить</button>
             <button type="button" class="btn-secondary" data-sc-sync>🔄 Синхронизировать</button>
@@ -1106,13 +1129,12 @@
         </div>
 
         <div class="sc-settings-block">
-          <div class="sc-settings-title">📖 Как получить токен вручную</div>
+          <div class="sc-settings-title">📖 Если Console тоже пусто</div>
           <ol style="margin:0;padding-left:18px;font-size:13px;line-height:1.55;color:var(--muted)">
-            <li>Открой <strong>seller.uzum.uz</strong> и войди в аккаунт</li>
-            <li>F12 → вкладка Network</li>
-            <li>Обнови страницу, кликни любой запрос к api-seller.uzum.uz</li>
-            <li>Headers → Authorization → скопируй значение после <code>Bearer</code></li>
-            <li>Вставь токен выше и нажми «Сохранить и проверить»</li>
+            <li>F12 → <strong>Application</strong> (Приложение) → Local Storage → <code>https://seller.uzum.uz</code></li>
+            <li>Ищи ключ с <code>access_token</code> / <code>token</code> / <code>oidc</code> — значение начинается с <code>eyJ</code></li>
+            <li>Скопируй значение (без слова Bearer) и вставь сюда</li>
+            <li>Network часто пустой из‑за фильтра — его можно не использовать</li>
           </ol>
         </div>
       </div>`;
@@ -1402,10 +1424,10 @@
         'Uzum отклонил токен (HTTP 401 Unauthorized).\n\n' +
         'Это не CORS и не поломка прокси — access_token недействителен или истёк (~30–40 мин).\n\n' +
         'Что сделать:\n' +
-        '1) Открой https://seller.uzum.uz и обнови страницу\n' +
-        '2) F12 → Network → любой запрос к api-seller.uzum.uz\n' +
-        '3) Headers → Authorization → скопируй значение ПОСЛЕ Bearer\n' +
-        '4) Вставь в Настройки → «Сохранить и проверить» сразу'
+        '1) Открой https://seller.uzum.uz\n' +
+        '2) F12 → Console (не Network)\n' +
+        '3) В YO → Настройки нажми «Скопировать код для Console» и вставь в Console\n' +
+        '4) Вернись в YO, вставь токен → «Сохранить и проверить»'
       );
     }
     if (status === 403) {
@@ -1634,6 +1656,23 @@
       }
       if (e.target.closest('#scSettingsBackYo')) {
         if (typeof openPage === 'function') openPage('dashboard-page');
+        return;
+      }
+      if (e.target.closest('[data-sc-copy-console]')) {
+        const ta = document.getElementById('sc-console-snip');
+        const text = ta?.value || consoleSnippet();
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => alert('Код скопирован. Открой seller.uzum.uz → F12 → Console → Ctrl+V → Enter'),
+            () => {
+              ta?.select();
+              alert('Выдели код вручную (Ctrl+C), потом вставь в Console на seller.uzum.uz');
+            }
+          );
+        } else {
+          ta?.select();
+          alert('Выдели код вручную (Ctrl+C), потом вставь в Console на seller.uzum.uz');
+        }
         return;
       }
       if (e.target.closest('[data-sc-toggle-token]')) toggleToken();
