@@ -78,7 +78,11 @@
           </button>
           <button class="nav-btn" data-page="analytics-tab">
             <span class="nav-icon">📈</span>
-            <span>Аналитика</span>
+            <span>Отчёты МП</span>
+          </button>
+          <button class="nav-btn" data-page="analytics-yo-tab">
+            <span class="nav-icon">📊</span>
+            <span>Аналитика YO</span>
           </button>
           <ul class="nav-menu-addon">
             <li id="nav-generator" class="nav-item nav-btn" data-page="generator-section" role="button" tabindex="0">
@@ -1743,8 +1747,9 @@
             <div class="analytics-sidebar-actions">
               <label class="btn-primary analytics-file-btn">
                 Загрузить детализацию WB (Excel)
-                <input type="file" id="wbAnalyticsFileInput" accept=".xlsx" hidden />
+                <input type="file" id="wbAnalyticsFileInput" accept=".xlsx" multiple hidden />
               </label>
+              <p class="hint" style="margin:8px 0 0;">Можно выбрать сразу несколько недельных .xlsx — они склеятся в один период.</p>
             </div>
             <div class="analytics-history">
               <h3 class="analytics-history-title">История отчётов WB</h3>
@@ -1754,7 +1759,7 @@
           </aside>
           <div class="analytics-main wb-analytics-main">
             <div id="wbAnalyticsPlaceholder" class="card analytics-placeholder wb-analytics-placeholder">
-              <p class="analytics-placeholder-text">Загрузите еженедельный .xlsx WB (Sheet1). Система разделит строки Продажа / Возврат / логистика, посчитает маржу от фактической выручки WB и покажет ABC по прибыли.</p>
+              <p class="analytics-placeholder-text">Загрузите один или несколько еженедельных .xlsx WB (можно выделить все 4 недели сразу). Система разберёт все листы с шапкой WB, склеит продажи/возвраты/логистику, посчитает маржу от фактической выручки и покажет ABC по прибыли.</p>
             </div>
 
             <div id="wbAnalyticsCogsPanel" class="hidden">
@@ -2022,6 +2027,12 @@
       </div>
     </section>
 
+    <section class="page-panel" id="analytics-yo-tab" aria-label="Аналитика YO">
+      <div id="analyticsYoRoot" class="analytics-yo-root">
+        <div class="analytics-loader">Загрузка модуля аналитики…</div>
+      </div>
+    </section>
+
     <div class="modal-backdrop" id="wmsProductPickModal">
       <div class="modal-sheet wms-modal-sheet">
         <div class="modal-header">
@@ -2077,5 +2088,6 @@
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
   <script src="script.js?v=wb-v4-2026-07-06"></script>
   <script src="finances.js?v=2026-06-16o"></script>
+  <script src="analytics-yo.js?v=2026-08-05"></script>
 </body>
 </html>

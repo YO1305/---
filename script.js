@@ -8035,6 +8035,7 @@ function applyAnalyticsTabMarketplaceLayout() {
 const wbAnalyticsState = {
   parsed: null,
   fileName: '',
+  fileNames: [],
   reportTitle: '',
   computed: null,
   currentReportId: null,
@@ -8217,9 +8218,17 @@ function wbDisplaySku(raw) {
     .trim();
 }
 
+function formatLocalYmd(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function parseWbSaleDateCell(val) {
   if (val === null || val === undefined || val === '') return null;
-  if (val instanceof Date && !Number.isNaN(val.getTime())) return val.toISOString().slice(0, 10);
+  if (val instanceof Date && !Number.isNaN(val.getTime())) return formatLocalYmd(val);
   if (typeof val === 'number' && val > 20000 && typeof XLSX !== 'undefined' && XLSX.SSF?.parse_date_code) {
     const d = XLSX.SSF.parse_date_code(val);
     if (d?.y) {
@@ -8228,11 +8237,19 @@ function parseWbSaleDateCell(val) {
   }
   const s = String(val).trim();
   const iso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return iso[0];
-  const ru = s.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-  if (ru) return `${ru[3]}-${ru[2]}-${ru[1]}`;
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const ruFull = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (ruFull) {
+    return `${ruFull[3]}-${String(ruFull[2]).padStart(2, '0')}-${String(ruFull[1]).padStart(2, '0')}`;
+  }
+  const ruShort = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{2})(?!\d)/);
+  if (ruShort) {
+    const yy = Number(ruShort[3]);
+    const yyyy = yy >= 70 ? 1900 + yy : 2000 + yy;
+    return `${yyyy}-${String(ruShort[2]).padStart(2, '0')}-${String(ruShort[1]).padStart(2, '0')}`;
+  }
   const parsed = new Date(s);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  if (!Number.isNaN(parsed.getTime())) return formatLocalYmd(parsed);
   return null;
 }
 
@@ -8762,32 +8779,41 @@ function touchWbSkuBucket(bySku, skuKey, displaySku) {
 /**
  * Парсинг еженедельного детализированного отчёта WB (.xlsx).
  * Все суммы в файле — в сумах (UZS).
+ * Читает ВСЕ листы книги, где находится шапка WB (не только первый).
  */
-function parseWbReport(arrayBuffer) {
+function parseWbReport(arrayBuffer, opts = {}) {
   if (typeof XLSX === 'undefined') throw new Error('Библиотека SheetJS (XLSX) не загружена.');
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   if (!wb.SheetNames?.length) throw new Error('Пустой Excel.');
 
-  let chosen = null;
+  const sheetsToParse = [];
   for (let si = 0; si < wb.SheetNames.length; si++) {
     const name = wb.SheetNames[si];
     const matrix = wbWorksheetToMatrix(wb.Sheets[name]);
     if (!matrix.length) continue;
     try {
       const { headerRow, col } = findWbReportHeaderAndColumns(matrix, 15);
-      chosen = { matrix, sheetName: name, headerRow, col };
-      break;
+      sheetsToParse.push({ matrix, sheetName: name, headerRow, col });
     } catch (e) {
       /* следующий лист */
     }
   }
-  if (!chosen) {
+  if (!sheetsToParse.length) {
     const firstName = wb.SheetNames[0];
     findWbReportHeaderAndColumns(wbWorksheetToMatrix(wb.Sheets[firstName]), 15);
   }
 
-  const { matrix, sheetName, headerRow: hRow, col: C } = chosen;
-  const cellAt = (row, i) => (i >= 0 && i < row.length ? parseWBNumber(row[i]) : 0);
+  return parseWbReportFromSheets(sheetsToParse, {
+    sourceFileName: opts.sourceFileName || ''
+  });
+}
+
+/**
+ * Общий проход по одному или нескольким листам/файлам с уже найденной шапкой.
+ * @param {Array<{matrix:any[][], sheetName:string, headerRow:number, col:object, sourceFileName?:string}>} sheets
+ */
+function parseWbReportFromSheets(sheets, meta = {}) {
+  if (!sheets?.length) throw new Error('Нет листов WB для разбора.');
 
   const aggregates = {
     revenue_fact_sum: 0,
@@ -8828,137 +8854,151 @@ function parseWbReport(arrayBuffer) {
     doc_type_histogram: {}
   };
 
-  for (let r = hRow + 1; r < matrix.length; r++) {
-    const row = matrix[r];
-    if (!row?.length) continue;
+  let lastCol = sheets[0].col;
+  let firstHeaderRow = sheets[0].headerRow;
+  const sheetLabels = [];
 
-    const docTypeRaw = row[C.docType];
-    const isSale = wbIsStrictSaleDocType(docTypeRaw);
-    const isReturn = wbIsStrictReturnDocType(docTypeRaw);
-    const kind = wbDocTypeKind(docTypeRaw);
-    const docLabel = String(docTypeRaw ?? '').replace(/\s+/g, ' ').trim() || '(пусто)';
-    payoutRecon.doc_type_histogram[docLabel] = (payoutRecon.doc_type_histogram[docLabel] || 0) + 1;
-    if (isSale) payoutRecon.row_counts.sale += 1;
-    else if (isReturn) payoutRecon.row_counts.return += 1;
-    else if (kind === 'service') payoutRecon.row_counts.service += 1;
-    else payoutRecon.row_counts.other += 1;
+  sheets.forEach((chosen) => {
+    const { matrix, sheetName, headerRow: hRow, col: C } = chosen;
+    lastCol = C;
+    firstHeaderRow = hRow;
+    const filePrefix = chosen.sourceFileName ? `${chosen.sourceFileName} / ` : '';
+    sheetLabels.push(`${filePrefix}${sheetName}`);
+    const cellAt = (row, i) => (i >= 0 && i < row.length ? parseWBNumber(row[i]) : 0);
 
-    const rawQty = C.qty >= 0 ? row[C.qty] : 0;
-    const priceFact = cellAt(row, C.priceFact);
-    const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
-    const toTransfer = cellAt(row, C.toSeller);
-    const qty = wbEffectiveRowQty(isSale ? 'sale' : isReturn ? 'return' : kind, rawQty, priceFact, toTransfer, priceRetail);
-    const logistics = cellAt(row, C.logistics);
-    const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
-    const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
-    const fines = C.fines >= 0 ? cellAt(row, C.fines) : 0;
-    const operationKindCell =
-      C.operationKind >= 0 ? String(row[C.operationKind] ?? '').replace(/\s+/g, ' ').trim() : '';
-    const subjectCellEarly =
-      C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
-    const commentCell =
-      C.comment >= 0 ? String(row[C.comment] ?? '').replace(/\s+/g, ' ').trim() : '';
-    const commissionVv = C.commissionVv >= 0 ? cellAt(row, C.commissionVv) : 0;
-    const commissionVatOnVv = C.commissionVatOnVv >= 0 ? cellAt(row, C.commissionVatOnVv) : 0;
-    const compensation = C.paymentCompensation >= 0 ? cellAt(row, C.paymentCompensation) : 0;
-    const kvvPct = C.kvvPct >= 0 ? parseWBNumber(row[C.kvvPct]) : 0;
-    const realKvvPct = C.realKvvPct >= 0 ? parseWBNumber(row[C.realKvvPct]) : 0;
-    const platformPctCell = C.platformDiscountPct >= 0 ? row[C.platformDiscountPct] : '';
-    const payoutCalc = calculateWbRowPayoutForKind(
-      isSale,
-      isReturn,
-      priceRetail,
-      priceFact,
-      kvvPct,
-      compensation,
-      toTransfer
-    );
-    const saleFormulaEligible = isSale && wbIsEligibleSalePayoutRow(priceRetail, priceFact, kvvPct, toTransfer);
-    if (isSale && !saleFormulaEligible) payoutRecon.skipped_ineligible_sale_formula_rows += 1;
+    for (let r = hRow + 1; r < matrix.length; r++) {
+      const row = matrix[r];
+      if (!row?.length) continue;
 
-    aggregates.logistics_sum += logistics;
-    aggregates.storage_sum += storage;
-    aggregates.deductions_sum += deductions;
-    if (
-      Math.abs(deductions) > 0.0001 &&
-      wbIsPromotionDeductionRow(docTypeRaw, operationKindCell, subjectCellEarly, commentCell)
-    ) {
-      aggregates.promotion_deductions_sum += deductions;
-    }
-    aggregates.fines_sum += fines;
+      const docTypeRaw = row[C.docType];
+      const isSale = wbIsStrictSaleDocType(docTypeRaw);
+      const isReturn = wbIsStrictReturnDocType(docTypeRaw);
+      const kind = wbDocTypeKind(docTypeRaw);
+      const docLabel = String(docTypeRaw ?? '').replace(/\s+/g, ' ').trim() || '(пусто)';
+      payoutRecon.doc_type_histogram[docLabel] = (payoutRecon.doc_type_histogram[docLabel] || 0) + 1;
+      if (isSale) payoutRecon.row_counts.sale += 1;
+      else if (isReturn) payoutRecon.row_counts.return += 1;
+      else if (kind === 'service') payoutRecon.row_counts.service += 1;
+      else payoutRecon.row_counts.other += 1;
 
-    if (isSale) {
-      commissionVvRawSum += commissionVv;
-      commissionVatOnVvRawSum += commissionVatOnVv;
-      compensationRawSum += compensation;
-      payoutRecon.sales_payout_column += toTransfer;
-      if (saleFormulaEligible) payoutRecon.sales_payout_formula += payoutCalc;
-      if (qty > 0) {
-        kvvQtyWeightedSum += kvvPct * qty;
-        kvvQtyWeight += qty;
+      const rawQty = C.qty >= 0 ? row[C.qty] : 0;
+      const priceFact = cellAt(row, C.priceFact);
+      const priceRetail = C.priceRetail >= 0 ? cellAt(row, C.priceRetail) : 0;
+      const toTransfer = cellAt(row, C.toSeller);
+      const qty = wbEffectiveRowQty(isSale ? 'sale' : isReturn ? 'return' : kind, rawQty, priceFact, toTransfer, priceRetail);
+      const logistics = cellAt(row, C.logistics);
+      const storage = C.storage >= 0 ? cellAt(row, C.storage) : 0;
+      const deductions = C.deductions >= 0 ? cellAt(row, C.deductions) : 0;
+      const fines = C.fines >= 0 ? cellAt(row, C.fines) : 0;
+      const operationKindCell =
+        C.operationKind >= 0 ? String(row[C.operationKind] ?? '').replace(/\s+/g, ' ').trim() : '';
+      const subjectCellEarly =
+        C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
+      const commentCell =
+        C.comment >= 0 ? String(row[C.comment] ?? '').replace(/\s+/g, ' ').trim() : '';
+      const commissionVv = C.commissionVv >= 0 ? cellAt(row, C.commissionVv) : 0;
+      const commissionVatOnVv = C.commissionVatOnVv >= 0 ? cellAt(row, C.commissionVatOnVv) : 0;
+      const compensation = C.paymentCompensation >= 0 ? cellAt(row, C.paymentCompensation) : 0;
+      const kvvPct = C.kvvPct >= 0 ? parseWBNumber(row[C.kvvPct]) : 0;
+      const realKvvPct = C.realKvvPct >= 0 ? parseWBNumber(row[C.realKvvPct]) : 0;
+      const platformPctCell = C.platformDiscountPct >= 0 ? row[C.platformDiscountPct] : '';
+      const payoutCalc = calculateWbRowPayoutForKind(
+        isSale,
+        isReturn,
+        priceRetail,
+        priceFact,
+        kvvPct,
+        compensation,
+        toTransfer
+      );
+      const saleFormulaEligible = isSale && wbIsEligibleSalePayoutRow(priceRetail, priceFact, kvvPct, toTransfer);
+      if (isSale && !saleFormulaEligible) payoutRecon.skipped_ineligible_sale_formula_rows += 1;
+
+      aggregates.logistics_sum += logistics;
+      aggregates.storage_sum += storage;
+      aggregates.deductions_sum += deductions;
+      if (
+        Math.abs(deductions) > 0.0001 &&
+        wbIsPromotionDeductionRow(docTypeRaw, operationKindCell, subjectCellEarly, commentCell)
+      ) {
+        aggregates.promotion_deductions_sum += deductions;
       }
-      if (priceFact > 0.0001) {
-        realKvvWeightedSum += realKvvPct * priceFact;
-        realKvvRevenueWeight += priceFact;
-      }
-    } else if (isReturn) {
-      payoutRecon.returns_payout_column += toTransfer;
-    }
+      aggregates.fines_sum += fines;
 
-    if (C.saleDate >= 0) {
-      const d = parseWbSaleDateCell(row[C.saleDate]);
-      if (d) saleDates.push(d);
-    }
-
-    const displaySku = wbDisplaySku(row[C.article]);
-    const skuKey = wbNormalizeSku(displaySku);
-    const subjectCell =
-      C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
-
-    if (isSale) {
-      aggregates.revenue_fact_sum += priceFact;
-      aggregates.revenue_retail_sum += priceRetail;
-      aggregates.sales_qty += qty;
-      if (saleFormulaEligible) aggregates.payout_sum += payoutCalc;
-      if (skuKey) {
-        const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
-        bucket.sales_order_count += 1;
-        if (subjectCell && !bucket.subject) bucket.subject = subjectCell;
-        bucket.sales_qty += qty;
-        bucket.revenue_fact += priceFact;
-        bucket.revenue_retail += priceRetail;
-        bucket.payout_sales += payoutCalc;
-        bucket.commission_vv += commissionVv;
-        bucket.commission_vat_on_vv += commissionVatOnVv;
-        bucket.compensation += compensation;
+      if (isSale) {
+        commissionVvRawSum += commissionVv;
+        commissionVatOnVvRawSum += commissionVatOnVv;
+        compensationRawSum += compensation;
+        payoutRecon.sales_payout_column += toTransfer;
+        if (saleFormulaEligible) payoutRecon.sales_payout_formula += payoutCalc;
         if (qty > 0) {
-          bucket.kvv_qty_weighted_sum += kvvPct * qty;
-          bucket.kvv_qty_weight += qty;
+          kvvQtyWeightedSum += kvvPct * qty;
+          kvvQtyWeight += qty;
         }
         if (priceFact > 0.0001) {
-          bucket.real_kvv_weighted_sum += realKvvPct * priceFact;
-          bucket.real_kvv_revenue_weight += priceFact;
+          realKvvWeightedSum += realKvvPct * priceFact;
+          realKvvRevenueWeight += priceFact;
         }
-        const sppRow = wbCalcSppPct(priceRetail, priceFact, platformPctCell);
-        const sppWeight = priceFact > 0.0001 ? priceFact : priceRetail;
-        if (sppWeight > 0.0001) {
-          bucket.spp_retail_weight += sppWeight;
-          bucket.spp_pct_weighted_sum += sppRow * sppWeight;
-          sppRetailWeight += sppWeight;
-          sppWeightedSum += sppRow * sppWeight;
-        }
+      } else if (isReturn) {
+        payoutRecon.returns_payout_column += toTransfer;
       }
-    } else if (isReturn) {
-      aggregates.returns_qty += qty;
-      aggregates.payout_sum += payoutCalc;
-      if (skuKey) {
-        const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
-        bucket.returns_qty += qty;
-        bucket.payout_returns += payoutCalc;
+
+      if (C.saleDate >= 0) {
+        const d = parseWbSaleDateCell(row[C.saleDate]);
+        if (d) saleDates.push(d);
+      }
+
+      const displaySku = wbDisplaySku(row[C.article]);
+      const skuKey = wbNormalizeSku(displaySku);
+      const subjectCell =
+        C.subject >= 0 ? String(row[C.subject] ?? '').replace(/\s+/g, ' ').trim() : '';
+
+      if (isSale) {
+        aggregates.revenue_fact_sum += priceFact;
+        aggregates.revenue_retail_sum += priceRetail;
+        aggregates.sales_qty += qty;
+        if (saleFormulaEligible) aggregates.payout_sum += payoutCalc;
+        if (skuKey) {
+          const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
+          bucket.sales_order_count += 1;
+          if (subjectCell && !bucket.subject) bucket.subject = subjectCell;
+          bucket.sales_qty += qty;
+          bucket.revenue_fact += priceFact;
+          bucket.revenue_retail += priceRetail;
+          bucket.payout_sales += payoutCalc;
+          bucket.commission_vv += commissionVv;
+          bucket.commission_vat_on_vv += commissionVatOnVv;
+          bucket.compensation += compensation;
+          if (qty > 0) {
+            bucket.kvv_qty_weighted_sum += kvvPct * qty;
+            bucket.kvv_qty_weight += qty;
+          }
+          if (priceFact > 0.0001) {
+            bucket.real_kvv_weighted_sum += realKvvPct * priceFact;
+            bucket.real_kvv_revenue_weight += priceFact;
+          }
+          const sppRow = wbCalcSppPct(priceRetail, priceFact, platformPctCell);
+          const sppWeight = priceFact > 0.0001 ? priceFact : priceRetail;
+          if (sppWeight > 0.0001) {
+            bucket.spp_retail_weight += sppWeight;
+            bucket.spp_pct_weighted_sum += sppRow * sppWeight;
+            sppRetailWeight += sppWeight;
+            sppWeightedSum += sppRow * sppWeight;
+          }
+        }
+      } else if (isReturn) {
+        aggregates.returns_qty += qty;
+        aggregates.payout_sum += payoutCalc;
+        if (skuKey) {
+          const bucket = touchWbSkuBucket(bySku, skuKey, displaySku);
+          bucket.returns_qty += qty;
+          bucket.payout_returns += payoutCalc;
+        }
       }
     }
-  }
+  });
 
+  const C = lastCol;
   aggregates.commission_vv_sum = Math.abs(commissionVvRawSum);
   aggregates.commission_vat_on_vv_sum = Math.abs(commissionVatOnVvRawSum);
   aggregates.commission_sum = aggregates.commission_vv_sum + aggregates.commission_vat_on_vv_sum;
@@ -8999,11 +9039,14 @@ function parseWbReport(arrayBuffer) {
   }
 
   const skuKeys = Object.keys(bySku).sort((a, b) => bySku[a].displaySku.localeCompare(bySku[b].displaySku, 'ru'));
+  const uniqueSheetLabels = [...new Set(sheetLabels)];
 
   return {
     formatVersion: 8,
-    sheetName,
-    headerRow: hRow,
+    sheetName: uniqueSheetLabels.join(' · '),
+    sourceSheets: uniqueSheetLabels,
+    sourceFiles: meta.sourceFiles || (meta.sourceFileName ? [meta.sourceFileName] : []),
+    headerRow: firstHeaderRow,
     articleSourceColumn: C.articleHeaderUsed || '',
     colIndices: { ...C },
     period,
@@ -9011,6 +9054,43 @@ function parseWbReport(arrayBuffer) {
     bySku,
     skuKeys
   };
+}
+
+/**
+ * Разбор и склейка нескольких еженедельных .xlsx WB в один отчёт.
+ * @param {ArrayBuffer[]} buffers
+ * @param {string[]} [fileNames]
+ */
+function parseWbReportsMerged(buffers, fileNames = []) {
+  if (!buffers?.length) throw new Error('Нет файлов для разбора.');
+  const sheets = [];
+  const usedFiles = [];
+  buffers.forEach((arrayBuffer, idx) => {
+    if (typeof XLSX === 'undefined') throw new Error('Библиотека SheetJS (XLSX) не загружена.');
+    const wb = XLSX.read(arrayBuffer, { type: 'array' });
+    if (!wb.SheetNames?.length) return;
+    const fileName = fileNames[idx] || `file_${idx + 1}.xlsx`;
+    let foundInFile = 0;
+    for (let si = 0; si < wb.SheetNames.length; si++) {
+      const name = wb.SheetNames[si];
+      const matrix = wbWorksheetToMatrix(wb.Sheets[name]);
+      if (!matrix.length) continue;
+      try {
+        const { headerRow, col } = findWbReportHeaderAndColumns(matrix, 15);
+        sheets.push({ matrix, sheetName: name, headerRow, col, sourceFileName: fileName });
+        foundInFile += 1;
+      } catch (e) {
+        /* skip sheet */
+      }
+    }
+    if (foundInFile) usedFiles.push(fileName);
+  });
+  if (!sheets.length) {
+    throw new Error(
+      'Ни в одном выбранном файле не найдена шапка детализации WB (нужны «Вайлдберриз реализовал…», «К перечислению…» или «Тип документа»).'
+    );
+  }
+  return parseWbReportFromSheets(sheets, { sourceFiles: usedFiles });
 }
 
 const parseWbWeeklyDetailWorkbook = parseWbReport;
@@ -9619,6 +9699,7 @@ function resetWbAnalyticsUi() {
   wbAnalyticsState.parsed = null;
   wbAnalyticsState.computed = null;
   wbAnalyticsState.fileName = '';
+  wbAnalyticsState.fileNames = [];
   wbAnalyticsState.reportTitle = '';
   wbAnalyticsState.currentReportId = null;
   document.getElementById('wbAnalyticsPlaceholder')?.classList.remove('hidden');
@@ -10074,33 +10155,48 @@ function openWbAnalyticsReportById(id) {
 
 async function handleWbAnalyticsFileSelected(ev) {
   const input = ev.target;
-  const file = input.files && input.files[0];
+  const files = Array.from(input.files || []).filter((f) =>
+    String(f.name || '').toLowerCase().endsWith('.xlsx')
+  );
   if (input) input.value = '';
-  if (!file) return;
-  if (!String(file.name || '').toLowerCase().endsWith('.xlsx')) {
-    alert('Нужен файл .xlsx');
+  if (!files.length) {
+    alert('Нужен хотя бы один файл .xlsx');
     return;
   }
   try {
     invalidateWbProductCostLookup();
-    const buf = await file.arrayBuffer();
-    const parsed = parseWbReport(buf);
-    const title = deriveReportNameFromFileName(file.name);
+    const buffers = await Promise.all(files.map((f) => f.arrayBuffer()));
+    const fileNames = files.map((f) => f.name);
+    const parsed =
+      files.length === 1
+        ? parseWbReport(buffers[0], { sourceFileName: fileNames[0] })
+        : parseWbReportsMerged(buffers, fileNames);
+    const title =
+      files.length === 1
+        ? deriveReportNameFromFileName(fileNames[0])
+        : `Сводка WB · ${files.length} отчёта`;
     const agg = parsed.aggregates;
     const artCol = parsed.articleSourceColumn ? `Колонка артикула: «${parsed.articleSourceColumn}». ` : '';
     const period =
       parsed.period?.date_from && parsed.period?.date_to
         ? `Период ${fmtDate(parsed.period.date_from)} — ${fmtDate(parsed.period.date_to)}. `
         : '';
-    const meta = `${period}Лист «${parsed.sheetName}» · ${artCol}шапка: строка ${parsed.headerRow + 1}. Выручка факт.: ${fmtWbRubLocale(agg.revenue_fact_sum)} · к перечислению: ${fmtWbRubLocale(agg.payout_sum)} · продано/возврат шт: ${fmtAnalyticsInt(agg.sales_qty)} / ${fmtAnalyticsInt(agg.returns_qty)}. Артикулов: ${(parsed.skuKeys || []).length}.`;
-    wbAnalyticsState.fileName = file.name;
+    const filesLabel =
+      files.length > 1
+        ? `Файлов: ${files.length} (${fileNames.join(', ')}). `
+        : `Файл: ${fileNames[0]}. `;
+    const sheetsCount = Array.isArray(parsed.sourceSheets) ? parsed.sourceSheets.length : 1;
+    const meta = `${filesLabel}${period}Листов: ${sheetsCount} («${parsed.sheetName}») · ${artCol}шапка: строка ${parsed.headerRow + 1}. Выручка факт.: ${fmtWbRubLocale(agg.revenue_fact_sum)} · к перечислению: ${fmtWbRubLocale(agg.payout_sum)} · продано/возврат шт: ${fmtAnalyticsInt(agg.sales_qty)} / ${fmtAnalyticsInt(agg.returns_qty)}. Артикулов: ${(parsed.skuKeys || []).length}.`;
+    wbAnalyticsState.fileName = files.length === 1 ? fileNames[0] : `${files.length} файлов`;
+    wbAnalyticsState.fileNames = fileNames;
     wbAnalyticsState.currentReportId = null;
     loadWbAnalyticsSettingsIntoInputs();
     showWbCogsStep(parsed, meta, title);
     document.getElementById('wbAnalyticsReportTitle') &&
       (document.getElementById('wbAnalyticsReportTitle').textContent = title);
     document.getElementById('wbAnalyticsReportMeta') &&
-      (document.getElementById('wbAnalyticsReportMeta').textContent = file.name);
+      (document.getElementById('wbAnalyticsReportMeta').textContent =
+        files.length === 1 ? fileNames[0] : fileNames.join(' · '));
   } catch (err) {
     console.error(err);
     alert(err && err.message ? err.message : 'Ошибка чтения WB Excel.');
