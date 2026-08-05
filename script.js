@@ -2433,6 +2433,24 @@ function openPage(pageId) {
   const page = document.getElementById(pageId);
   if (page) page.classList.add('active');
   window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  const immersive = pageId === 'analytics-scaleup-tab' || pageId === 'settings-tab';
+  document.body.classList.toggle('sc-immersive', immersive);
+  document.body.classList.toggle('sc-immersive-settings', pageId === 'settings-tab');
+  if (immersive) {
+    document.querySelector('.sidebar')?.classList.remove('open');
+    document.getElementById('sidebarOverlay')?.classList.remove('active');
+    document.getElementById('mobileMenuToggle')?.classList.remove('open');
+    document.getElementById('mobileMenuToggle')?.setAttribute('aria-expanded', 'false');
+  }
+  if (pageId !== 'analytics-scaleup-tab') {
+    document.body.classList.remove('sc-nav-open');
+    document.getElementById('scSidebar')?.classList.remove('open');
+    const overlay = document.getElementById('scSidebarOverlay');
+    if (overlay) overlay.hidden = true;
+    document.getElementById('scMenuBtn')?.setAttribute('aria-expanded', 'false');
+  }
+
   if (pageId === 'components-tab' && typeof renderComponentsList === 'function') renderComponentsList();
   const mp = getCurrentMarketplace();
   if (pageId === 'shipments-tab' && mp === 'uzum') {

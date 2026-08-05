@@ -79,7 +79,48 @@
   }
 
   function getToken() {
-    return localStorage.getItem(TOKEN_KEY) || '';
+    return String(localStorage.getItem(TOKEN_KEY) || '').trim();
+  }
+
+  function cleanToken(raw) {
+    return String(raw || '')
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .replace(/^Bearer\s+/i, '')
+      .replace(/\s+/g, '');
+  }
+
+  /** Разбор JWT exp (без проверки подписи). */
+  function readJwtMeta(token) {
+    try {
+      const parts = String(token || '').split('.');
+      if (parts.length < 2) return null;
+      const json = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+      const payload = JSON.parse(json);
+      const exp = Number(payload.exp);
+      const iat = Number(payload.iat);
+      return {
+        exp: Number.isFinite(exp) ? exp : null,
+        iat: Number.isFinite(iat) ? iat : null,
+        expired: Number.isFinite(exp) ? exp * 1000 < Date.now() : null,
+        secondsLeft: Number.isFinite(exp) ? Math.floor(exp - Date.now() / 1000) : null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function tokenStatusHtml(token) {
+    if (!token) return pill('bad', '❌ Не подключён');
+    const meta = readJwtMeta(token);
+    if (meta?.expired) return pill('bad', '⛔ Токен просрочен');
+    if (meta?.secondsLeft != null && meta.secondsLeft < 600) {
+      return pill('warn', `⏳ ~${Math.max(1, Math.ceil(meta.secondsLeft / 60))} мин`);
+    }
+    if (meta?.secondsLeft != null) {
+      return pill('ok', `✅ ~${Math.ceil(meta.secondsLeft / 60)} мин`);
+    }
+    return pill('ok', '✅ Токен есть');
   }
 
   function getSyncMeta() {
@@ -454,7 +495,7 @@
 
     return `
       <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">🏠 Главная</h2>
-      <div style="display:grid;grid-template-columns:1fr 300px;gap:20px;align-items:start" class="sc-dash-grid">
+      <div class="sc-dash-grid">
         <div>
           <div class="sc-kpi-row cols-3">
             ${kpi('СТОИМОСТЬ ПОСТАВОК', money(cur), deltaHtml)}
@@ -981,7 +1022,7 @@
   }
 
   function bookmarkletHref() {
-    const code = `(function(){var keys=['accessToken','token','sellerToken','bearerToken','access_token'];var t=null;for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i]);if(v&&v.length>100){t=v;break;}}if(!t){var cookies=document.cookie.split(';');for(var c of cookies){var p=c.trim().split('=');if(['token','accessToken','access_token'].includes(p[0])&&p[1]&&p[1].length>100){t=decodeURIComponent(p[1]);break;}}}if(t){localStorage.setItem('yo_uzum_bearer_token',t.replace(/^Bearer\\s+/i,''));alert('✅ Токен получен! Вернись в YO → Настройки');}else{var manual=prompt('Токен не найден. F12 → Network → Authorization → после Bearer:');if(manual){localStorage.setItem('yo_uzum_bearer_token',manual.replace(/^Bearer\\s+/i,''));alert('✅ Токен сохранён!');}}})();`;
+    const code = `(function(){function pick(){var keys=['access_token','accessToken','token','sellerToken','bearerToken','id_token'];var i,v,k;for(i=0;i<keys.length;i++){v=localStorage.getItem(keys[i]);if(v&&String(v).length>80)return String(v);}try{for(i=0;i<localStorage.length;i++){k=localStorage.key(i)||'';v=localStorage.getItem(k);if(!v||v.length<80)continue;if(/access.?token|bearer|auth/i.test(k)&&/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/.test(v)){var m=v.match(/eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/);if(m)return m[0];if(v.indexOf('{')===0){try{var o=JSON.parse(v);if(o.access_token)return o.access_token;if(o.accessToken)return o.accessToken;}catch(e){}}}}}catch(e){}var cookies=document.cookie.split(';');for(var c of cookies){var p=c.trim().split('=');if(keys.indexOf(p[0])>=0&&p[1]&&p[1].length>80)return decodeURIComponent(p[1]);}return null;}var t=pick();if(t){t=String(t).replace(/^Bearer\\s+/i,'').trim();localStorage.setItem('yo_uzum_bearer_token',t);alert('✅ Токен Uzum получен (~40 мин). Вернись в YO → Настройки → Синхронизировать.');}else{var manual=prompt('Токен не найден автоматически.\\nF12 → Network → любой api-seller.uzum.uz → Headers → Authorization → скопируй ПОСЛЕ Bearer:');if(manual){localStorage.setItem('yo_uzum_bearer_token',String(manual).replace(/^Bearer\\s+/i,'').trim());alert('✅ Токен сохранён!');}}})();`;
     return 'javascript:' + encodeURIComponent(code);
   }
 
@@ -1391,15 +1432,55 @@
     renderSettingsPage();
   }
 
+  function closeScMobileNav() {
+    document.body.classList.remove('sc-nav-open');
+    document.getElementById('scSidebar')?.classList.remove('open');
+    const overlay = document.getElementById('scSidebarOverlay');
+    if (overlay) overlay.hidden = true;
+    document.getElementById('scMenuBtn')?.setAttribute('aria-expanded', 'false');
+  }
+
+  function openScMobileNav() {
+    document.body.classList.add('sc-nav-open');
+    document.getElementById('scSidebar')?.classList.add('open');
+    const overlay = document.getElementById('scSidebarOverlay');
+    if (overlay) overlay.hidden = false;
+    document.getElementById('scMenuBtn')?.setAttribute('aria-expanded', 'true');
+  }
+
   function bindEvents() {
     if (_wired) return;
     _wired = true;
     const root = document.getElementById('analytics-scaleup-tab');
     root?.addEventListener('click', (e) => {
+      if (e.target.closest('#scBackToYo')) {
+        e.preventDefault();
+        closeScMobileNav();
+        if (typeof openPage === 'function') openPage('dashboard-page');
+        return;
+      }
+      if (e.target.closest('#scMenuBtn')) {
+        e.preventDefault();
+        if (document.body.classList.contains('sc-nav-open')) closeScMobileNav();
+        else openScMobileNav();
+        return;
+      }
+      if (e.target.closest('#scSidebarOverlay')) {
+        e.preventDefault();
+        closeScMobileNav();
+        return;
+      }
+      if (e.target.closest('[data-sc-open-settings]')) {
+        e.preventDefault();
+        closeScMobileNav();
+        if (typeof openPage === 'function') openPage('settings-tab');
+        return;
+      }
       const nav = e.target.closest('.sc-nav[data-view]');
       if (nav) {
         e.preventDefault();
         goView(nav.getAttribute('data-view'));
+        closeScMobileNav();
         return;
       }
       const period = e.target.closest('.sc-period[data-p]');
@@ -1469,6 +1550,14 @@
 
     const settings = document.getElementById('settings-tab');
     settings?.addEventListener('click', (e) => {
+      if (e.target.closest('#scSettingsBackAnalytics')) {
+        if (typeof openPage === 'function') openPage('analytics-scaleup-tab');
+        return;
+      }
+      if (e.target.closest('#scSettingsBackYo')) {
+        if (typeof openPage === 'function') openPage('dashboard-page');
+        return;
+      }
       if (e.target.closest('[data-sc-toggle-token]')) toggleToken();
       if (e.target.closest('[data-sc-save-token]')) saveToken();
       if (e.target.closest('[data-sc-clear-token]')) clearToken();

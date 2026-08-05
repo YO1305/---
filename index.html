@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2026-08-05-fs" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -2033,29 +2033,49 @@
 
     <section class="page-panel" id="analytics-scaleup-tab" aria-label="Аналитика ScaleUp">
       <div class="sc-wrap">
-        <aside class="sc-sidebar">
-          <div class="sc-sidebar-group">
-            <div class="sc-group-label">АНАЛИТИКА</div>
-            <button type="button" class="sc-nav active" data-view="dashboard">🏠 Главная</button>
-            <button type="button" class="sc-nav" data-view="finance">💰 Финансы</button>
+        <div class="sc-overlay" id="scSidebarOverlay" hidden></div>
+        <aside class="sc-sidebar" id="scSidebar">
+          <div class="sc-brand">
+            <div class="sc-brand-mark">YO</div>
+            <div class="sc-brand-text">
+              <strong>Аналитика</strong>
+              <span>полный экран</span>
+            </div>
           </div>
-          <div class="sc-sidebar-group">
-            <div class="sc-group-label">АССОРТИМЕНТ</div>
-            <button type="button" class="sc-nav" data-view="products">📦 Товары</button>
-            <button type="button" class="sc-nav" data-view="abcxyz">📊 ABC/XYZ</button>
-            <button type="button" class="sc-nav" data-view="profit-share">🍕 Доли прибыли</button>
-            <button type="button" class="sc-nav" data-view="unit-economics">💹 Юнит-экономика</button>
-            <button type="button" class="sc-nav" data-view="cost">🧵 Себестоимость</button>
-            <button type="button" class="sc-nav" data-view="new-calc">🧮 Калькулятор</button>
-          </div>
-          <div class="sc-sidebar-group">
-            <div class="sc-group-label">ЛОГИСТИКА</div>
-            <button type="button" class="sc-nav" data-view="stock">📦 Склад</button>
+          <button type="button" class="sc-back-yo" id="scBackToYo" title="Вернуться в YO">
+            ← В YO
+          </button>
+          <div class="sc-sidebar-scroll">
+            <div class="sc-sidebar-group">
+              <div class="sc-group-label">АНАЛИТИКА</div>
+              <button type="button" class="sc-nav active" data-view="dashboard">🏠 Главная</button>
+              <button type="button" class="sc-nav" data-view="finance">💰 Финансы</button>
+            </div>
+            <div class="sc-sidebar-group">
+              <div class="sc-group-label">АССОРТИМЕНТ</div>
+              <button type="button" class="sc-nav" data-view="products">📦 Товары</button>
+              <button type="button" class="sc-nav" data-view="abcxyz">📊 ABC/XYZ</button>
+              <button type="button" class="sc-nav" data-view="profit-share">🍕 Доли прибыли</button>
+              <button type="button" class="sc-nav" data-view="unit-economics">💹 Юнит-экономика</button>
+              <button type="button" class="sc-nav" data-view="cost">🧵 Себестоимость</button>
+              <button type="button" class="sc-nav" data-view="new-calc">🧮 Калькулятор</button>
+            </div>
+            <div class="sc-sidebar-group">
+              <div class="sc-group-label">ЛОГИСТИКА</div>
+              <button type="button" class="sc-nav" data-view="stock">📦 Склад</button>
+            </div>
+            <div class="sc-sidebar-group">
+              <div class="sc-group-label">СИСТЕМА</div>
+              <button type="button" class="sc-nav" data-sc-open-settings>⚙️ Настройки</button>
+            </div>
           </div>
         </aside>
         <main class="sc-main">
           <div class="sc-topbar">
-            <div style="font-size:13px;color:var(--muted)" id="sc-data-source">Загрузка…</div>
+            <button type="button" class="sc-menu-btn" id="scMenuBtn" aria-label="Меню аналитики" aria-expanded="false">
+              <span></span><span></span><span></span>
+            </button>
+            <div class="sc-topbar-meta" id="sc-data-source">Загрузка…</div>
             <div class="sc-period-wrap">
               <button type="button" class="sc-period" data-p="1">1 мес</button>
               <button type="button" class="sc-period active" data-p="3">3 мес</button>
@@ -2063,7 +2083,7 @@
               <button type="button" class="sc-period" data-p="9">9 мес</button>
               <button type="button" class="sc-period" data-p="12">12 мес</button>
             </div>
-            <button type="button" class="btn-secondary" id="sc-refresh-btn">🔄 Обновить</button>
+            <button type="button" class="btn-secondary sc-refresh" id="sc-refresh-btn">🔄 Обновить</button>
           </div>
           <div id="sc-content">
             <div class="sc-loader"><div class="sc-spinner"></div>Загрузка данных…</div>
@@ -2073,8 +2093,15 @@
     </section>
 
     <section class="page-panel" id="settings-tab" aria-label="Настройки">
-      <div id="settingsTabContent" class="sc-settings-page">
-        <div class="sc-loader"><div class="sc-spinner"></div>Загрузка настроек…</div>
+      <div class="sc-settings-shell">
+        <div class="sc-settings-top">
+          <button type="button" class="sc-back-yo" id="scSettingsBackAnalytics" title="К аналитике">← Аналитика</button>
+          <button type="button" class="sc-back-yo sc-back-yo-secondary" id="scSettingsBackYo" title="В YO">В YO</button>
+          <h2 class="sc-settings-heading">Настройки API</h2>
+        </div>
+        <div id="settingsTabContent" class="sc-settings-page">
+          <div class="sc-loader"><div class="sc-spinner"></div>Загрузка настроек…</div>
+        </div>
       </div>
     </section>
 
@@ -2131,8 +2158,8 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=wb-v4-2026-08-05-db"></script>
+  <script src="script.js?v=wb-v4-2026-08-05-fs"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-08-05b"></script>
+  <script src="scaleup-yo.js?v=2026-08-05c"></script>
 </body>
 </html>
