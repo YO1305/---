@@ -4259,6 +4259,83 @@ function deleteProductFromDb(recordId) {
   if (typeof renderStockAdjustSelector === 'function') renderStockAdjustSelector();
 }
 
+/** Уникальный артикул для копии: «… копия», «… копия 2», … */
+function makeUniqueCopyArticle1c(baseArticle, code1c, products) {
+  const base = String(baseArticle || '').trim() || 'Товар';
+  const code = String(code1c || '').trim();
+  const taken = new Set(
+    (products || []).map((p) => productLinkKey(p.article1c, p.code1c))
+  );
+  let candidate = `${base} копия`;
+  let n = 2;
+  while (taken.has(productLinkKey(candidate, code))) {
+    candidate = `${base} копия ${n}`;
+    n += 1;
+  }
+  return candidate;
+}
+
+/**
+ * Дублирует товар в базе: те же расчёты/себестоимость, новое имя «… копия».
+ * Маркетплейс-SKU и штрихкод очищаются (чтобы не путать с оригиналом).
+ */
+function duplicateProductInDb(recordId) {
+  const products = readProductsSafe();
+  const src = findProductByRecordId(products, recordId);
+  if (!src) {
+    alert('Товар не найден в базе.');
+    return null;
+  }
+  const clone = deepCloneJson(src);
+  const newArticle = makeUniqueCopyArticle1c(src.article1c || src.name || src.sku, src.code1c, products);
+  const rid = Date.now();
+  const now = new Date().toISOString();
+
+  clone.recordId = rid;
+  clone.id = String(rid);
+  clone.article1c = newArticle;
+  clone.name = newArticle;
+  clone.sku = newArticle;
+  clone.updatedAt = now;
+  clone.changeHistory = [];
+  clone.stockQty = 0;
+
+  // Не копируем уникальные связки МП — расчёт остаётся, ID на площадках пользователь задаст сам
+  clone.uzumSku = '';
+  clone.uzum_sku = '';
+  clone.uzum_barcode = '';
+  clone.wbSku = '';
+  clone.wb_nmid = '';
+  clone.wb_nm_id = '';
+  clone.nmid = '';
+  clone.yandexSku = '';
+  clone.yandex_sku = '';
+  if (clone.calc && typeof clone.calc === 'object') {
+    clone.calc = {
+      ...clone.calc,
+      productArticle1c: newArticle,
+      productStockQty: 0,
+      mpSkuUzum: '',
+      mpWbNmid: '',
+      mpSkuYandex: ''
+    };
+  }
+
+  products.push(clone);
+  writeStore(STORAGE_KEYS.products, products);
+  upsertProductToFirestore(clone);
+  recordActivityLogOnly('product_create', String(rid), null, newArticle, {
+    duplicatedFrom: String(recordId),
+    code1c: clone.code1c,
+    stockQty: 0
+  });
+  renderProductsDb();
+  if (typeof renderShipmentSelectors === 'function') renderShipmentSelectors();
+  if (typeof renderAnalyticsSelectors === 'function') renderAnalyticsSelectors();
+  if (typeof renderStockAdjustSelector === 'function') renderStockAdjustSelector();
+  return clone;
+}
+
 function renderProductsDb() {
   // Backward-compatible entry point for older calls.
   filterProducts();
@@ -4941,6 +5018,7 @@ function renderProducts(filteredArray) {
         <a class="btn-secondary product-link-btn ${linkDisabled}" href="${linkHref}" target="_blank" rel="noopener" ${linkDisabled ? 'tabindex="-1" aria-disabled="true"' : ''}>Ссылка на товар</a>
         <button class="btn-secondary" data-product-details="${escapeAttr(recordId)}">Детализация</button>
         <button class="btn-secondary" data-load-product="${escapeAttr(recordId)}">Редактировать</button>
+        <button class="btn-secondary" data-duplicate-product="${escapeAttr(recordId)}">Дублировать</button>
         <button class="btn-danger" data-delete-product="${escapeAttr(recordId)}">Удалить</button>
       </div>
     `;
@@ -4951,6 +5029,17 @@ function renderProducts(filteredArray) {
     const recordId = btn.getAttribute('data-load-product');
     const product = findProductByRecordId(readProductsSafe(), recordId);
     if (product) loadProductIntoCalculator(product, false, { returnToDetailModal: false });
+  }));
+  list.querySelectorAll('[data-duplicate-product]').forEach(btn => btn.addEventListener('click', () => {
+    const recordId = btn.getAttribute('data-duplicate-product');
+    const product = findProductByRecordId(readProductsSafe(), recordId);
+    const label = product?.article1c || product?.sku || recordId;
+    if (!confirm(`Создать копию товара «${label}»?\n\nРасчёты сохранятся, к названию добавится «копия».\nОстаток = 0, коды маркетплейсов очистятся.`)) return;
+    const copy = duplicateProductInDb(recordId);
+    if (copy) {
+      alert(`Готово: «${copy.article1c}»\nМожешь сразу открыть и переименовать.`);
+      loadProductIntoCalculator(copy, false, { returnToDetailModal: false });
+    }
   }));
   list.querySelectorAll('[data-delete-product]').forEach(btn => btn.addEventListener('click', () => {
     const recordId = btn.getAttribute('data-delete-product');
@@ -7943,6 +8032,18 @@ document.getElementById('productDetailEditBtn')?.addEventListener('click', () =>
   if (!product) return;
   closeProductDetail();
   loadProductIntoCalculator(product, false, { returnToDetailModal: true });
+});
+document.getElementById('productDetailDuplicateBtn')?.addEventListener('click', () => {
+  const rid = currentDetailRecordId || '';
+  const product = findProductByRecordId(readProductsSafe(), rid);
+  if (!product) return;
+  const label = product.article1c || product.sku || rid;
+  if (!confirm(`Создать копию товара «${label}»?\n\nРасчёты сохранятся, к названию добавится «копия».\nОстаток = 0, коды маркетплейсов очистятся.`)) return;
+  const copy = duplicateProductInDb(rid);
+  if (!copy) return;
+  closeProductDetail();
+  alert(`Готово: «${copy.article1c}»`);
+  loadProductIntoCalculator(copy, false, { returnToDetailModal: false });
 });
 document.getElementById('productDetailSaveUzumBarcodeBtn')?.addEventListener('click', saveProductUzumBarcodeFromDetail);
 
