@@ -4449,11 +4449,46 @@ body.dark-mode .sc-insight.good  { background: #0f2419; }
   background: #f3f4f6;
   overflow: hidden;
 }
+.sc-sku-brand {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.sc-sku-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+.sc-sku-stats span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+.sc-sku-stats b {
+  font-size: 12px;
+  font-weight: 700;
+}
+.sc-sku-stats b.ok { color: #15803d; }
+.sc-sku-stats b.bad { color: #b91c1c; }
 .sc-sku-img img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  image-rendering: auto;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+}
+.sc-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border, #e5e7eb);
+  border-radius: 12px;
 }
 .sc-sku-ph {
   width: 100%;
