@@ -135,6 +135,192 @@
     localStorage.setItem(key, JSON.stringify(val));
   }
 
+  const IDB_NAME = 'yo_scaleup_cache_v1';
+  const IDB_STORE = 'kv';
+  let _idbPromise = null;
+
+  function openScaleupIdb() {
+    if (_idbPromise) return _idbPromise;
+    _idbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB недоступен'));
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+    });
+    return _idbPromise;
+  }
+
+  async function idbGet(key) {
+    try {
+      const db = await openScaleupIdb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function idbSet(key, val) {
+    const db = await openScaleupIdb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(val, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+    });
+  }
+
+  async function idbDel(key) {
+    try {
+      const db = await openScaleupIdb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) { /* ignore */ }
+  }
+
+  /** Крупные массивы (заказы/товары) — IndexedDB; localStorage только как legacy fallback. */
+  async function readCache(key, fallback) {
+    const fromIdb = await idbGet(key);
+    if (fromIdb !== undefined) return fromIdb;
+    return readLocal(key, fallback);
+  }
+
+  async function writeCache(key, val) {
+    await idbSet(key, val);
+    try {
+      localStorage.removeItem(key);
+    } catch (_) { /* ignore */ }
+    try {
+      localStorage.setItem(
+        `${key}__meta`,
+        JSON.stringify({ n: Array.isArray(val) ? val.length : 1, at: new Date().toISOString() })
+      );
+    } catch (_) { /* ignore */ }
+  }
+
+  function slimOrder(o) {
+    if (!o || typeof o !== 'object') return o;
+    return {
+      id: o.id,
+      status: o.status,
+      date: o.date,
+      dateIssued: o.dateIssued,
+      orderId: o.orderId,
+      skuTitle: o.skuTitle,
+      productId: o.productId,
+      shopId: o.shopId,
+      sellPrice: o.sellPrice ?? o.sellerPrice,
+      amount: o.amount,
+      amountReturns: o.amountReturns,
+      commission: o.commission,
+      sellerProfit: o.sellerProfit,
+      purchasePrice: o.purchasePrice,
+      logisticDeliveryFee: o.logisticDeliveryFee,
+      cancelled: o.cancelled,
+      withdrawnProfit: o.withdrawnProfit,
+      productTitle: o.productTitle,
+      returnCause: o.returnCause
+    };
+  }
+
+  function slimSku(sku) {
+    if (!sku || typeof sku !== 'object') return sku;
+    return {
+      skuTitle: sku.skuTitle,
+      skuFullTitle: sku.skuFullTitle,
+      productTitle: sku.productTitle,
+      skuId: sku.skuId,
+      quantityActive: sku.quantityActive,
+      quantityFbs: sku.quantityFbs,
+      quantityFbo: sku.quantityFbo,
+      barcode: sku.barcode,
+      archived: sku.archived,
+      commission: sku.commission,
+      previewImage: resolveUzumImage(sku.previewImage),
+      price: sku.price,
+      blocked: sku.blocked,
+      avgdsales: sku.avgdsales,
+      paidStorageAmount: sku.paidStorageAmount,
+      paidStoragePriceItem: sku.paidStoragePriceItem,
+      pstorage: sku.pstorage,
+      status: sku.status,
+      article: sku.article,
+      sellerItemCode: sku.sellerItemCode
+    };
+  }
+
+  function slimProductCard(card) {
+    if (!card || typeof card !== 'object') return card;
+    return {
+      productId: card.productId,
+      category: card.category,
+      rating: card.rating,
+      feedbackQuantity: card.feedbackQuantity,
+      status: card.status,
+      moderationStatus: card.moderationStatus,
+      commission: card.commission,
+      commissionDto: card.commissionDto,
+      skuTitle: card.skuTitle,
+      image: resolveUzumImage(card.image, card.previewImg),
+      title: card.title,
+      quantityActive: card.quantityActive,
+      quantityFbs: card.quantityFbs,
+      quantityFbo: card.quantityFbo,
+      price: card.price,
+      conversion: card.conversion,
+      pstorage: card.pstorage,
+      shopId: card.shopId,
+      skuList: Array.isArray(card.skuList) ? card.skuList.map(slimSku) : []
+    };
+  }
+
+  function slimExpense(e) {
+    if (!e || typeof e !== 'object') return e;
+    return {
+      id: e.id,
+      type: e.type,
+      paymentPrice: e.paymentPrice ?? e.amount,
+      amount: e.amount,
+      dateCreated: e.dateCreated,
+      dateService: e.dateService,
+      dateUpdated: e.dateUpdated,
+      date: e.date,
+      source: e.source,
+      shopId: e.shopId,
+      comment: e.comment,
+      title: e.title || e.name
+    };
+  }
+
+  function slimFbs(o) {
+    if (!o || typeof o !== 'object') return o;
+    return {
+      id: o.id,
+      orderId: o.orderId,
+      status: o.status || o._status,
+      _status: o._status || o.status,
+      dateCreated: o.dateCreated || o.createdAt || o.date,
+      shopId: o.shopId,
+      skuTitle: o.skuTitle || o.sku?.skuTitle,
+      productTitle: o.productTitle || o.title
+    };
+  }
+
   function periodStartMs(days) {
     return Date.now() - (Number(days) || 90) * 86400000;
   }
@@ -373,10 +559,10 @@
     }
     if (fbFinance && fbFinance.length) _financeLocal = fbFinance;
 
-    _orders = readLocal(ORDERS_KEY, []);
-    _expenses = readLocal(EXPENSES_KEY, []);
-    _fbsOrders = readLocal(FBS_KEY, []);
-    const apiProducts = readLocal(API_PRODUCTS_KEY, []);
+    _orders = await readCache(ORDERS_KEY, []);
+    _expenses = await readCache(EXPENSES_KEY, []);
+    _fbsOrders = await readCache(FBS_KEY, []);
+    const apiProducts = await readCache(API_PRODUCTS_KEY, []);
 
     // Ассортимент = только Uzum OpenAPI. YO — только себестоимость.
     if (apiProducts.length) {
@@ -525,10 +711,10 @@
     _syncBusy = true;
     setSyncBusy(true, 'Идёт синхронизация с Uzum OpenAPI…');
 
-    let productCards = readLocal(API_PRODUCTS_KEY, []);
-    let orders = readLocal(ORDERS_KEY, []);
-    let expenses = readLocal(EXPENSES_KEY, []);
-    let fbs = readLocal(FBS_KEY, []);
+    let productCards = await readCache(API_PRODUCTS_KEY, []);
+    let orders = await readCache(ORDERS_KEY, []);
+    let expenses = await readCache(EXPENSES_KEY, []);
+    let fbs = await readCache(FBS_KEY, []);
     let shopId = getSyncMeta().shopId || null;
     const warnings = [];
 
@@ -548,14 +734,15 @@
       setSyncBusy(true, 'Загрузка товаров OpenAPI…');
       await sleep(400);
       try {
-        productCards = await fetchPaged(
+        const rawCards = await fetchPaged(
           (page) =>
             `v1/product/shop/${shopId}?searchQuery=&sortBy=DEFAULT&order=DESC&size=50&page=${page}`,
           (data) => unwrapList(data, ['productList']),
           20,
           900
         );
-        writeLocal(API_PRODUCTS_KEY, productCards);
+        productCards = rawCards.map(slimProductCard);
+        await writeCache(API_PRODUCTS_KEY, productCards);
       } catch (e) {
         if (productCards.length) {
           warnings.push(`Товары: ${e?.message || e} (оставлен прошлый кэш ${productCards.length})`);
@@ -582,7 +769,7 @@
           let older = 0;
           chunk.forEach((o) => {
             const t = orderDateMs(o);
-            if (!dateFrom || t >= dateFrom) rawOrders.push(o);
+            if (!dateFrom || t >= dateFrom) rawOrders.push(slimOrder(o));
             else older += 1;
           });
           // лента от новых к старым — выходим, когда вся страница старше периода
@@ -592,7 +779,7 @@
           if (chunk.length < size) break;
         }
         orders = rawOrders;
-        writeLocal(ORDERS_KEY, orders);
+        await writeCache(ORDERS_KEY, orders);
       } catch (e) {
         warnings.push(`Заказы: ${e?.message || e}`);
       }
@@ -612,12 +799,14 @@
           5,
           1000
         );
-        // клиентский фильтр периода
-        expenses = expenses.filter((e) => {
-          const t = Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
-          return !dateFrom || t >= dateFrom;
-        });
-        writeLocal(EXPENSES_KEY, expenses);
+        // клиентский фильтр периода + slim (без тяжёлых полей)
+        expenses = expenses
+          .filter((e) => {
+            const t = Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
+            return !dateFrom || t >= dateFrom;
+          })
+          .map(slimExpense);
+        await writeCache(EXPENSES_KEY, expenses);
       } catch (e) {
         warnings.push(`Расходы: ${e?.message || e}`);
       }
@@ -634,7 +823,7 @@
               `v2/fbs/orders?shopIds=${shopId}&status=${st}&page=${page}&size=50`,
             (data) => {
               const list = unwrapList(data, ['orders', 'payload']);
-              return list.map((o) => ({ ...o, _status: st }));
+              return list.map((o) => slimFbs({ ...o, _status: st }));
             },
             2,
             800
@@ -646,8 +835,15 @@
       }
       if (fbsNew.length || !warnings.some((w) => w.startsWith('FBS'))) {
         fbs = fbsNew;
-        writeLocal(FBS_KEY, fbs);
+        await writeCache(FBS_KEY, fbs);
       }
+
+      try {
+        localStorage.removeItem(ORDERS_KEY);
+        localStorage.removeItem(API_PRODUCTS_KEY);
+        localStorage.removeItem(EXPENSES_KEY);
+        localStorage.removeItem(FBS_KEY);
+      } catch (_) { /* ignore */ }
 
       const flatSkuCount = flattenApiProducts(productCards).length;
       saveSyncMeta({
@@ -661,9 +857,15 @@
         skuCount: flatSkuCount,
         expensesCount: expenses.length,
         fbsCount: fbs.length,
+        storage: 'indexeddb',
         api: 'seller-openapi',
         lastError: warnings.join(' | ').slice(0, 500)
       });
+
+      _orders = orders;
+      _expenses = expenses;
+      _fbsOrders = fbs;
+      _hasApiData = productCards.length > 0 || orders.length > 0;
 
       await loadAllData();
       _syncBusy = false;
@@ -673,7 +875,8 @@
         `Синхронизация ${warnings.length ? 'частичная' : 'OK'}\n` +
           `Магазин #${shopId}\nТовары (карточки): ${productCards.length}\n` +
           `SKU: ${flatSkuCount}\nЗаказы finance: ${orders.length}\n` +
-          `Расходы: ${expenses.length}\nFBS: ${fbs.length}` +
+          `Расходы: ${expenses.length}\nFBS: ${fbs.length}\n` +
+          `Хранение: IndexedDB` +
           warnTxt
       );
       renderSettingsPage();
@@ -682,7 +885,7 @@
       const msg = explainUzumHttpError(status, err?.body || err?.message);
       saveSyncMeta({
         lastSyncAt: new Date().toISOString(),
-        lastStatus: productCards.length ? 'partial' : 'error',
+        lastStatus: productCards.length || orders.length ? 'partial' : 'error',
         shopId,
         productsCount: productCards.length,
         ordersCount: orders.length,
@@ -690,7 +893,12 @@
         fbsCount: fbs.length,
         lastError: String(err?.message || err)
       });
-      if (productCards.length) await loadAllData();
+      if (productCards.length || orders.length) {
+        _orders = orders;
+        _expenses = expenses;
+        _fbsOrders = fbs;
+        await loadAllData();
+      }
       _syncBusy = false;
       setSyncBusy(false);
       alert(msg);
@@ -719,8 +927,25 @@
   }
 
   function clearToken() {
-    if (!confirm('Удалить API-ключ Uzum?')) return;
+    if (!confirm('Удалить API-ключ Uzum и кэш OpenAPI?')) return;
     localStorage.removeItem(TOKEN_KEY);
+    try {
+      localStorage.removeItem(ORDERS_KEY);
+      localStorage.removeItem(API_PRODUCTS_KEY);
+      localStorage.removeItem(EXPENSES_KEY);
+      localStorage.removeItem(FBS_KEY);
+      localStorage.removeItem(`${ORDERS_KEY}__meta`);
+      localStorage.removeItem(`${API_PRODUCTS_KEY}__meta`);
+    } catch (_) { /* ignore */ }
+    void idbDel(ORDERS_KEY);
+    void idbDel(API_PRODUCTS_KEY);
+    void idbDel(EXPENSES_KEY);
+    void idbDel(FBS_KEY);
+    _orders = [];
+    _expenses = [];
+    _fbsOrders = [];
+    _products = [];
+    _hasApiData = false;
     renderSettingsPage();
   }
 
@@ -1701,14 +1926,25 @@
   }
 
   function renderSettingsPage() {
+    void renderSettingsPageAsync();
+  }
+
+  async function renderSettingsPageAsync() {
     bindEvents();
     const root = document.getElementById('settingsTabContent');
     if (!root) return;
     const token = getToken();
     const meta = getSyncMeta();
-    const apiProducts = readLocal(API_PRODUCTS_KEY, []);
+    const apiProducts = await readCache(API_PRODUCTS_KEY, []);
+    const cachedOrders = await readCache(ORDERS_KEY, []);
+    const cachedExpenses = await readCache(EXPENSES_KEY, []);
+    const cachedFbs = await readCache(FBS_KEY, []);
     const lastSync = meta.lastSyncAt ? new Date(meta.lastSyncAt).toLocaleString('ru-RU') : 'ещё не было';
-    const apiSkuCount = flattenApiProducts(apiProducts).length || meta.productsCount || 0;
+    const apiSkuCount =
+      flattenApiProducts(apiProducts).length || meta.skuCount || _products.length || meta.productsCount || 0;
+    const ordersN = cachedOrders.length || _orders.length || meta.ordersCount || 0;
+    const expensesN = cachedExpenses.length || _expenses.length || meta.expensesCount || 0;
+    const fbsN = cachedFbs.length || _fbsOrders.length || meta.fbsCount || 0;
     root.innerHTML = `
       <div class="sc-settings-wrap">
         <div class="sc-settings-block">
@@ -1720,8 +1956,8 @@
             <a href="https://seller.uzum.uz/seller/api-keys" target="_blank" rel="noopener">Создать API-ключ</a> ·
             <a href="https://api-seller.uzum.uz/api/seller-openapi/swagger/swagger-ui/webjars/swagger-ui/index.html" target="_blank" rel="noopener">Swagger</a>
             <br><br>
-            При <strong>HTTP 429</strong> Uzum режет частоту запросов. Синхронизация теперь медленная и с паузами —
-            подожди 2–5 минут и нажми ещё раз. Товары сохраняются первыми.
+            Заказы/товары пишутся в <strong>IndexedDB</strong> (не в localStorage) — иначе браузер падает с QuotaExceeded на 3000+ заказов.
+            При <strong>HTTP 429</strong> подожди 2–5 минут и синхронизируй снова.
           </div>
           <label style="display:block;margin-bottom:12px">
             <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без Bearer)</div>
@@ -1737,9 +1973,10 @@
           </div>
           <p class="sub" style="margin-top:12px" id="sc-sync-status">Последняя синхронизация: <strong>${esc(lastSync)}</strong>
             ${meta.lastStatus ? ` · статус: ${esc(meta.lastStatus)}` : ''}
-            ${meta.ordersCount != null ? ` · заказы: ${meta.ordersCount}` : ''}
+            ${meta.storage ? ` · ${esc(meta.storage)}` : ''}
+            ${ordersN ? ` · заказы: ${ordersN}` : ''}
             ${meta.productsCount != null ? ` · товары: ${meta.productsCount}` : ''}
-            ${meta.fbsCount != null ? ` · FBS: ${meta.fbsCount}` : ''}
+            ${fbsN ? ` · FBS: ${fbsN}` : ''}
             ${meta.lastError ? `<br><span style="color:var(--bad)">Ошибка/предупреждение: ${esc(meta.lastError)}</span>` : ''}
           </p>
         </div>
@@ -1750,13 +1987,13 @@
               <div class="sc-sync-name">Товары OpenAPI</div><div class="sc-sync-stat">${apiSkuCount} SKU${meta.productsCount != null ? ` · ${meta.productsCount} карт.` : ''}</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">🛒</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Finance orders</div><div class="sc-sync-stat">${_orders.length}</div>
+              <div class="sc-sync-name">Finance orders</div><div class="sc-sync-stat">${ordersN}</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">💰</div><div class="sc-sync-body">
-              <div class="sc-sync-name">Expenses</div><div class="sc-sync-stat">${_expenses.length}</div>
+              <div class="sc-sync-name">Expenses</div><div class="sc-sync-stat">${expensesN}</div>
             </div></div>
             <div class="sc-sync-item"><div class="sc-sync-icon">🚚</div><div class="sc-sync-body">
-              <div class="sc-sync-name">FBS orders</div><div class="sc-sync-stat">${_fbsOrders.length}</div>
+              <div class="sc-sync-name">FBS orders</div><div class="sc-sync-stat">${fbsN}</div>
             </div></div>
           </div>
           <p class="sub" style="margin-top:10px">Ассортимент в Аналитике строится из OpenAPI (не из Firebase YO). YO нужен только для себестоимости.</p>
