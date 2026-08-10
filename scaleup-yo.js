@@ -299,6 +299,7 @@
     return {
       id: e.id,
       type: e.type,
+      status: e.status,
       paymentPrice: e.paymentPrice ?? e.amount,
       amount: e.amount,
       dateCreated: e.dateCreated,
@@ -306,8 +307,11 @@
       dateUpdated: e.dateUpdated,
       date: e.date,
       source: e.source,
+      code: e.code,
       shopId: e.shopId,
+      externalId: e.externalId,
       comment: e.comment,
+      name: e.name,
       title: e.title || e.name
     };
   }
@@ -476,9 +480,64 @@
     return String(p?.sku || p?.skuTitle || p?.article1c || p?.skuId || p?.id || '').trim();
   }
 
+  function normalizeSkuKey(s) {
+    return String(s || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+  }
+
+  /** Себестоимость из базы YO: матч по Uzum SKU / артикулу / штрихкоду. */
+  function buildYoCostMap(list) {
+    const map = {};
+    const add = (key, cost) => {
+      const raw = String(key ?? '').trim();
+      if (!raw || !(cost > 0)) return;
+      map[raw] = cost;
+      map[normalizeSkuKey(raw)] = cost;
+    };
+    (list || []).forEach((p) => {
+      const c =
+        Number(p?.costGross ?? p?.costPriceUzs ?? p?.costPrice ?? p?.cost ?? p?.purchasePrice ?? 0) || 0;
+      if (!(c > 0)) return;
+      add(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum, c);
+      add(p.sku, c);
+      add(p.article1c, c);
+      add(p.name, c);
+      add(p.uzum_barcode, c);
+      add(p.barcode, c);
+      add(p.wbSku ?? p.wb_nmid ?? p.calc?.mpWbNmid, c);
+      add(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex, c);
+      add(p.code1c, c);
+    });
+    return map;
+  }
+
+  function lookupYoCost(...keys) {
+    for (const k of keys) {
+      const raw = String(k ?? '').trim();
+      if (!raw) continue;
+      if (_yoCostMap[raw] != null) return _yoCostMap[raw];
+      const nk = normalizeSkuKey(raw);
+      if (_yoCostMap[nk] != null) return _yoCostMap[nk];
+    }
+    return 0;
+  }
+
   function productCost(p) {
-    const sku = productSku(p);
-    if (_yoCostMap[sku] != null) return _yoCostMap[sku];
+    const fromDb = lookupYoCost(
+      p?.sku,
+      p?.skuTitle,
+      p?.skuFullTitle,
+      p?.uzumSku,
+      p?.uzum_sku,
+      p?.barcode,
+      p?.article1c,
+      p?.name,
+      p?.title,
+      productSku(p)
+    );
+    if (fromDb > 0) return fromDb;
     return Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? p?.purchasePrice ?? 0) || 0;
   }
 
@@ -521,16 +580,6 @@
       console.warn(`ScaleUp Firebase ${collection}:`, e?.message || e);
       return null;
     }
-  }
-
-  function buildYoCostMap(list) {
-    const map = {};
-    (list || []).forEach((p) => {
-      const sku = String(p?.sku || p?.article1c || '').trim();
-      const c = Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? 0) || 0;
-      if (sku && c > 0) map[sku] = c;
-    });
-    return map;
   }
 
   function statusLabel(status) {
@@ -616,7 +665,7 @@
           quantityFbs: qFbs,
           price,
           sellPrice: price,
-          cost: _yoCostMap[skuCode] || 0,
+          cost: lookupYoCost(skuCode, sku?.skuTitle, sku?.skuFullTitle, sku?.barcode, card.skuTitle) || 0,
           shopId: card.shopId || shopIdFallback,
           turnoverDays,
           paidStorage,
@@ -754,24 +803,34 @@
     for (const k of keys || []) {
       if (Array.isArray(data?.[k])) return data[k];
     }
+    if (Array.isArray(data?.payload?.payments)) return data.payload.payments;
+    if (Array.isArray(data?.payload?.paymentList)) return data.payload.paymentList;
+    if (Array.isArray(data?.payload?.productList)) return data.payload.productList;
     if (Array.isArray(data?.payload)) return data.payload;
     if (Array.isArray(data?.content)) return data.content;
     return [];
   }
 
-  async function fetchPaged(buildPath, extract, maxPages, pageDelayMs) {
+  async function fetchPaged(buildPath, extract, maxPages, pageDelayMs, pageSizeHint) {
     const out = [];
     const limit = maxPages || 8;
     const delay = pageDelayMs == null ? 900 : pageDelayMs;
+    const sizeHint = pageSizeHint || 20;
     for (let page = 0; page < limit; page++) {
       if (page > 0 && delay > 0) await sleep(delay);
       const data = await uzumJson(buildPath(page));
       const chunk = extract(data);
       if (!chunk.length) break;
       out.push(...chunk);
-      const total = data?.totalElements ?? data?.totalProductsAmount ?? data?.total ?? null;
-      if (total != null && out.length >= total) break;
-      if (chunk.length < 20) break;
+      const total =
+        data?.totalElements ??
+        data?.payload?.totalElements ??
+        data?.totalProductsAmount ??
+        data?.total ??
+        null;
+      // Uzum expenses часто отдаёт totalElements=0 при непустой странице — игнорим такой total
+      if (total != null && Number(total) > 0 && out.length >= Number(total)) break;
+      if (chunk.length < sizeHint) break;
     }
     return out;
   }
@@ -837,7 +896,8 @@
             `v1/product/shop/${shopId}?searchQuery=&sortBy=DEFAULT&order=DESC&size=50&page=${page}`,
           (data) => unwrapList(data, ['productList']),
           20,
-          900
+          900,
+          50
         );
         productCards = rawCards.map(slimProductCard);
         await writeCache(API_PRODUCTS_KEY, productCards);
@@ -882,28 +942,38 @@
         warnings.push(`Заказы: ${e?.message || e}`);
       }
 
-      // 3) Expenses — soft
+      // 3) Expenses — payload.payments; dateCreated = unix ms; totalElements часто 0
       setSyncBusy(true, 'Загрузка расходов…');
       await sleep(1000);
       try {
-        expenses = await fetchPaged(
-          (page) =>
-            `v1/finance/expenses?page=${page}&size=50&shopIds=${shopId}`,
-          (data) => {
-            if (Array.isArray(data?.paymentList)) return data.paymentList;
-            if (Array.isArray(data?.payload?.paymentList)) return data.payload.paymentList;
-            return unwrapList(data, ['payments', 'expenses', 'items', 'content']);
-          },
-          12,
-          900
-        );
-        // клиентский фильтр периода + slim (без тяжёлых полей)
-        expenses = expenses
-          .filter((e) => {
-            const t = Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
-            return !dateFrom || t >= dateFrom;
-          })
-          .map(slimExpense);
+        const rawExp = [];
+        const size = 50;
+        const maxPages = 40;
+        for (let page = 0; page < maxPages; page++) {
+          if (page > 0) await sleep(800);
+          setSyncBusy(true, `Загрузка расходов… стр. ${page + 1}`);
+          const data = await uzumJson(
+            `v1/finance/expenses?page=${page}&size=${size}&shopIds=${shopId}`
+          );
+          const chunk = Array.isArray(data?.payload?.payments)
+            ? data.payload.payments
+            : Array.isArray(data?.payments)
+              ? data.payments
+              : unwrapList(data, ['paymentList', 'payments', 'expenses', 'items']);
+          if (!chunk.length) break;
+          let older = 0;
+          chunk.forEach((e) => {
+            const t = expenseDateMs(e);
+            if (dateFrom && t > 0 && t < dateFrom) {
+              older += 1;
+              return;
+            }
+            rawExp.push(slimExpense(e));
+          });
+          if (older === chunk.length) break;
+          if (chunk.length < size) break;
+        }
+        expenses = rawExp;
         await writeCache(EXPENSES_KEY, expenses);
       } catch (e) {
         warnings.push(`Расходы: ${e?.message || e}`);
@@ -1087,7 +1157,7 @@
         withdraw += Number(o.withdrawnProfit || o.sellerProfit || price * amt) || 0;
       }
       const sku = String(o.skuTitle || o.sku || '').trim();
-      const unitCost = _yoCostMap[sku] || Number(o.purchasePrice || 0) || 0;
+      const unitCost = lookupYoCost(sku, o.skuTitle, o.productId) || Number(o.purchasePrice || 0) || 0;
       cogs += unitCost * Math.max(amt - ret, 0);
     });
     const sold = Math.max(qty - returns, 0);
@@ -1110,7 +1180,14 @@
   }
 
   function expenseDateMs(e) {
-    return Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
+    const raw = e?.dateCreated ?? e?.dateService ?? e?.dateUpdated ?? e?.date;
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+    if (raw == null || raw === '') return 0;
+    const asNum = Number(raw);
+    if (Number.isFinite(asNum) && asNum > 1e11) return asNum; // unix ms
+    if (Number.isFinite(asNum) && asNum > 1e9 && asNum < 1e11) return asNum * 1000; // unix sec
+    const parsed = Date.parse(String(raw));
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   function expensesInPeriod() {
@@ -1176,16 +1253,19 @@
 
   function expenseSourceKey(e) {
     const raw = `${e.source || ''} ${e.code || ''} ${e.name || ''} ${e.title || ''}`.toUpperCase();
-    if (/FINE|PENALTY|ШТРАФ/.test(raw)) return 'FINE';
+    if (/FINE|PENALTY|ШТРАФ|JARIMA/.test(raw)) return 'FINE';
     if (/BOOST|БУСТ|TOP\b|В ТОП/.test(raw)) return 'BOOST';
-    if (/ADVERT|ADS|REKLAM|РЕКЛАМ|MARKETING/.test(raw)) return 'ADVERTISING';
+    if (/ADVERT|ADS|REKLAM|РЕКЛАМ|MARKETING|MARKETING/.test(raw)) return 'ADVERTISING';
     if (/RETURN.*STOR|ХРАНЕН.*ВОЗВРАТ|ВОЗВРАТ.*ХРАН/.test(raw)) return 'RETURN_STORAGE';
-    if (/LOGIST|ДОСТАВ|ЛОГИСТ|DELIVERY/.test(raw)) return 'LOGISTICS';
-    if (/STOR|ХРАНЕН|WAREHOUSE/.test(raw)) return 'STORAGE';
+    if (/LOGIST|ДОСТАВ|ЛОГИСТ|DELIVERY|LOGISTIKA/.test(raw)) return 'LOGISTICS';
+    if (/OMBOR|STOR|ХРАНЕН|WAREHOUSE|СКЛАД/.test(raw)) return 'STORAGE';
     if (/PREP|ПОДГОТОВ|PACKAG/.test(raw)) return 'PREPARATION';
-    if (/MARKET|КОМИСС|SELLER|МП/.test(raw)) return 'MARKETPLACE';
-    const s = String(e.source || '').trim().toUpperCase();
-    return s || 'OTHER';
+    if (/КОМИСС|SELLER|MARKETPLACE|МП\b/.test(raw)) return 'MARKETPLACE';
+    const s = String(e.source || '').trim();
+    if (/^logistika$/i.test(s)) return 'LOGISTICS';
+    if (/^marketing$/i.test(s)) return 'ADVERTISING';
+    if (/^ombor$/i.test(s)) return 'STORAGE';
+    return String(e.source || '').trim().toUpperCase() || 'OTHER';
   }
 
   const EXP_LABELS = {
@@ -1802,7 +1882,7 @@
           ${copyFieldHtml('Shop ID', p.shopId)}
           ${copyFieldHtml('SKU ID', p.skuId)}
           ${copyFieldHtml('Оборачиваемость', p.turnoverDays != null ? `${p.turnoverDays} дн.` : '')}
-          ${copyFieldHtml('Себестоимость YO', cost ? money(cost) : 'не задана')}
+          ${copyFieldHtml('Себестоимость YO', cost ? money(cost) : 'нет в базе (добавь Uzum SKU)')}
           ${
             p.paidStorage
               ? `<div class="sc-paid-badge">Платно: ${esc(String(p.paidStorageAmount || '—'))}</div>`
@@ -1867,7 +1947,7 @@
       <div class="sc-source-banner ${fromApi ? 'ok' : 'warn'}">
         ${
           fromApi
-            ? `Ассортимент из <strong>Uzum OpenAPI</strong> (${esc(shopName)}) · себестоимость из YO`
+            ? `Ассортимент из <strong>Uzum OpenAPI</strong> (${esc(shopName)}) · себестоимость автоматом из базы YO по SKU`
             : 'Кэш OpenAPI пуст. Открой <strong>Настройки</strong> → Синхронизировать (ключ без Bearer).'
         }
       </div>
@@ -1998,7 +2078,7 @@
   function viewProfitShare() {
     const sales = salesBySku();
     const rows = Object.keys(sales)
-      .map((sku) => ({ sku, ...sales[sku], cost: (_yoCostMap[sku] || 0) * sales[sku].qty }))
+      .map((sku) => ({ sku, ...sales[sku], cost: lookupYoCost(sku) * sales[sku].qty }))
       .sort((a, b) => b.profit - a.profit);
     const total = rows.reduce((s, r) => s + Math.max(r.profit, 0), 0) || 1;
     return `<div class="sc-assort-tabs">
