@@ -26,6 +26,8 @@
   let _dynMode = 'orders';
   let _products = [];
   let _yoCostMap = {};
+  let _yoCostProductCount = 0;
+  let _yoCostStrongKeys = [];
   let _shipments = [];
   let _orders = [];
   let _expenses = [];
@@ -41,6 +43,10 @@
   let _assortTab = 'products';
   let _selectedSkuKey = '';
   let _syncBusy = false;
+  let _costFilter = 'all'; // all | has | miss
+  let _autoOrdersTimer = null;
+  const UZ_TZ = 'Asia/Tashkent';
+  const AUTO_ORDERS_MS = 15 * 60 * 1000;
 
   try {
     _dismissed = new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]'));
@@ -330,24 +336,31 @@
     };
   }
 
+  /** Календарный день в TZ Узбекистана (как Market Plus / Uzum). */
+  function ymdInTz(d, timeZone) {
+    const x = d instanceof Date ? d : new Date(d || Date.now());
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timeZone || UZ_TZ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(x);
+    const get = (t) => parts.find((p) => p.type === t)?.value || '00';
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  }
+
   function startOfDayMs(d) {
-    const x = d instanceof Date ? new Date(d) : new Date(d || Date.now());
-    x.setHours(0, 0, 0, 0);
-    return x.getTime();
+    const ymd = ymdInTz(d || Date.now(), UZ_TZ);
+    return new Date(`${ymd}T00:00:00+05:00`).getTime();
   }
 
   function endOfDayMs(d) {
-    const x = d instanceof Date ? new Date(d) : new Date(d || Date.now());
-    x.setHours(23, 59, 59, 999);
-    return x.getTime();
+    const ymd = ymdInTz(d || Date.now(), UZ_TZ);
+    return new Date(`${ymd}T23:59:59.999+05:00`).getTime();
   }
 
   function isoDateLocal(d) {
-    const x = d instanceof Date ? d : new Date(d || Date.now());
-    const y = x.getFullYear();
-    const m = String(x.getMonth() + 1).padStart(2, '0');
-    const day = String(x.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return ymdInTz(d || Date.now(), UZ_TZ);
   }
 
   function getPeriodRange() {
@@ -356,8 +369,9 @@
       return { from: startOfDayMs(), to: endOfDayMs(), label: 'Сегодня', days: 1 };
     }
     if (_periodMode === 'month') {
-      const d = new Date();
-      const from = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+      const ymd = ymdInTz(Date.now(), UZ_TZ);
+      const [y, m] = ymd.split('-').map(Number);
+      const from = new Date(`${y}-${String(m).padStart(2, '0')}-01T00:00:00+05:00`).getTime();
       return {
         from,
         to: endOfDayMs(),
@@ -477,51 +491,98 @@
   }
 
   function productSku(p) {
-    return String(p?.sku || p?.skuTitle || p?.article1c || p?.skuId || p?.id || '').trim();
+    return String(p?.sku || p?.skuTitle || p?.skuFullTitle || p?.article1c || p?.skuId || p?.id || '').trim();
   }
 
   function normalizeSkuKey(s) {
     return String(s || '')
       .trim()
-      .replace(/\s+/g, ' ')
+      .replace(/\s+/g, '')
+      .replace(/[_–—−]/g, '-')
       .toLowerCase();
+  }
+
+  function isWeakSkuKey(raw) {
+    const s = String(raw ?? '').trim();
+    if (s.length < 3) return true;
+    if (/^\d{1,7}$/.test(s)) return true; // заглушки вроде «19»
+    return false;
   }
 
   /** Себестоимость из базы YO: матч по Uzum SKU / артикулу / штрихкоду. */
   function buildYoCostMap(list) {
     const map = {};
-    const add = (key, cost) => {
+    const add = (key, cost, { allowWeak } = {}) => {
       const raw = String(key ?? '').trim();
       if (!raw || !(cost > 0)) return;
+      if (!allowWeak && isWeakSkuKey(raw)) return;
       map[raw] = cost;
-      map[normalizeSkuKey(raw)] = cost;
+      const nk = normalizeSkuKey(raw);
+      if (nk) map[nk] = cost;
+      // без префикса магазина BAHMALG-
+      const noShop = nk.replace(/^bahmalg-/, '');
+      if (noShop && noShop !== nk && noShop.length >= 4) map[noShop] = cost;
+      // хвост после первого «-» (часто короткий артикул в YO)
+      const dash = nk.indexOf('-');
+      if (dash > 0) {
+        const tail = nk.slice(dash + 1);
+        if (tail.length >= 6) map[tail] = cost;
+      }
     };
+    let withCost = 0;
     (list || []).forEach((p) => {
       const c =
         Number(p?.costGross ?? p?.costPriceUzs ?? p?.costPrice ?? p?.cost ?? p?.purchasePrice ?? 0) || 0;
       if (!(c > 0)) return;
+      withCost += 1;
       add(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum, c);
       add(p.sku, c);
       add(p.article1c, c);
       add(p.name, c);
-      add(p.uzum_barcode, c);
-      add(p.barcode, c);
+      add(p.uzum_barcode, c, { allowWeak: false });
+      add(p.barcode, c, { allowWeak: false });
       add(p.wbSku ?? p.wb_nmid ?? p.calc?.mpWbNmid, c);
       add(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex, c);
       add(p.code1c, c);
+    });
+    _yoCostProductCount = withCost;
+    _yoCostStrongKeys = Object.keys(map).filter((k) => {
+      if (!k || k.length < 6 || isWeakSkuKey(k)) return false;
+      return /[-_]/.test(k) || /[a-zа-яё]\d|\d[a-zа-яё]/i.test(k);
     });
     return map;
   }
 
   function lookupYoCost(...keys) {
+    const tried = [];
     for (const k of keys) {
       const raw = String(k ?? '').trim();
-      if (!raw) continue;
+      if (!raw || isWeakSkuKey(raw)) continue;
       if (_yoCostMap[raw] != null) return _yoCostMap[raw];
       const nk = normalizeSkuKey(raw);
       if (_yoCostMap[nk] != null) return _yoCostMap[nk];
+      const noShop = nk.replace(/^bahmalg-/, '');
+      if (noShop && _yoCostMap[noShop] != null) return _yoCostMap[noShop];
+      tried.push(nk, noShop);
+    }
+    // мягкий матч: OpenAPI SKU заканчивается на ключ из YO (или наоборот)
+    for (const nk of tried) {
+      if (!nk || nk.length < 6) continue;
+      for (const mapKey of _yoCostStrongKeys) {
+        if (nk === mapKey) return _yoCostMap[mapKey];
+        if (nk.endsWith(mapKey) || (mapKey.length >= 8 && mapKey.endsWith(nk))) return _yoCostMap[mapKey];
+      }
     }
     return 0;
+  }
+
+  function yoCostMatchStats() {
+    const total = _products.length;
+    let withCost = 0;
+    _products.forEach((p) => {
+      if (productCost(p) > 0) withCost += 1;
+    });
+    return { total, withCost, miss: Math.max(0, total - withCost), yoProducts: _yoCostProductCount };
   }
 
   function productCost(p) {
@@ -734,7 +795,11 @@
     if (_hasApiData) parts.push('Uzum OpenAPI');
     if (!_hasFirebase && !_hasApiData) parts.push('localStorage');
     const meta = getSyncMeta();
-    el.textContent = `${parts.join(' · ')} · ${_products.length} SKU${meta.shopId ? ` · shop #${meta.shopId}` : ''}`;
+    const todayQty = _orders.length
+      ? metricsFor(ordersInRange(startOfDayMs(), endOfDayMs())).qty
+      : null;
+    const todayBit = todayQty != null ? ` · сегодня ${todayQty} шт` : '';
+    el.textContent = `${parts.join(' · ')} · ${_products.length} SKU${meta.shopId ? ` · shop #${meta.shopId}` : ''}${todayBit}`;
   }
 
   /* ========== OpenAPI client ========== */
@@ -932,8 +997,9 @@
           });
           // лента от новых к старым — выходим, когда вся страница старше периода
           if (older === chunk.length) break;
-          const total = data?.totalElements;
-          if (total != null && (page + 1) * size >= total) break;
+          const total = Number(data?.totalElements);
+          // totalElements у Uzum часто 0/мусор — не стопаем по нему, если ≤0
+          if (Number.isFinite(total) && total > 0 && (page + 1) * size >= total) break;
           if (chunk.length < size) break;
         }
         orders = rawOrders;
@@ -1072,6 +1138,126 @@
       alert(msg);
       renderSettingsPage();
     }
+  }
+
+  /**
+   * Быстрый догон заказов (как Market Plus раз в час): первые страницы finance/orders,
+   * merge по id. Не трогает товары/расходы.
+   */
+  async function syncOrdersFresh(opts = {}) {
+    const silent = !!opts.silent;
+    const token = cleanToken(getToken());
+    if (!token) {
+      if (!silent) alert('Сначала вставь API-ключ (Настройки → API ключи Uzum)');
+      return { ok: false, reason: 'no-token' };
+    }
+    if (_syncBusy) return { ok: false, reason: 'busy' };
+    let shopId = getSyncMeta().shopId || null;
+    _syncBusy = true;
+    if (!silent) setSyncBusy(true, 'Обновление заказов за сегодня…');
+    try {
+      if (!shopId) {
+        const shopsRaw = await uzumJson('v1/shops');
+        const shops = unwrapList(shopsRaw, ['shops', 'organizations']);
+        shopId = shops[0]?.id || shops[0]?.shopId || null;
+        if (shopId) saveSyncMeta({ shopId });
+      }
+      if (!shopId) throw new Error('shopId не найден');
+
+      const existing = Array.isArray(_orders) && _orders.length ? _orders.slice() : await readCache(ORDERS_KEY, []);
+      const byId = new Map();
+      existing.forEach((o) => {
+        const id = o?.id != null ? String(o.id) : o?.orderId != null ? `oid:${o.orderId}:${o.skuTitle || ''}` : '';
+        if (id) byId.set(id, o);
+      });
+
+      const dayStart = startOfDayMs();
+      const size = 100;
+      const maxPages = 8;
+      let added = 0;
+      let seenToday = 0;
+
+      for (let page = 0; page < maxPages; page++) {
+        if (page > 0) await sleep(500);
+        if (!silent) setSyncBusy(true, `Заказы сегодня… стр. ${page + 1}`);
+        const data = await uzumJson(
+          `v1/finance/orders?page=${page}&size=${size}&group=false&shopIds=${shopId}`
+        );
+        const chunk = unwrapList(data, ['orderItems']);
+        if (!chunk.length) break;
+        let older = 0;
+        chunk.forEach((o) => {
+          const t = orderDateMs(o);
+          if (t >= dayStart) seenToday += Number(o.amount || 0) || 0;
+          if (t > 0 && t < dayStart - 2 * 86400000) older += 1; // старше «сегодня−2д» — можно стопать
+          const slim = slimOrder(o);
+          const id =
+            slim?.id != null
+              ? String(slim.id)
+              : slim?.orderId != null
+                ? `oid:${slim.orderId}:${slim.skuTitle || ''}`
+                : '';
+          if (!id) return;
+          if (!byId.has(id)) added += 1;
+          byId.set(id, slim);
+        });
+        if (older === chunk.length) break;
+        if (chunk.length < size) break;
+      }
+
+      const merged = Array.from(byId.values()).sort((a, b) => orderDateMs(b) - orderDateMs(a));
+      await writeCache(ORDERS_KEY, merged);
+      _orders = merged;
+      _hasApiData = _hasApiData || merged.length > 0;
+      saveSyncMeta({
+        lastOrdersAt: new Date().toISOString(),
+        lastSyncAt: getSyncMeta().lastSyncAt || new Date().toISOString(),
+        lastStatus: 'ok',
+        shopId,
+        ordersCount: merged.length,
+        todayQtyHint: seenToday
+      });
+      updateDataSourceBadge();
+      render();
+      if (!silent) {
+        const todayQty = metricsFor(ordersInRange(dayStart, endOfDayMs())).qty;
+        setSyncBusy(false);
+        const btn = document.getElementById('sc-refresh-btn');
+        if (btn) {
+          const prev = btn.textContent;
+          btn.textContent = `✓ Сегодня: ${todayQty} шт`;
+          setTimeout(() => {
+            btn.textContent = prev || '🔄 Обновить заказы';
+          }, 2500);
+        }
+      }
+      _syncBusy = false;
+      if (!silent) setSyncBusy(false);
+      return { ok: true, orders: merged.length, added, todayQty: seenToday };
+    } catch (e) {
+      _syncBusy = false;
+      if (!silent) {
+        setSyncBusy(false);
+        alert(`Не удалось обновить заказы: ${e?.message || e}`);
+      }
+      console.warn('syncOrdersFresh', e);
+      return { ok: false, reason: String(e?.message || e) };
+    }
+  }
+
+  function ensureAutoOrdersRefresh() {
+    if (_autoOrdersTimer) return;
+    _autoOrdersTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (!cleanToken(getToken())) return;
+      void syncOrdersFresh({ silent: true });
+    }, AUTO_ORDERS_MS);
+    // первый догон через пару секунд после открытия (не блокирует UI)
+    setTimeout(() => {
+      if (!cleanToken(getToken())) return;
+      const last = Date.parse(getSyncMeta().lastOrdersAt || getSyncMeta().lastSyncAt || 0) || 0;
+      if (Date.now() - last > 5 * 60 * 1000) void syncOrdersFresh({ silent: true });
+    }, 2500);
   }
 
   function saveToken() {
@@ -2147,12 +2333,16 @@
   }
 
   function viewCost() {
-    const rows = _products.map((p) => ({
+    const stats = yoCostMatchStats();
+    let rows = _products.map((p) => ({
       sku: productSku(p),
       name: p.name || p.title,
       cost: productCost(p),
       stock: productStock(p)
     }));
+    if (_costFilter === 'has') rows = rows.filter((r) => r.cost > 0);
+    if (_costFilter === 'miss') rows = rows.filter((r) => !(r.cost > 0));
+    rows.sort((a, b) => (b.cost > 0) - (a.cost > 0) || String(a.sku).localeCompare(String(b.sku), 'ru'));
     return `<div class="sc-assort-tabs">
         <button type="button" class="sc-subtab" data-sc-assort="products">Товары</button>
         <button type="button" class="sc-subtab" data-sc-assort="abcxyz">ABC/XYZ</button>
@@ -2161,9 +2351,20 @@
         <button type="button" class="sc-subtab active" data-sc-assort="cost">Себестоимость</button>
         <button type="button" class="sc-subtab" data-sc-assort="new-calc">Калькулятор</button>
       </div>
-      <p class="sub">Себестоимость берётся из базы YO. Редактирование —
+      <p class="sub">Себестоимость берётся из базы YO по полю <strong>SKU Uzum</strong>. Редактирование —
         <button type="button" class="btn-secondary" data-sc-open-cost>Открыть Себестоимость YO</button></p>
-      <div class="sc-toolbar"><button type="button" class="sc-export" data-sc-export="cost">CSV</button></div>
+      <div class="sc-kpi-row cols-3">
+        ${kpiCard('Совпало с YO', `${stats.withCost} / ${stats.total}`, 'SKU с себестоимостью', 'green')}
+        ${kpiCard('Без себестоимости', String(stats.miss), 'нет в базе YO или другой SKU', 'orange')}
+        ${kpiCard('В базе YO', String(stats.yoProducts), 'товаров с costGross', 'blue')}
+      </div>
+      <div class="sc-toolbar" style="gap:8px;flex-wrap:wrap">
+        <button type="button" class="sc-chip${_costFilter === 'all' ? ' active' : ''}" data-sc-costfilter="all">Все</button>
+        <button type="button" class="sc-chip${_costFilter === 'has' ? ' active' : ''}" data-sc-costfilter="has">С себестоимостью</button>
+        <button type="button" class="sc-chip${_costFilter === 'miss' ? ' active' : ''}" data-sc-costfilter="miss">Только «нет»</button>
+        <button type="button" class="sc-export" data-sc-export="cost">CSV</button>
+      </div>
+      <p class="sub">Если SKU в OpenAPI нет в YO (например новые комплекты) — будет «нет». Добавьте товар в YO с тем же SKU Uzum.</p>
       <div class="sc-table-wrap"><table class="sc-table">
         <thead><tr><th>SKU</th><th>Название</th><th>Себестоимость</th><th>Остаток</th></tr></thead>
         <tbody>${rows
@@ -2708,7 +2909,7 @@
         return;
       }
       if (e.target.closest('#sc-refresh-btn')) {
-        void loadAllData();
+        void syncOrdersFresh({ silent: false });
         return;
       }
       const dyn = e.target.closest('[data-sc-dyn]');
@@ -2720,6 +2921,12 @@
       const assort = e.target.closest('[data-sc-assort]');
       if (assort) {
         goView(assort.getAttribute('data-sc-assort'));
+        return;
+      }
+      const costf = e.target.closest('[data-sc-costfilter]');
+      if (costf) {
+        _costFilter = costf.getAttribute('data-sc-costfilter') || 'all';
+        render();
         return;
       }
       const gov = e.target.closest('[data-sc-goview]');
@@ -2834,9 +3041,12 @@
 
   function init(force) {
     bindEvents();
+    ensureAutoOrdersRefresh();
     if (!_initialized || force) {
       _initialized = true;
-      void loadAllData();
+      void loadAllData().then(() => {
+        ensureAutoOrdersRefresh();
+      });
     } else {
       updateDataSourceBadge();
       render();
@@ -2862,6 +3072,7 @@
     saveToken,
     clearToken,
     syncUzum,
+    syncOrdersFresh,
     renderSettingsPage
   };
 })();
