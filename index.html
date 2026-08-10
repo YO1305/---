@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-07-openapi-fix" />
+  <link rel="stylesheet" href="style.css?v=2026-08-10-fin-period" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -2079,11 +2079,14 @@
               <span></span><span></span><span></span>
             </button>
             <div class="sc-topbar-meta" id="sc-data-source">Загрузка…</div>
-            <div class="sc-period-wrap">
-              <button type="button" class="sc-period" data-days="30">30 дн</button>
-              <button type="button" class="sc-period active" data-days="90">90 дн</button>
-              <button type="button" class="sc-period" data-days="180">180 дн</button>
-              <button type="button" class="sc-period" data-days="365">365 дн</button>
+            <div class="sc-period-wrap" id="sc-period-top">
+              <!-- период рендерится и в контенте; верхняя полоса — быстрые пресеты -->
+              <button type="button" class="sc-period active" data-sc-period="today">Сегодня</button>
+              <button type="button" class="sc-period" data-sc-period="month">Месяц</button>
+              <button type="button" class="sc-period" data-sc-period="days" data-days="30">30 дн</button>
+              <button type="button" class="sc-period" data-sc-period="days" data-days="90">90 дн</button>
+              <button type="button" class="sc-period" data-sc-period="day">День</button>
+              <button type="button" class="sc-period" data-sc-period="custom">Период</button>
             </div>
             <button type="button" class="btn-secondary sc-refresh" id="sc-refresh-btn">🔄 Обновить</button>
           </div>
@@ -2162,6 +2165,6 @@
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
   <script src="script.js?v=2026-08-06-dup-product"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-08-08-idb-orders"></script>
+  <script src="scaleup-yo.js?v=2026-08-10-fin-period"></script>
 </body>
 </html>

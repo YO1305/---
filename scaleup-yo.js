@@ -16,8 +16,13 @@
   const SETTINGS_KEY = 'yo_scaleup_settings';
 
   let _view = 'dashboard';
+  let _periodMode = 'today'; // today | month | days | day | custom
   let _periodDays = 90;
+  let _periodDay = ''; // YYYY-MM-DD
+  let _periodCustomFrom = '';
+  let _periodCustomTo = '';
   let _finSub = 'overview';
+  let _expFilter = 'all';
   let _dynMode = 'orders';
   let _products = [];
   let _yoCostMap = {};
@@ -321,18 +326,110 @@
     };
   }
 
-  function periodStartMs(days) {
-    return Date.now() - (Number(days) || 90) * 86400000;
+  function startOfDayMs(d) {
+    const x = d instanceof Date ? new Date(d) : new Date(d || Date.now());
+    x.setHours(0, 0, 0, 0);
+    return x.getTime();
+  }
+
+  function endOfDayMs(d) {
+    const x = d instanceof Date ? new Date(d) : new Date(d || Date.now());
+    x.setHours(23, 59, 59, 999);
+    return x.getTime();
+  }
+
+  function isoDateLocal(d) {
+    const x = d instanceof Date ? d : new Date(d || Date.now());
+    const y = x.getFullYear();
+    const m = String(x.getMonth() + 1).padStart(2, '0');
+    const day = String(x.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function getPeriodRange() {
+    const now = Date.now();
+    if (_periodMode === 'today') {
+      return { from: startOfDayMs(), to: endOfDayMs(), label: 'Сегодня', days: 1 };
+    }
+    if (_periodMode === 'month') {
+      const d = new Date();
+      const from = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+      return {
+        from,
+        to: endOfDayMs(),
+        label: 'Этот месяц',
+        days: Math.max(1, Math.ceil((endOfDayMs() - from) / 86400000) + 1)
+      };
+    }
+    if (_periodMode === 'day' && _periodDay) {
+      const d = new Date(`${_periodDay}T12:00:00`);
+      return { from: startOfDayMs(d), to: endOfDayMs(d), label: _periodDay, days: 1 };
+    }
+    if (_periodMode === 'custom' && _periodCustomFrom && _periodCustomTo) {
+      const a = new Date(`${_periodCustomFrom}T12:00:00`);
+      const b = new Date(`${_periodCustomTo}T12:00:00`);
+      const from = startOfDayMs(a);
+      const to = endOfDayMs(b);
+      return {
+        from: Math.min(from, to),
+        to: Math.max(from, to),
+        label: `${_periodCustomFrom} — ${_periodCustomTo}`,
+        days: Math.max(1, Math.round(Math.abs(to - from) / 86400000) + 1)
+      };
+    }
+    const days = Number(_periodDays) || 90;
+    return { from: now - days * 86400000, to: now, label: `${days} дн`, days };
+  }
+
+  function periodStartMs() {
+    return getPeriodRange().from;
   }
 
   function periodEndMs() {
-    return Date.now();
+    return getPeriodRange().to;
+  }
+
+  function periodDaysCount() {
+    return getPeriodRange().days || 1;
   }
 
   function inPeriodMs(ms) {
     const t = Number(ms);
     if (!Number.isFinite(t) || t <= 0) return false;
-    return t >= periodStartMs(_periodDays) && t <= periodEndMs() + 86400000;
+    const r = getPeriodRange();
+    return t >= r.from && t <= r.to;
+  }
+
+  function periodToolbarHtml() {
+    const r = getPeriodRange();
+    const chip = (mode, label, days) => {
+      let active = _periodMode === mode;
+      if (mode === 'days') active = active && Number(days) === Number(_periodDays);
+      return `<button type="button" class="sc-period${active ? ' active' : ''}" data-sc-period="${mode}"${
+        days != null ? ` data-days="${days}"` : ''
+      }>${label}</button>`;
+    };
+    return `<div class="sc-period-bar">
+      <div class="sc-period-wrap">
+        ${chip('today', 'Сегодня')}
+        ${chip('month', 'Месяц')}
+        ${chip('days', '30 дн', 30)}
+        ${chip('days', '90 дн', 90)}
+        ${chip('day', 'День')}
+        ${chip('custom', 'Период')}
+      </div>
+      <div class="sc-period-inputs">
+        ${_periodMode === 'day'
+          ? `<input type="date" class="sc-date-input" id="sc-period-day" value="${esc(_periodDay || isoDateLocal())}" />`
+          : ''}
+        ${_periodMode === 'custom'
+          ? `<input type="date" class="sc-date-input" id="sc-period-from" value="${esc(_periodCustomFrom || isoDateLocal())}" />
+             <span class="sc-period-sep">—</span>
+             <input type="date" class="sc-date-input" id="sc-period-to" value="${esc(_periodCustomTo || isoDateLocal())}" />`
+          : ''}
+        <span class="sc-period-label">Показано: <strong>${esc(r.label)}</strong></span>
+      </div>
+    </div>`;
   }
 
   function orderDateMs(o) {
@@ -726,8 +823,9 @@
       const shopName = shop?.name || shop?.title || getSyncMeta().shopName || '';
       if (!shopId) throw new Error('Магазины не найдены по API-ключу');
 
-      const dateFrom = periodStartMs(Math.max(_periodDays, 90));
-      const dateTo = periodEndMs();
+      // Синк всегда тянет минимум 90 дней, UI-фильтр режет уже на клиенте
+      const dateFrom = Date.now() - Math.max(90, Number(_periodDays) || 90) * 86400000;
+      const dateTo = Date.now();
       void dateTo;
 
       // 1) Товары — приоритет (карточки ScaleUp)
@@ -796,8 +894,8 @@
             if (Array.isArray(data?.payload?.paymentList)) return data.payload.paymentList;
             return unwrapList(data, ['payments', 'expenses', 'items', 'content']);
           },
-          5,
-          1000
+          12,
+          900
         );
         // клиентский фильтр периода + slim (без тяжёлых полей)
         expenses = expenses
@@ -996,25 +1094,30 @@
     const buyoutDenom = qty + canceled;
     const buyout = buyoutDenom > 0 ? (sold / buyoutDenom) * 100 : 0;
     const gross = sellerProfit || revenue - commission - logistics - cogs;
-    const speed = sold / Math.max(_periodDays, 1);
+    const speed = sold / Math.max(periodDaysCount(), 1);
     return { qty, sold, returns, canceled, revenue, commission, logistics, sellerProfit, withdraw, cogs, buyout, gross, speed };
   }
 
   function currentMetrics() {
-    return metricsFor(ordersInRange(periodStartMs(_periodDays), periodEndMs()));
+    const r = getPeriodRange();
+    return metricsFor(ordersInRange(r.from, r.to));
   }
 
   function prevMetrics() {
-    const end = periodStartMs(_periodDays);
-    const start = end - _periodDays * 86400000;
-    return metricsFor(ordersInRange(start, end));
+    const r = getPeriodRange();
+    const len = Math.max(r.to - r.from, 86400000);
+    return metricsFor(ordersInRange(r.from - len, r.from - 1));
+  }
+
+  function expenseDateMs(e) {
+    return Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
   }
 
   function expensesInPeriod() {
-    const from = periodStartMs(_periodDays);
+    const r = getPeriodRange();
     return _expenses.filter((e) => {
-      const t = Date.parse(e.dateCreated || e.dateService || e.dateUpdated || '') || Number(e.date) || 0;
-      return t >= from;
+      const t = expenseDateMs(e);
+      return t >= r.from && t <= r.to;
     });
   }
 
@@ -1027,10 +1130,10 @@
 
   function dailySeries(mode) {
     const map = {};
-    const from = periodStartMs(_periodDays);
+    const r = getPeriodRange();
     _orders.forEach((o) => {
       const t = orderDateMs(o);
-      if (t < from) return;
+      if (t < r.from || t > r.to) return;
       const day = new Date(t).toISOString().slice(0, 10);
       if (!map[day]) map[day] = { orders: 0, buyouts: 0, returns: 0, revenue: 0 };
       const amt = Number(o.amount || 0) || 0;
@@ -1050,10 +1153,10 @@
 
   function activityHeatmap() {
     const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
-    const from = periodStartMs(_periodDays);
+    const r = getPeriodRange();
     _orders.forEach((o) => {
       const t = orderDateMs(o);
-      if (t < from) return;
+      if (t < r.from || t > r.to) return;
       const dt = new Date(t);
       const dow = (dt.getDay() + 6) % 7;
       grid[dow][dt.getHours()] += Number(o.amount || 1) || 1;
@@ -1061,28 +1164,191 @@
     return grid;
   }
 
+  function expenseAmount(e) {
+    return Number(e.paymentPrice ?? e.amount ?? 0) || 0;
+  }
+
+  function expenseIsReturn(e) {
+    const type = String(e.type || '').toUpperCase();
+    const status = String(e.status || '').toUpperCase();
+    return type === 'INCOME' || status === 'REFUNDED';
+  }
+
+  function expenseSourceKey(e) {
+    const raw = `${e.source || ''} ${e.code || ''} ${e.name || ''} ${e.title || ''}`.toUpperCase();
+    if (/FINE|PENALTY|ШТРАФ/.test(raw)) return 'FINE';
+    if (/BOOST|БУСТ|TOP\b|В ТОП/.test(raw)) return 'BOOST';
+    if (/ADVERT|ADS|REKLAM|РЕКЛАМ|MARKETING/.test(raw)) return 'ADVERTISING';
+    if (/RETURN.*STOR|ХРАНЕН.*ВОЗВРАТ|ВОЗВРАТ.*ХРАН/.test(raw)) return 'RETURN_STORAGE';
+    if (/LOGIST|ДОСТАВ|ЛОГИСТ|DELIVERY/.test(raw)) return 'LOGISTICS';
+    if (/STOR|ХРАНЕН|WAREHOUSE/.test(raw)) return 'STORAGE';
+    if (/PREP|ПОДГОТОВ|PACKAG/.test(raw)) return 'PREPARATION';
+    if (/MARKET|КОМИСС|SELLER|МП/.test(raw)) return 'MARKETPLACE';
+    const s = String(e.source || '').trim().toUpperCase();
+    return s || 'OTHER';
+  }
+
+  const EXP_LABELS = {
+    all: 'Все расходы',
+    MARKETPLACE: 'Расходы на маркетплейсе',
+    LOGISTICS: 'Логистика',
+    STORAGE: 'Хранение',
+    ADVERTISING: 'Реклама',
+    BOOST: 'Буст заказов',
+    RETURN_STORAGE: 'Хранение возвратов',
+    FINE: 'Штрафы',
+    PREPARATION: 'Подготовка товара',
+    OTHER: 'Прочее'
+  };
+
+  function expenseSourceLabel(key) {
+    return EXP_LABELS[key] || key || 'Прочее';
+  }
+
+  function groupExpensesBySource(list) {
+    const map = {};
+    (list || []).forEach((e) => {
+      if (expenseIsReturn(e)) return;
+      const key = expenseSourceKey(e);
+      if (!map[key]) map[key] = { key, label: expenseSourceLabel(key), sum: 0, count: 0 };
+      map[key].sum += Math.abs(expenseAmount(e));
+      map[key].count += 1;
+    });
+    return Object.values(map).sort((a, b) => b.sum - a.sum);
+  }
+
+  function donutSvg(segments, total) {
+    const size = 180;
+    const r = 68;
+    const cx = 90;
+    const cy = 90;
+    const stroke = 28;
+    const C = 2 * Math.PI * r;
+    let offset = 0;
+    const colors = ['#3b66f5', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4', '#64748b', '#ec4899'];
+    if (!total) {
+      return `<svg class="sc-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"></circle>
+      </svg>`;
+    }
+    const arcs = segments
+      .map((s, i) => {
+        const len = (s.sum / total) * C;
+        const dash = `${len} ${C - len}`;
+        const el = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colors[i % colors.length]}"
+          stroke-width="${stroke}" stroke-dasharray="${dash}" stroke-dashoffset="${-offset}"
+          transform="rotate(-90 ${cx} ${cy})"></circle>`;
+        offset += len;
+        return el;
+      })
+      .join('');
+    return `<svg class="sc-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#eef2ff" stroke-width="${stroke}"></circle>
+      ${arcs}
+      <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="11" fill="#64748b">Итого</text>
+      <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="12" font-weight="700">${esc(moneyShort(total))}</text>
+    </svg>`;
+  }
+
+  function financeTabsHtml(active) {
+    const tabs = [
+      ['overview', 'Обзор'],
+      ['expenses', 'Расходы'],
+      ['pnl', 'ОПиУ'],
+      ['payout', 'Календарь выплат']
+    ];
+    return `<div class="sc-subtabs">${tabs
+      .map(
+        ([id, label]) =>
+          `<button type="button" class="sc-subtab${active === id ? ' active' : ''}" data-sc-finsub="${id}">${label}</button>`
+      )
+      .join('')}</div>`;
+  }
+
   function insightCards() {
     const m = currentMetrics();
+    const prev = prevMetrics();
     const cards = [];
-    if (m.buyout > 0 && m.buyout < 70) {
+    const r90 = metricsFor(ordersInRange(Date.now() - 90 * 86400000, Date.now()));
+
+    if (m.buyout > 0 && m.buyout < 85) {
       cards.push({
         key: 'buyout-low',
         type: 'danger',
         title: 'Выкуп ниже нормы',
         val: pct(m.buyout),
-        actions: [{ label: 'Открыть Финансы', view: 'finance' }]
+        detail: r90.buyout
+          ? `обычно ${pct(r90.buyout)} за последние 90 дней`
+          : 'ниже комфортного уровня 85%+',
+        actions: [
+          { label: 'Посмотреть динамику →', view: 'dashboard' },
+          { label: 'Открыть Финансы →', view: 'finance' }
+        ]
       });
     }
-    const noStock = _products.filter((p) => productStock(p) <= 0).length;
+
+    const created = _fbsOrders.filter((o) => String(o._status || o.status) === 'CREATED').length;
+    const packing = _fbsOrders.filter((o) => String(o._status || o.status) === 'PACKING').length;
+    if (created + packing > 0) {
+      cards.push({
+        key: 'fbs-overdue',
+        type: 'danger',
+        title: 'Просроченные / ожидают сборки FBS',
+        val: `${created + packing} поставок`,
+        detail: `FBS к сборке: ${created} · в упаковке: ${packing}`,
+        actions: [{ label: 'Открыть Отгрузки →', view: 'shipments' }]
+      });
+    }
+
+    const fines = expensesInPeriod().filter((e) => expenseSourceKey(e) === 'FINE');
+    const fineSum = fines.reduce((s, e) => s + Math.abs(expenseAmount(e)), 0);
+    if (fines.length) {
+      cards.push({
+        key: 'fines',
+        type: 'danger',
+        title: 'Штрафы от Uzum',
+        val: `${fines.length} штрафов`,
+        detail: `на сумму ${money(fineSum)} за выбранный период`,
+        actions: [{ label: 'Открыть Финансы →', view: 'finance-expenses' }]
+      });
+    }
+
+    if (prev.revenue > 0 && m.revenue < prev.revenue * 0.7) {
+      const drop = ((m.revenue - prev.revenue) / Math.abs(prev.revenue)) * 100;
+      const sales = salesBySku();
+      const topDrop = Object.keys(sales)
+        .map((sku) => ({ sku, ...sales[sku] }))
+        .sort((a, b) => a.revenue - b.revenue)
+        .slice(0, 3);
+      cards.push({
+        key: 'sales-drop',
+        type: 'danger',
+        title: 'Падение продаж',
+        val: pct(drop),
+        detail:
+          `к прошлому такому же периоду · потеря ~${money(Math.max(prev.revenue - m.revenue, 0))}` +
+          (topDrop.length
+            ? `<br>${topDrop.map((x) => `${esc(x.sku)}: ${money(x.revenue)}`).join(' · ')}`
+            : ''),
+        actions: [
+          { label: 'Посмотреть динамику →', view: 'dashboard' },
+          { label: 'Ассортимент →', view: 'products' }
+        ]
+      });
+    }
+
+    const noStock = _products.filter((p) => productStock(p) <= 0 && !p.archived).length;
     if (noStock > 0) {
       cards.push({
         key: 'oos',
         type: 'warn',
         title: 'Закончились товары',
         val: `${noStock} SKU`,
-        actions: [{ label: 'Ассортимент', view: 'products' }]
+        detail: 'без остатка на складе — риск потери продаж',
+        actions: [{ label: 'Открыть Ассортимент →', view: 'products' }]
       });
     }
+
     const lowRate = _products.filter((p) => {
       const r = Number(String(p.rating || '').replace(',', '.'));
       return Number.isFinite(r) && r > 0 && r < 4.5;
@@ -1093,28 +1359,22 @@
         type: 'warn',
         title: 'Низкий рейтинг',
         val: `${lowRate} товаров`,
-        actions: [{ label: 'Товары', view: 'products' }]
+        detail: 'рейтинг ниже 4.5 — проверь отзывы и качество',
+        actions: [{ label: 'Товары →', view: 'products' }]
       });
     }
+
     if (!_orders.length) {
       cards.push({
         key: 'nosync',
         type: 'info',
         title: 'Нет данных OpenAPI',
         val: 'Синхронизируй API-ключ',
-        actions: [{ label: 'Настройки', view: '__settings' }]
+        detail: 'Настройки → Сохранить и синхронизировать',
+        actions: [{ label: 'Настройки →', view: '__settings' }]
       });
     }
-    const created = _fbsOrders.filter((o) => o._status === 'CREATED' || o.status === 'CREATED').length;
-    if (created > 0) {
-      cards.push({
-        key: 'fbs-pack',
-        type: 'warn',
-        title: 'Нужно собрать FBS',
-        val: `${created} заказов`,
-        actions: [{ label: 'Отгрузки', view: 'shipments' }]
-      });
-    }
+
     return cards.filter((c) => !_dismissed.has(c.key));
   }
 
@@ -1124,11 +1384,13 @@
       .join('');
     return `<div class="sc-insight ${c.type}">
       <div class="sc-insight-body">
-        <div class="sc-insight-title">${esc(c.title)}</div>
+        <div class="sc-insight-title">⚠ ${esc(c.title)}</div>
         <div class="sc-insight-val">${c.val}</div>
+        ${c.detail ? `<div class="sc-insight-detail">${c.detail}</div>` : ''}
         <div class="sc-insight-btns">
           ${btns}
           <button type="button" class="sc-insight-dismiss" data-sc-dismiss="${esc(c.key)}">Отложить</button>
+          <button type="button" class="sc-insight-dismiss" data-sc-dismiss="${esc(c.key)}">Решено</button>
         </div>
       </div>
     </div>`;
@@ -1197,8 +1459,10 @@
     const expSum = expenseTotal(expensesInPeriod());
     const withdraw = cur.withdraw || Math.max(cur.sellerProfit - expSum, 0);
     const insights = insightCards();
+    const pr = getPeriodRange();
 
-    return `<div class="sc-dash-grid">
+    return `${periodToolbarHtml()}
+    <div class="sc-dash-grid">
       <div>
         <div class="sc-kpi-row cols-3">
           ${kpiCard('Заказы', `${cur.qty} шт`, `${moneyShort(cur.revenue)} сум · ${deltaHtml(cur.qty, prev.qty)}`, 'blue')}
@@ -1207,7 +1471,7 @@
         </div>
         <div class="sc-kpi-row cols-3">
           ${kpiCard('Валовая прибыль', money(cur.gross), deltaHtml(cur.gross, prev.gross), 'green')}
-          ${kpiCard('Выручка за период', money(cur.revenue), deltaHtml(cur.revenue, prev.revenue), 'blue')}
+          ${kpiCard(`Выручка · ${esc(pr.label)}`, money(cur.revenue), deltaHtml(cur.revenue, prev.revenue), 'blue')}
           ${kpiCard('Можно вывести', money(withdraw), 'по статусу TO_WITHDRAW / прибыль', 'green')}
         </div>
         <div class="sc-card">
@@ -1229,8 +1493,9 @@
       </div>
       <div class="sc-card sc-insights-panel">
         <div class="sc-card-title">Что важно сейчас
-          <span class="sc-pill sc-pill-bad" style="margin-left:auto">${insights.length}</span>
+          <span class="sc-pill sc-pill-bad" style="margin-left:auto">${insights.length} проблем</span>
         </div>
+        <div class="sc-insights-sub">Проблемы, которые нужно решить, чтобы продажи росли</div>
         ${insights.length ? insights.map(insightHtml).join('') : '<div class="sc-empty-sub">Пока спокойно — критичных сигналов нет</div>'}
       </div>
     </div>`;
@@ -1241,11 +1506,7 @@
     const prev = prevMetrics();
     const exp = expenseTotal(expensesInPeriod());
     const net = cur.gross - exp;
-    return `<div class="sc-subtabs">
-        <button type="button" class="sc-subtab active" data-sc-finsub="overview">Обзор</button>
-        <button type="button" class="sc-subtab" data-sc-finsub="pnl">ОПиУ</button>
-        <button type="button" class="sc-subtab" data-sc-finsub="payout">Календарь выплат</button>
-      </div>
+    return `${periodToolbarHtml()}${financeTabsHtml('overview')}
       <div class="sc-kpi-row cols-4">
         ${kpiCard('Заказы', String(cur.qty), deltaHtml(cur.qty, prev.qty), 'blue')}
         ${kpiCard('Продажи (выручка)', money(cur.revenue), deltaHtml(cur.revenue, prev.revenue), 'blue')}
@@ -1260,6 +1521,114 @@
       <div class="sc-card">
         <div class="sc-card-title">Динамика выручки</div>
         <div id="sc-fin-chart"></div>
+      </div>`;
+  }
+
+  function viewExpenses() {
+    const list = expensesInPeriod();
+    const outcomes = list.filter((e) => !expenseIsReturn(e));
+    const returns = list.filter((e) => expenseIsReturn(e));
+    const groups = groupExpensesBySource(outcomes);
+    const totalOut = groups.reduce((s, g) => s + g.sum, 0);
+    const totalRet = returns.reduce((s, e) => s + Math.abs(expenseAmount(e)), 0);
+    const filtered =
+      _expFilter === 'all' ? outcomes : outcomes.filter((e) => expenseSourceKey(e) === _expFilter);
+    const filteredSum = filtered.reduce((s, e) => s + Math.abs(expenseAmount(e)), 0);
+
+    const tabs = [
+      { key: 'all', sum: totalOut },
+      ...groups.map((g) => ({ key: g.key, sum: g.sum }))
+    ];
+
+    const fmtDate = (e) => {
+      const t = expenseDateMs(e);
+      if (!t) return '—';
+      return new Date(t).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+    };
+
+    return `${periodToolbarHtml()}${financeTabsHtml('expenses')}
+      <div class="sc-exp-layout">
+        <div class="sc-card">
+          <div class="sc-card-title">Структура расходов</div>
+          <div class="sc-exp-structure">
+            ${donutSvg(groups, totalOut)}
+            <div class="sc-exp-legend">
+              ${groups
+                .map((g) => {
+                  const share = totalOut ? ((g.sum / totalOut) * 100).toFixed(0) : 0;
+                  return `<div class="sc-exp-legend-row">
+                    <span class="sc-exp-legend-name">${esc(g.label)}</span>
+                    <span class="sc-exp-legend-pct">${share}%</span>
+                    <span class="sc-exp-legend-sum">${money(g.sum)}</span>
+                  </div>`;
+                })
+                .join('') || '<div class="sc-empty-sub">Нет расходов за период — синхронизируй expenses</div>'}
+              <div class="sc-exp-legend-total">Итого: <strong>${money(totalOut)}</strong></div>
+            </div>
+          </div>
+        </div>
+        <div class="sc-card">
+          <div class="sc-card-title" style="justify-content:space-between">
+            <span>Все расходы</span>
+            <span class="sc-pill sc-pill-ok">Итого по фильтру: ${money(filteredSum)}</span>
+          </div>
+          <div class="sc-exp-tabs">
+            ${tabs
+              .map(
+                (t) =>
+                  `<button type="button" class="sc-exp-tab${_expFilter === t.key ? ' active' : ''}" data-sc-expfilter="${esc(t.key)}">
+                    <span>${esc(expenseSourceLabel(t.key))}</span>
+                    <b>${moneyShort(t.sum)}</b>
+                  </button>`
+              )
+              .join('')}
+          </div>
+          <div class="sc-table-wrap"><table class="sc-table">
+            <thead><tr><th>Дата</th><th>ID</th><th>Название</th><th>Источник</th><th>Сумма</th></tr></thead>
+            <tbody>
+              ${filtered
+                .slice()
+                .sort((a, b) => expenseDateMs(b) - expenseDateMs(a))
+                .slice(0, 300)
+                .map(
+                  (e) => `<tr>
+                    <td>${esc(fmtDate(e))}</td>
+                    <td>${esc(e.id || e.externalId || '—')}</td>
+                    <td>${esc(e.name || e.title || '—')}</td>
+                    <td>${esc(expenseSourceLabel(expenseSourceKey(e)))}</td>
+                    <td>${money(Math.abs(expenseAmount(e)))}</td>
+                  </tr>`
+                )
+                .join('') || '<tr><td colspan="5">Нет расходов по фильтру</td></tr>'}
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+      <div class="sc-card" style="margin-top:16px">
+        <div class="sc-card-title" style="justify-content:space-between">
+          <span>Возвраты</span>
+          <span class="sc-pill sc-pill-ok">Итого по возвратам: ${money(totalRet)}</span>
+        </div>
+        <p class="sc-muted-note">Операционные возвраты за период (type=INCOME / status=REFUNDED): логистика, хранение и др.</p>
+        <div class="sc-table-wrap"><table class="sc-table">
+          <thead><tr><th>Дата</th><th>ID</th><th>Категория</th><th>Название</th><th>Сумма</th></tr></thead>
+          <tbody>
+            ${returns
+              .slice()
+              .sort((a, b) => expenseDateMs(b) - expenseDateMs(a))
+              .slice(0, 200)
+              .map(
+                (e) => `<tr>
+                  <td>${esc(fmtDate(e))}</td>
+                  <td>${esc(e.id || e.externalId || '—')}</td>
+                  <td>${esc(expenseSourceLabel(expenseSourceKey(e)))}</td>
+                  <td>${esc(e.name || e.title || '—')}</td>
+                  <td class="sc-pnl-up">+${money(Math.abs(expenseAmount(e)))}</td>
+                </tr>`
+              )
+              .join('') || '<tr><td colspan="5">Нет возвратов за период</td></tr>'}
+          </tbody>
+        </table></div>
       </div>`;
   }
 
@@ -1279,11 +1648,7 @@
         <span class="${d >= 0 ? 'sc-pnl-up' : 'sc-pnl-dn'}">${dp != null ? pct(dp) : '—'}</span>
       </div>`;
     };
-    return `<div class="sc-subtabs">
-        <button type="button" class="sc-subtab" data-sc-finsub="overview">Обзор</button>
-        <button type="button" class="sc-subtab active" data-sc-finsub="pnl">ОПиУ</button>
-        <button type="button" class="sc-subtab" data-sc-finsub="payout">Календарь выплат</button>
-      </div>
+    return `${periodToolbarHtml()}${financeTabsHtml('pnl')}
       <div class="sc-pnl">
         <div class="sc-pnl-row hdr"><span>Показатель</span><span>Пред. период</span><span>Тек. период</span><span>Изм.</span><span>%</span></div>
         ${row('Выручка', prev.revenue, cur.revenue)}
@@ -1307,11 +1672,7 @@
     const toWithdraw = _orders
       .filter((o) => String(o.status) === 'TO_WITHDRAW')
       .reduce((s, o) => s + (Number(o.withdrawnProfit || o.sellerProfit || 0) || 0), 0);
-    return `<div class="sc-subtabs">
-        <button type="button" class="sc-subtab" data-sc-finsub="overview">Обзор</button>
-        <button type="button" class="sc-subtab" data-sc-finsub="pnl">ОПиУ</button>
-        <button type="button" class="sc-subtab active" data-sc-finsub="payout">Календарь выплат</button>
-      </div>
+    return `${periodToolbarHtml()}${financeTabsHtml('payout')}
       <div class="sc-kpi-row cols-3">
         ${kpiCard('Доступно сейчас', money(toWithdraw || cur.withdraw), 'статус TO_WITHDRAW', 'green')}
         ${kpiCard('Расходы МП за период', money(exp), '', 'orange')}
@@ -1344,14 +1705,16 @@
   function viewFinance() {
     if (_finSub === 'pnl') return viewPnl();
     if (_finSub === 'payout') return viewPayout();
+    if (_finSub === 'expenses') return viewExpenses();
     return viewFinanceOverview();
   }
 
   function salesBySku() {
     const map = {};
-    const from = periodStartMs(_periodDays);
+    const r = getPeriodRange();
     _orders.forEach((o) => {
-      if (orderDateMs(o) < from) return;
+      const t = orderDateMs(o);
+      if (t < r.from || t > r.to) return;
       const sku = String(o.skuTitle || '').trim();
       if (!sku) return;
       if (!map[sku]) map[sku] = { qty: 0, revenue: 0, profit: 0, returns: 0 };
@@ -1832,15 +2195,15 @@
       const sku = productSku(p);
       const s = sales[sku] || { qty: 0 };
       const stock = productStock(p);
-      const daysNoSale = s.qty > 0 ? 0 : _periodDays;
-      const speed = s.qty / Math.max(_periodDays, 1);
+      const daysNoSale = s.qty > 0 ? 0 : periodDaysCount();
+      const speed = s.qty / Math.max(periodDaysCount(), 1);
       const daysLeft = speed > 0 ? stock / speed : stock > 0 ? 999 : 0;
       return { sku, name: p.name || p.title, stock, sold: s.qty, daysNoSale, daysLeft, cost: productCost(p) };
     });
     const noSales = rows.filter((r) => r.sold === 0 && r.stock > 0).length;
     const storageHint = rows.filter((r) => r.daysNoSale >= 30 && r.stock > 0).length;
     return `<div class="sc-kpi-row cols-3">
-        ${kpiCard('Без продаж + остаток', String(noSales), `за ${_periodDays} дн`, 'orange')}
+        ${kpiCard('Без продаж + остаток', String(noSales), `за ${periodDaysCount()} дн`, 'orange')}
         ${kpiCard('Риск платного хранения', String(storageHint), 'нет продаж ≥ периода', 'red')}
         ${kpiCard('SKU в анализе', String(rows.length), '', 'blue')}
       </div>
@@ -2054,8 +2417,13 @@
     document.querySelectorAll('.sc-sidebar .sc-nav[data-view]').forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-view') === _view);
     });
-    document.querySelectorAll('.sc-period').forEach((btn) => {
-      btn.classList.toggle('active', Number(btn.getAttribute('data-days')) === _periodDays);
+    document.querySelectorAll('.sc-period[data-sc-period]').forEach((btn) => {
+      const mode = btn.getAttribute('data-sc-period');
+      let active = mode === _periodMode;
+      if (mode === 'days') {
+        active = _periodMode === 'days' && Number(btn.getAttribute('data-days')) === _periodDays;
+      }
+      btn.classList.toggle('active', active);
     });
 
     if (_view === 'dashboard') drawSimpleChart('sc-dash-chart', dailySeries(_dynMode));
@@ -2070,6 +2438,12 @@
       return;
     }
     if (!view) return;
+    if (view === 'finance-expenses') {
+      _view = 'finance';
+      _finSub = 'expenses';
+      render();
+      return;
+    }
     const assort = ['products', 'abcxyz', 'profit-share', 'unit-economics', 'cost', 'new-calc'];
     if (assort.includes(view)) {
       _view = view;
@@ -2081,7 +2455,7 @@
   }
 
   function setFinSub(sub) {
-    _finSub = ['pnl', 'payout'].includes(sub) ? sub : 'overview';
+    _finSub = ['pnl', 'payout', 'expenses'].includes(sub) ? sub : 'overview';
     render();
   }
 
@@ -2232,9 +2606,24 @@
         closeScMobileNav();
         return;
       }
-      const period = e.target.closest('.sc-period[data-days]');
+      const period = e.target.closest('.sc-period[data-sc-period]');
       if (period) {
-        _periodDays = Number(period.getAttribute('data-days')) || 90;
+        const mode = period.getAttribute('data-sc-period') || 'today';
+        _periodMode = mode;
+        if (mode === 'days') {
+          _periodDays = Number(period.getAttribute('data-days')) || 90;
+        }
+        if (mode === 'day' && !_periodDay) _periodDay = isoDateLocal();
+        if (mode === 'custom') {
+          if (!_periodCustomFrom) _periodCustomFrom = isoDateLocal(new Date(Date.now() - 7 * 86400000));
+          if (!_periodCustomTo) _periodCustomTo = isoDateLocal();
+        }
+        render();
+        return;
+      }
+      const expf = e.target.closest('[data-sc-expfilter]');
+      if (expf) {
+        _expFilter = expf.getAttribute('data-sc-expfilter') || 'all';
         render();
         return;
       }
@@ -2316,6 +2705,35 @@
     root?.addEventListener('input', (e) => {
       if (e.target?.id === 'sc-prod-q') filterProd();
       if (e.target?.hasAttribute?.('data-sc-recalc')) recalcNew();
+      if (e.target?.id === 'sc-period-day') {
+        _periodDay = e.target.value || isoDateLocal();
+        _periodMode = 'day';
+        render();
+      }
+      if (e.target?.id === 'sc-period-from') {
+        _periodCustomFrom = e.target.value || isoDateLocal();
+        _periodMode = 'custom';
+        render();
+      }
+      if (e.target?.id === 'sc-period-to') {
+        _periodCustomTo = e.target.value || isoDateLocal();
+        _periodMode = 'custom';
+        render();
+      }
+    });
+
+    root?.addEventListener('change', (e) => {
+      if (e.target?.id === 'sc-period-day') {
+        _periodDay = e.target.value || isoDateLocal();
+        _periodMode = 'day';
+        render();
+      }
+      if (e.target?.id === 'sc-period-from' || e.target?.id === 'sc-period-to') {
+        if (e.target.id === 'sc-period-from') _periodCustomFrom = e.target.value;
+        if (e.target.id === 'sc-period-to') _periodCustomTo = e.target.value;
+        _periodMode = 'custom';
+        render();
+      }
     });
 
     document.getElementById('settings-tab')?.addEventListener('click', (e) => {
