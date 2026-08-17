@@ -626,6 +626,57 @@ tr:last-child td { border-bottom:none; }
   color: var(--text);
 }
 .meta-pill .k{ color: var(--muted); font-weight: 800; margin-right: 6px; }
+.meta-pill--copyable{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+.meta-pill-val{
+  min-width: 0;
+  word-break: break-word;
+}
+.product-card-title-row{
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.product-card-title-row .product-card-title{
+  flex: 1;
+  min-width: 0;
+}
+.product-copy-btn{
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  opacity: .7;
+  transition: opacity .15s, color .15s, background .15s;
+}
+.product-copy-btn:hover{
+  opacity: 1;
+  color: var(--accent, #7c3aed);
+  background: rgba(124, 58, 237, .08);
+}
+.product-copy-btn.is-copied{
+  color: #059669;
+  opacity: 1;
+}
+.product-mp-sku-valrow{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.product-mp-sku-valrow .v{
+  min-width: 0;
+  word-break: break-all;
+}
 
 .cost-tab-uzum-flow,
 #costTabResultsUzum {

@@ -4621,6 +4621,60 @@ function escapeAttr(str) {
   return escapeHtml(str).replace(/`/g, '&#96;');
 }
 
+async function copyTextToClipboard(text) {
+  const s = String(text ?? '').trim();
+  if (!s) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch (_) { /* fallback ниже */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function productCopyBtnHtml(value, title) {
+  const raw = String(value ?? '').trim();
+  if (!raw || raw === '—') return '';
+  const label = String(title || 'значение').trim();
+  return `<button type="button" class="product-copy-btn" data-copy-text="${escapeAttr(raw)}" title="Скопировать ${escapeAttr(label)}" aria-label="Скопировать ${escapeAttr(label)}">⧉</button>`;
+}
+
+let _productCopyWired = false;
+function wireProductCopyButtonsOnce() {
+  if (_productCopyWired) return;
+  _productCopyWired = true;
+  document.getElementById('productsCardsList')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-copy-text]');
+    if (!btn || !btn.closest('#productsCardsList')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const text = btn.getAttribute('data-copy-text') || '';
+    const ok = await copyTextToClipboard(text);
+    if (!ok) return;
+    btn.classList.add('is-copied');
+    const prev = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => {
+      btn.classList.remove('is-copied');
+      btn.textContent = prev || '⧉';
+    }, 1200);
+  });
+}
+
 function setDetailTab(tab) {
   document.querySelectorAll('[data-detail-tab]').forEach(btn => {
     btn.classList.toggle('active', btn.getAttribute('data-detail-tab') === tab);
@@ -4930,9 +4984,16 @@ function renderProducts(filteredArray) {
       <div class="product-card-top">
         <div class="product-avatar">${escapeHtml(initials)}</div>
         <div>
-          <h3 class="product-card-title">${safeTitle || '<span class="muted">Нет артикула 1С</span>'}</h3>
+          <div class="product-card-title-row">
+            <h3 class="product-card-title">${safeTitle || '<span class="muted">Нет артикула 1С</span>'}</h3>
+            ${displayTitle ? productCopyBtnHtml(displayTitle, 'Артикул 1С') : ''}
+          </div>
           <div class="product-meta">
-            <span class="meta-pill"><span class="k">Код</span>${safeCode}</span>
+            <span class="meta-pill meta-pill--copyable">
+              <span class="k">Код</span>
+              <span class="meta-pill-val">${safeCode}</span>
+              ${p.code1c ? productCopyBtnHtml(String(p.code1c).trim(), 'Код 1С') : ''}
+            </span>
             ${category ? `<span class="meta-pill"><span class="k">Категория</span>${escapeHtml(category)}</span>` : ''}
             <span class="meta-pill"><span class="k">Обновл.</span>${p.updatedAt ? escapeHtml(fmtDateTime(p.updatedAt)) : '—'}</span>
           </div>
@@ -4966,31 +5027,46 @@ function renderProducts(filteredArray) {
           ${design ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--design">
               <span class="k">Дизайн</span>
-              <span class="v">${escapeHtml(design)}</span>
+              <div class="product-mp-sku-valrow">
+                <span class="v">${escapeHtml(design)}</span>
+                ${productCopyBtnHtml(design, 'Дизайн')}
+              </div>
             </div>
           ` : ''}
           ${uzumSku ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--uzum">
               <span class="k">Uzum SKU</span>
-              <span class="v">${escapeHtml(uzumSku)}</span>
+              <div class="product-mp-sku-valrow">
+                <span class="v">${escapeHtml(uzumSku)}</span>
+                ${productCopyBtnHtml(uzumSku, 'Uzum SKU')}
+              </div>
             </div>
           ` : ''}
           ${uzumBarcode ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--uzum">
               <span class="k">Штрихкод Uzum</span>
-              <span class="v">${escapeHtml(uzumBarcode)}</span>
+              <div class="product-mp-sku-valrow">
+                <span class="v">${escapeHtml(uzumBarcode)}</span>
+                ${productCopyBtnHtml(uzumBarcode, 'Штрихкод Uzum')}
+              </div>
             </div>
           ` : ''}
           ${wbSku ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--wb">
               <span class="k">WB SKU</span>
-              <span class="v">${escapeHtml(wbSku)}</span>
+              <div class="product-mp-sku-valrow">
+                <span class="v">${escapeHtml(wbSku)}</span>
+                ${productCopyBtnHtml(wbSku, 'WB SKU')}
+              </div>
             </div>
           ` : ''}
           ${yandexSku ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--yandex">
               <span class="k">Yandex SKU</span>
-              <span class="v">${escapeHtml(yandexSku)}</span>
+              <div class="product-mp-sku-valrow">
+                <span class="v">${escapeHtml(yandexSku)}</span>
+                ${productCopyBtnHtml(yandexSku, 'Yandex SKU')}
+              </div>
             </div>
           ` : ''}
         </div>
@@ -11062,6 +11138,7 @@ initThemeToggle();
 initCodeGenerator1C();
 initFabricCalculator();
 initLabelPrintPage();
+wireProductCopyButtonsOnce();
 document.getElementById('stockAnalyticsRefreshBtn')?.addEventListener('click', () => {
   if (getCurrentMarketplace() === 'uzum') void renderStockAnalyticsPage();
 });
