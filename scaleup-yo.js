@@ -688,29 +688,56 @@
   }
 
   function orderQtyForSku(o, sku) {
-    const skuStr = String(sku || '');
-    const nsku = normalizeSkuKey(skuStr);
+    const aliases = (Array.isArray(sku) ? sku : [sku])
+      .map((s) => String(s ?? '').trim())
+      .filter(Boolean);
+    const want = new Set();
+    aliases.forEach((a) => {
+      want.add(a);
+      want.add(normalizeSkuKey(a));
+    });
     if (Array.isArray(o?.items) && o.items.length) {
       return o.items.reduce((sum, i) => {
-        const k = String(i?.skuId ?? i?.sku ?? i?.skuTitle ?? '');
-        if (k !== skuStr && normalizeSkuKey(k) !== nsku) return sum;
+        const k = String(i?.skuId ?? i?.sku ?? i?.skuTitle ?? '').trim();
+        if (!k || (!want.has(k) && !want.has(normalizeSkuKey(k)))) return sum;
         return sum + (Number(i?.quantity ?? i?.qty ?? i?.amount ?? 0) || 0);
       }, 0);
     }
-    const keys = [o?.skuTitle, o?.sku, o?.skuId, o?.skuFullTitle];
-    const hit = keys.some((k) => k && (String(k) === skuStr || normalizeSkuKey(k) === nsku));
+    const keys = [o?.skuTitle, o?.sku, o?.skuId, o?.skuFullTitle, o?.productId];
+    const hit = keys.some((k) => {
+      if (k == null || k === '') return false;
+      const s = String(k).trim();
+      return want.has(s) || want.has(normalizeSkuKey(s));
+    });
     if (!hit) return 0;
     const amt = Number(o?.amount ?? o?.quantity ?? o?.qty ?? 0) || 0;
     const ret = Number(o?.amountReturns || 0) || 0;
     return Math.max(amt - ret, 0);
   }
 
+  function skuAliasesFromProduct(p) {
+    if (p == null) return [];
+    if (typeof p !== 'object') return [p];
+    return [
+      productSku(p),
+      p.sku,
+      p.skuTitle,
+      p.skuFullTitle,
+      p.skuId,
+      p.barcode,
+      p.article,
+      p.sellerItemCode,
+      p.productId
+    ];
+  }
+
   function calcSalesVelocity(sku, orders) {
     const now = Date.now();
     const from30 = now - 30 * 86400000;
+    const aliases = skuAliasesFromProduct(sku);
     const skuOrders = (orders || []).filter((o) => {
       const t = orderDateMs(o);
-      return t >= from30 && t <= now && orderQtyForSku(o, sku) > 0;
+      return t >= from30 && t <= now && orderQtyForSku(o, aliases) > 0;
     });
 
     let totalSold = 0;
@@ -718,7 +745,7 @@
     skuOrders.forEach((o) => {
       const t = orderDateMs(o);
       if (t > 0 && t < oldestMs) oldestMs = t;
-      totalSold += orderQtyForSku(o, sku);
+      totalSold += orderQtyForSku(o, aliases);
     });
 
     const daysOfData = Math.max(1, (now - oldestMs) / 86400000);
@@ -729,7 +756,7 @@
       const t = orderDateMs(o);
       if (!t) return;
       const hour = new Date(t).getHours();
-      const q = orderQtyForSku(o, sku);
+      const q = orderQtyForSku(o, aliases);
       hourlyMap[hour] = (hourlyMap[hour] || 0) + q;
     });
     const peakHour = Object.entries(hourlyMap).sort((a, b) => b[1] - a[1])[0]?.[0];
@@ -825,7 +852,7 @@
     return (products || [])
       .map((raw) => {
         const product = forecastProductShape(raw);
-        const velocity = calcSalesVelocity(product.sku, orders);
+        const velocity = calcSalesVelocity(raw, orders);
         const { daysLeft, depletionDate } = calcDaysLeft(product, velocity);
         const recQty = calcRecommendedQty(product, velocity, targetDays, supplyDate);
         const storage = calcStorageCostForBatch(product, recQty.qty, targetDays);
