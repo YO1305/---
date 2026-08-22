@@ -14,6 +14,7 @@
   const API_PRODUCTS_KEY = 'yo_uzum_api_products_v1';
   const DISMISSED_KEY = 'yo_scaleup_dismissed_insights';
   const SETTINGS_KEY = 'yo_scaleup_settings';
+  const FORECAST_KEY = 'yo_forecast_settings';
 
   let _view = 'dashboard';
   let _periodMode = 'today'; // today | month | days | day | custom
@@ -26,8 +27,10 @@
   let _dynMode = 'orders';
   let _products = [];
   let _yoCostMap = {};
+  let _yoMetaMap = {};
   let _yoCostProductCount = 0;
   let _yoCostStrongKeys = [];
+  let _forecastCache = [];
   let _shipments = [];
   let _orders = [];
   let _expenses = [];
@@ -553,6 +556,60 @@
     return map;
   }
 
+  function buildYoMetaMap(list) {
+    const map = {};
+    const add = (key, meta, { allowWeak } = {}) => {
+      const raw = String(key ?? '').trim();
+      if (!raw || !meta) return;
+      if (!allowWeak && isWeakSkuKey(raw)) return;
+      const nk = normalizeSkuKey(raw);
+      const keys = [raw, nk];
+      const noShop = nk.replace(/^bahmalg-/, '');
+      if (noShop && noShop !== nk && noShop.length >= 4) keys.push(noShop);
+      const dash = nk.indexOf('-');
+      if (dash > 0 && nk.slice(dash + 1).length >= 6) keys.push(nk.slice(dash + 1));
+      keys.forEach((k) => {
+        if (!k) return;
+        if (!map[k]) map[k] = meta;
+      });
+    };
+    (list || []).forEach((p) => {
+      const L = Number(p?.length || p?.lengthMm || 0) || 0;
+      const W = Number(p?.width || p?.widthMm || 0) || 0;
+      const H = Number(p?.height || p?.heightMm || 0) || 0;
+      let volumeLiters = Number(p?.volumeLiters || 0) || 0;
+      if (!(volumeLiters > 0) && L > 0 && W > 0 && H > 0) {
+        volumeLiters = (L * W * H) / 1000000;
+      }
+      const meta = {
+        volumeLiters,
+        packSize: Number(p?.packSize || p?.boxQty || 0) || 1,
+        calc: p?.calc && typeof p.calc === 'object' ? p.calc : {}
+      };
+      add(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum, meta);
+      add(p.sku, meta);
+      add(p.article1c, meta);
+      add(p.name, meta);
+      add(p.uzum_barcode, meta, { allowWeak: false });
+      add(p.barcode, meta, { allowWeak: false });
+      add(p.code1c, meta);
+    });
+    return map;
+  }
+
+  function lookupYoMeta(...keys) {
+    for (const k of keys) {
+      const raw = String(k ?? '').trim();
+      if (!raw || isWeakSkuKey(raw)) continue;
+      if (_yoMetaMap[raw]) return _yoMetaMap[raw];
+      const nk = normalizeSkuKey(raw);
+      if (_yoMetaMap[nk]) return _yoMetaMap[nk];
+      const noShop = nk.replace(/^bahmalg-/, '');
+      if (noShop && _yoMetaMap[noShop]) return _yoMetaMap[noShop];
+    }
+    return null;
+  }
+
   function lookupYoCost(...keys) {
     const tried = [];
     for (const k of keys) {
@@ -613,6 +670,197 @@
     const v = Number(p?.volumeLiters);
     if (Number.isFinite(v) && v > 0) return v;
     return 0;
+  }
+
+  function readForecastSettings() {
+    let stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem(FORECAST_KEY) || '{}') || {};
+    } catch (_) {
+      stored = {};
+    }
+    const defaultDate = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+    return {
+      targetDays: Number(stored.targetDays) > 0 ? Number(stored.targetDays) : 45,
+      minSales: Number.isFinite(Number(stored.minSales)) ? Number(stored.minSales) : 0,
+      supplyDate: stored.supplyDate || defaultDate
+    };
+  }
+
+  function orderQtyForSku(o, sku) {
+    const skuStr = String(sku || '');
+    const nsku = normalizeSkuKey(skuStr);
+    if (Array.isArray(o?.items) && o.items.length) {
+      return o.items.reduce((sum, i) => {
+        const k = String(i?.skuId ?? i?.sku ?? i?.skuTitle ?? '');
+        if (k !== skuStr && normalizeSkuKey(k) !== nsku) return sum;
+        return sum + (Number(i?.quantity ?? i?.qty ?? i?.amount ?? 0) || 0);
+      }, 0);
+    }
+    const keys = [o?.skuTitle, o?.sku, o?.skuId, o?.skuFullTitle];
+    const hit = keys.some((k) => k && (String(k) === skuStr || normalizeSkuKey(k) === nsku));
+    if (!hit) return 0;
+    const amt = Number(o?.amount ?? o?.quantity ?? o?.qty ?? 0) || 0;
+    const ret = Number(o?.amountReturns || 0) || 0;
+    return Math.max(amt - ret, 0);
+  }
+
+  function calcSalesVelocity(sku, orders) {
+    const now = Date.now();
+    const from30 = now - 30 * 86400000;
+    const skuOrders = (orders || []).filter((o) => {
+      const t = orderDateMs(o);
+      return t >= from30 && t <= now && orderQtyForSku(o, sku) > 0;
+    });
+
+    let totalSold = 0;
+    let oldestMs = now;
+    skuOrders.forEach((o) => {
+      const t = orderDateMs(o);
+      if (t > 0 && t < oldestMs) oldestMs = t;
+      totalSold += orderQtyForSku(o, sku);
+    });
+
+    const daysOfData = Math.max(1, (now - oldestMs) / 86400000);
+    const salesPerDay = totalSold / daysOfData;
+
+    const hourlyMap = {};
+    skuOrders.forEach((o) => {
+      const t = orderDateMs(o);
+      if (!t) return;
+      const hour = new Date(t).getHours();
+      const q = orderQtyForSku(o, sku);
+      hourlyMap[hour] = (hourlyMap[hour] || 0) + q;
+    });
+    const peakHour = Object.entries(hourlyMap).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    return {
+      salesPerDay,
+      totalSold,
+      daysOfData,
+      peakHour,
+      hasData: totalSold > 0
+    };
+  }
+
+  function calcDaysLeft(product, velocity) {
+    const stock = product.stockQty || 0;
+    if (!velocity.hasData || velocity.salesPerDay <= 0) {
+      return { daysLeft: null, depletionDate: null };
+    }
+    const daysLeft = stock / velocity.salesPerDay;
+    const depletionDate = new Date(Date.now() + daysLeft * 86400000);
+    return { daysLeft: Math.round(daysLeft), depletionDate };
+  }
+
+  function calcRecommendedQty(product, velocity, targetDays, supplyDate) {
+    const salesPerDay = velocity.salesPerDay || 0;
+    if (salesPerDay <= 0) return { qty: 0, stockAtSupply: product.stockQty || 0, neededForPeriod: 0, reason: 'Нет данных о продажах' };
+
+    const supplyMs = supplyDate ? new Date(`${String(supplyDate).slice(0, 10)}T12:00:00`).getTime() : Date.now();
+    const daysUntilSupply = Math.max(0, (supplyMs - Date.now()) / 86400000);
+    const stockAtSupply = Math.max(0, (product.stockQty || 0) - salesPerDay * daysUntilSupply);
+    const needed = salesPerDay * targetDays;
+    const rawQty = Math.max(0, needed - stockAtSupply);
+    const recommended = Math.ceil(rawQty * 1.1);
+    const packSize = Math.max(1, Number(product.packSize) || 1);
+    const finalQty = Math.ceil(recommended / packSize) * packSize;
+    return {
+      qty: finalQty,
+      stockAtSupply: Math.round(stockAtSupply),
+      neededForPeriod: Math.round(needed),
+      reason: `${salesPerDay.toFixed(1)} шт/день × ${targetDays} дней`
+    };
+  }
+
+  function calcStorageCostForBatch(product, qty, targetDays) {
+    const liters = Math.ceil(Number(product.volumeLiters) || 0);
+    const turnover = Number(product.calc?.productTurnover) || targetDays;
+    const stockStatus = product.calc?.productStockStatus || 'existing';
+    let storagePerDayPerUnit = 0;
+    if (typeof calcStoragePerDay === 'function' && liters > 0) {
+      storagePerDayPerUnit = Number(calcStoragePerDay(liters, turnover, stockStatus, 0).amount) || 0;
+    }
+    const paidDays = Math.max(0, targetDays - 60);
+    const storageCostPerUnit = storagePerDayPerUnit * paidDays;
+    const totalStorageCost = storageCostPerUnit * qty;
+    return {
+      storagePerDayPerUnit,
+      storageCostPerUnit,
+      totalStorageCost,
+      freeDays: Math.min(60, targetDays),
+      paidDays
+    };
+  }
+
+  function calcPriority(daysLeft, targetDays) {
+    if (daysLeft === null) return { level: 'unknown', label: '❓ Нет данных', color: '#6b7280' };
+    if (daysLeft <= 7) return { level: 'critical', label: '🔴 Срочно', color: '#ef4444' };
+    if (daysLeft <= 21) return { level: 'warning', label: '🟡 Скоро', color: '#f59e0b' };
+    if (daysLeft <= targetDays) return { level: 'normal', label: '🟢 Норма', color: '#10b981' };
+    return { level: 'ok', label: '✅ Запас', color: '#3b82f6' };
+  }
+
+  function forecastProductShape(p) {
+    const sku = productSku(p);
+    const meta = lookupYoMeta(p.sku, p.skuTitle, p.skuFullTitle, p.uzumSku, p.barcode, p.article1c, p.name, p.title, sku);
+    const volumeLiters = productLiters(p) || Number(meta?.volumeLiters) || 0;
+    const calc = p.calc && typeof p.calc === 'object' ? p.calc : meta?.calc || {};
+    return {
+      sku,
+      name: p.name || p.title || sku,
+      stockQty: productStock(p),
+      packSize: Number(p.packSize || meta?.packSize || 1) || 1,
+      volumeLiters,
+      calc,
+      costGross: productCost(p)
+    };
+  }
+
+  function buildForecast(products, orders, settings) {
+    const targetDays = Number(settings?.targetDays) > 0 ? Number(settings.targetDays) : 45;
+    const supplyDate = settings?.supplyDate;
+    const minSalesFilter = Number(settings?.minSalesFilter) || 0;
+
+    return (products || [])
+      .map((raw) => {
+        const product = forecastProductShape(raw);
+        const velocity = calcSalesVelocity(product.sku, orders);
+        const { daysLeft, depletionDate } = calcDaysLeft(product, velocity);
+        const recQty = calcRecommendedQty(product, velocity, targetDays, supplyDate);
+        const storage = calcStorageCostForBatch(product, recQty.qty, targetDays);
+        const priority = calcPriority(daysLeft, targetDays);
+        const batchCost = recQty.qty * (product.costGross || 0);
+        return {
+          sku: product.sku,
+          name: product.name,
+          stockQty: product.stockQty,
+          salesPerDay: velocity.salesPerDay,
+          daysLeft,
+          depletionDate,
+          recQty: recQty.qty,
+          stockAtSupply: recQty.stockAtSupply,
+          batchCost,
+          totalStorageCost: storage.totalStorageCost,
+          storageCostPerUnit: storage.storageCostPerUnit,
+          freeDays: storage.freeDays,
+          paidDays: storage.paidDays,
+          totalBatchExpense: batchCost + storage.totalStorageCost,
+          priority,
+          velocity,
+          hasData: velocity.hasData,
+          volumeLiters: product.volumeLiters,
+          costGross: product.costGross
+        };
+      })
+      .filter((r) => r.salesPerDay >= minSalesFilter || r.stockQty > 0)
+      .sort((a, b) => {
+        const priorityOrder = { critical: 0, warning: 1, normal: 2, ok: 3, unknown: 4 };
+        const pa = priorityOrder[a.priority.level];
+        const pb = priorityOrder[b.priority.level];
+        if (pa !== pb) return pa - pb;
+        return (a.daysLeft ?? 999) - (b.daysLeft ?? 999);
+      });
   }
 
   function pill(cls, txt) {
@@ -753,6 +1001,7 @@
     else if (window.appState?.products?.length) yoProducts = window.appState.products.slice();
     else yoProducts = readLocal('uzum_products_db_v1', []);
     _yoCostMap = buildYoCostMap(yoProducts);
+    _yoMetaMap = buildYoMetaMap(yoProducts);
 
     if (fbShipments && fbShipments.length) _shipments = fbShipments;
     else if (window.appState?.shipments?.length) _shipments = window.appState.shipments.slice();
@@ -2415,6 +2664,293 @@
       </div>`;
   }
 
+  function viewForecast() {
+    const fSettings = readForecastSettings();
+    const targetDays = fSettings.targetDays;
+    const minSales = fSettings.minSales;
+    const supplyDate = fSettings.supplyDate;
+
+    const forecast = buildForecast(_products, _orders, { targetDays, supplyDate, minSalesFilter: minSales });
+    _forecastCache = forecast;
+
+    const critical = forecast.filter((r) => r.priority.level === 'critical').length;
+    const warning = forecast.filter((r) => r.priority.level === 'warning').length;
+    const totalQty = forecast.reduce((s, r) => s + r.recQty, 0);
+    const totalCost = forecast.reduce((s, r) => s + r.totalBatchExpense, 0);
+
+    const rows = forecast
+      .map((r, idx) => {
+        const daysLeftTxt = r.daysLeft !== null ? `${r.daysLeft} дн.` : '—';
+        const depleteTxt = r.depletionDate ? r.depletionDate.toLocaleDateString('ru-RU') : '—';
+        const saleTxt = r.salesPerDay > 0 ? `${r.salesPerDay.toFixed(2)} шт/день` : '—';
+        const storageTxt = r.paidDays > 0 ? money(r.totalStorageCost) : `${r.freeDays} дн. бесплатно`;
+        return `<tr data-fc-idx="${idx}" style="cursor:pointer">
+      <td>
+        <strong>${esc(r.name)}</strong><br>
+        <span style="font-size:11px;color:var(--muted)">${esc(r.sku)}</span>
+      </td>
+      <td><strong>${r.stockQty}</strong> шт</td>
+      <td>${saleTxt}</td>
+      <td>
+        <span style="font-weight:700;color:${esc(r.priority.color)}">
+          ${daysLeftTxt}
+        </span>
+      </td>
+      <td style="font-size:12px">${depleteTxt}</td>
+      <td>
+        <strong style="color:var(--accent)">${r.recQty}</strong> ед.
+        <div style="font-size:11px;color:var(--muted)">остаток на дату: ${r.stockAtSupply} шт</div>
+      </td>
+      <td>${r.costGross ? money(r.batchCost) : '—'}</td>
+      <td style="font-size:12px">${storageTxt}</td>
+      <td style="font-weight:700">${r.costGross ? money(r.totalBatchExpense) : '—'}</td>
+      <td>
+        <span style="padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;
+          background:${esc(r.priority.color)}20;color:${esc(r.priority.color)}">
+          ${esc(r.priority.label)}
+        </span>
+      </td>
+    </tr>`;
+      })
+      .join('');
+
+    const meta = getSyncMeta();
+    const syncedAt = meta.lastOrdersAt || meta.lastSyncAt || meta.orders?.at;
+    const noApiWarning = !_orders.length
+      ? `<div class="sc-insight warn" style="margin-bottom:16px">
+        <span style="font-size:20px">⚠️</span>
+        <div class="sc-insight-body">
+          <div class="sc-insight-title">Нет данных о продажах из Uzum API</div>
+          <div style="font-size:13px;color:var(--muted)">
+            Прогноз работает только с реальными данными заказов.
+            Подключи Uzum API и синхронизируй данные.
+          </div>
+          <div class="sc-insight-btns">
+            <button type="button" class="sc-insight-action" data-sc-goview="__settings">
+              Настройки API →
+            </button>
+          </div>
+        </div>
+      </div>`
+      : '';
+
+    return `
+    <h2 style="margin:0 0 20px;font-size:20px;font-weight:800">📦 Прогноз поставок</h2>
+
+    ${noApiWarning}
+
+    <div class="sc-card" style="margin-bottom:20px">
+      <div class="sc-card-title">⚙️ Параметры прогноза</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
+
+        <label style="font-size:13px;display:flex;flex-direction:column;gap:5px">
+          📅 Планируемая дата поставки
+          <input type="date" id="fc-date" value="${esc(supplyDate)}"
+            style="padding:8px 12px;border:1px solid var(--border-color);border-radius:9px;font-size:14px;background:var(--card-bg)">
+        </label>
+
+        <label style="font-size:13px;display:flex;flex-direction:column;gap:5px">
+          🎯 Запас на N дней
+          <input type="number" id="fc-days" value="${targetDays}" min="7" max="180"
+            style="width:90px;padding:8px 12px;border:1px solid var(--border-color);border-radius:9px;font-size:14px;background:var(--card-bg)">
+        </label>
+
+        <label style="font-size:13px;display:flex;flex-direction:column;gap:5px">
+          📊 Мин. продаж/день (фильтр)
+          <input type="number" id="fc-min" value="${minSales}" min="0" step="0.1"
+            style="width:100px;padding:8px 12px;border:1px solid var(--border-color);border-radius:9px;font-size:14px;background:var(--card-bg)">
+        </label>
+
+        <button type="button" class="btn-primary" data-sc-recalc-forecast>
+          🔄 Пересчитать прогноз
+        </button>
+
+        <button type="button" class="sc-export" style="margin-left:auto" data-sc-export-forecast>
+          ⬇ Экспорт CSV
+        </button>
+
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:var(--muted)">
+        📊 Анализ на основе ${_orders.length} заказов за последние 30 дней ·
+        ${_products.length} SKU · данные обновлены: ${
+          syncedAt ? new Date(syncedAt).toLocaleString('ru-RU') : 'не синхронизировано'
+        }
+      </div>
+    </div>
+
+    <div class="sc-kpi-row cols-4" style="margin-bottom:20px">
+      ${kpiCard('🔴 СРОЧНО (≤7 дней)', `${critical} SKU`, 'нужна поставка немедленно', 'red')}
+      ${kpiCard('🟡 СКОРО (≤21 день)', `${warning} SKU`, 'планируй в эту поставку', 'orange')}
+      ${kpiCard('📦 ВСЕГО К ОТПРАВКЕ', `${totalQty.toLocaleString('ru-RU')} ед.`, 'в эту поставку', 'blue')}
+      ${kpiCard('💰 СТОИМ. ПОСТАВКИ', money(totalCost), 'партия + хранение', '')}
+    </div>
+
+    <div id="fc-chart-wrap" style="display:none;margin-bottom:20px" class="sc-card">
+      <div class="sc-card-title" id="fc-chart-title">📈 График остатков</div>
+      <div id="fc-chart-svg" style="overflow-x:auto"></div>
+      <div style="display:flex;gap:20px;margin-top:12px;font-size:12px">
+        <span>━ <span style="color:#3b82f6">текущий остаток</span></span>
+        <span>━ <span style="color:#10b981">после поставки</span></span>
+        <span>┊ планируемая дата поставки</span>
+      </div>
+    </div>
+
+    <div class="sc-table-wrap">
+      <table class="sc-table" id="fc-table">
+        <thead>
+          <tr>
+            <th>Товар</th>
+            <th>Остаток</th>
+            <th>Прод./день</th>
+            <th>Осталось дней</th>
+            <th>Дата ≈0</th>
+            <th>К поставке</th>
+            <th>Стоим. партии</th>
+            <th>Хранение</th>
+            <th>Итого расходов</th>
+            <th>Приоритет</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            rows ||
+            `<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--muted)">
+            Нет данных. Синхронизируй Uzum API чтобы получить данные о продажах.
+          </td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+  `;
+  }
+
+  function showForecastChart(idx) {
+    const fSettings = readForecastSettings();
+    const targetDays = fSettings.targetDays;
+    const supplyDate = fSettings.supplyDate;
+    const forecast = _forecastCache.length
+      ? _forecastCache
+      : buildForecast(_products, _orders, { targetDays, supplyDate, minSalesFilter: fSettings.minSales });
+    const r = forecast[idx];
+    if (!r) return;
+
+    const wrap = document.getElementById('fc-chart-wrap');
+    const title = document.getElementById('fc-chart-title');
+    const chartEl = document.getElementById('fc-chart-svg');
+    if (!wrap || !chartEl) return;
+
+    wrap.style.display = 'block';
+    title.textContent = `📈 ${r.name} — прогноз остатков`;
+
+    const days = targetDays + 30;
+    const supplyDayIdx = Math.round(
+      (new Date(`${String(supplyDate).slice(0, 10)}T12:00:00`).getTime() - Date.now()) / 86400000
+    );
+    const W = 600;
+    const H = 200;
+    const pad = { top: 10, right: 20, bottom: 30, left: 60 };
+
+    const curve1 = [];
+    const curve2 = [];
+    for (let d = 0; d <= days; d++) {
+      const stock1 = Math.max(0, r.stockQty - r.salesPerDay * d);
+      curve1.push(stock1);
+      const incoming = d >= supplyDayIdx ? r.recQty : 0;
+      curve2.push(Math.max(0, r.stockQty - r.salesPerDay * d + incoming));
+    }
+
+    const maxY = Math.max(...curve1, ...curve2, 1);
+    const scaleX = (d) => pad.left + (d / days) * (W - pad.left - pad.right);
+    const scaleY = (v) => pad.top + (1 - v / maxY) * (H - pad.top - pad.bottom);
+
+    const pts1 = curve1.map((v, i) => `${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ');
+    const pts2 = curve2.map((v, i) => `${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ');
+    const supplyX = scaleX(Math.max(0, supplyDayIdx)).toFixed(1);
+    const zeroY = scaleY(0).toFixed(1);
+
+    const yLabels = [0, 0.25, 0.5, 0.75, 1]
+      .map((f) => {
+        const v = Math.round(maxY * f);
+        const y = scaleY(v);
+        return `<text x="${pad.left - 5}" y="${y + 4}" text-anchor="end" font-size="10" fill="#6b7280">${v}</text>
+            <line x1="${pad.left}" y1="${y}" x2="${W - pad.right}" y2="${y}" stroke="#e5e7eb" stroke-width="1"/>`;
+      })
+      .join('');
+
+    const xLabels = [];
+    for (let d = 0; d <= days; d += 7) {
+      const x = scaleX(d);
+      const date = new Date(Date.now() + d * 86400000);
+      const label = `${date.getDate()}.${String(date.getMonth() + 1).padStart(2, '0')}`;
+      xLabels.push(`<text x="${x}" y="${H - 5}" text-anchor="middle" font-size="10" fill="#6b7280">${label}</text>`);
+    }
+
+    chartEl.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;min-height:160px">
+      ${yLabels}
+      ${xLabels.join('')}
+      <line x1="${pad.left}" y1="${zeroY}" x2="${W - pad.right}" y2="${zeroY}" stroke="#ef4444" stroke-width="1" stroke-dasharray="4"/>
+      <polyline points="${pts1}" fill="none" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <polyline points="${pts2}" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round"/>
+      <line x1="${supplyX}" y1="${pad.top}" x2="${supplyX}" y2="${H - pad.bottom}" stroke="#6d28d9" stroke-width="2" stroke-dasharray="4"/>
+      <text x="${parseFloat(supplyX) + 4}" y="${pad.top + 14}" font-size="10" fill="#6d28d9">поставка</text>
+    </svg>`;
+
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function exportForecast() {
+    const fSettings = readForecastSettings();
+    const forecast =
+      _forecastCache.length
+        ? _forecastCache
+        : buildForecast(_products, _orders, {
+            targetDays: fSettings.targetDays,
+            supplyDate: fSettings.supplyDate,
+            minSalesFilter: fSettings.minSales
+          });
+    exportCsv(`forecast-${fSettings.supplyDate}.csv`, [
+      [
+        'SKU',
+        'Название',
+        'Остаток',
+        'Прод/день',
+        'Осталось дней',
+        'Дата обнуления',
+        'К поставке',
+        'Стоим.партии',
+        'Хранение',
+        'Итого',
+        'Приоритет'
+      ],
+      ...forecast.map((r) => [
+        r.sku,
+        r.name,
+        r.stockQty,
+        (r.salesPerDay || 0).toFixed(2),
+        r.daysLeft ?? '',
+        r.depletionDate ? r.depletionDate.toLocaleDateString('ru-RU') : '',
+        r.recQty,
+        r.batchCost,
+        r.totalStorageCost,
+        r.totalBatchExpense,
+        r.priority.label
+      ])
+    ]);
+  }
+
+  function recalcForecast() {
+    const settings = {
+      supplyDate: document.getElementById('fc-date')?.value,
+      targetDays: parseInt(document.getElementById('fc-days')?.value, 10) || 45,
+      minSales: parseFloat(document.getElementById('fc-min')?.value) || 0
+    };
+    localStorage.setItem(FORECAST_KEY, JSON.stringify(settings));
+    const chart = document.getElementById('fc-chart-wrap');
+    if (chart) chart.style.display = 'none';
+    render();
+  }
+
   function viewStock() {
     const rows = _products
       .map((p) => ({ sku: productSku(p), name: p.name || p.title, stock: productStock(p), cost: productCost(p) }))
@@ -2684,6 +3220,9 @@
       case 'stock':
         html = viewStock();
         break;
+      case 'forecast':
+        html = viewForecast();
+        break;
       case 'shipments':
         html = viewShipments();
         break;
@@ -2934,6 +3473,19 @@
         goView(gov.getAttribute('data-sc-goview'));
         return;
       }
+      if (e.target.closest('[data-sc-recalc-forecast]')) {
+        recalcForecast();
+        return;
+      }
+      if (e.target.closest('[data-sc-export-forecast]')) {
+        exportForecast();
+        return;
+      }
+      const fcRow = e.target.closest('#fc-table tbody tr[data-fc-idx]');
+      if (fcRow) {
+        showForecastChart(Number(fcRow.getAttribute('data-fc-idx')));
+        return;
+      }
       const dis = e.target.closest('[data-sc-dismiss]');
       if (dis) {
         dismiss(dis.getAttribute('data-sc-dismiss'));
@@ -3068,6 +3620,9 @@
     editProd,
     matGroup,
     recalcNew,
+    showForecastChart,
+    exportForecast,
+    recalcForecast,
     toggleToken,
     saveToken,
     clearToken,
