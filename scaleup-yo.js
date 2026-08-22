@@ -50,6 +50,7 @@
   let _autoOrdersTimer = null;
   const UZ_TZ = 'Asia/Tashkent';
   const AUTO_ORDERS_MS = 15 * 60 * 1000;
+  const ORDERS_KEEP_DAYS = 548; // ~1.5 года
 
   try {
     _dismissed = new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]'));
@@ -91,6 +92,37 @@
     return String(localStorage.getItem(TOKEN_KEY) || '').trim();
   }
 
+  async function persistToken(token) {
+    const raw = cleanToken(token);
+    if (!raw) return;
+    localStorage.setItem(TOKEN_KEY, raw);
+    try {
+      await idbSet(TOKEN_KEY, raw);
+    } catch (_) { /* ignore */ }
+  }
+
+  async function hydrateToken() {
+    let t = cleanToken(getToken());
+    if (t) {
+      try {
+        await idbSet(TOKEN_KEY, t);
+      } catch (_) { /* ignore */ }
+      return t;
+    }
+    try {
+      const fromIdb = await idbGet(TOKEN_KEY);
+      t = cleanToken(fromIdb);
+      if (t) localStorage.setItem(TOKEN_KEY, t);
+    } catch (_) { /* ignore */ }
+    return t;
+  }
+
+  function maskToken(token) {
+    const t = String(token || '');
+    if (t.length < 8) return t ? '••••' : '';
+    return `•••• ${t.slice(-4)}`;
+  }
+
   function cleanToken(raw) {
     return String(raw || '')
       .trim()
@@ -119,8 +151,14 @@
   function tokenStatusHtml(token) {
     if (!token) return pill('bad', 'Не подключён');
     const meta = readJwtMeta(token);
-    if (meta?.expired) return pill('bad', 'Ключ просрочен');
-    return pill('ok', 'API-ключ есть');
+    if (meta?.expired) return pill('bad', 'Ключ просрочен — нужен новый');
+    if (meta?.exp) {
+      const left = meta.secondsLeft;
+      const when = new Date(meta.exp * 1000).toLocaleString('ru-RU');
+      if (Number.isFinite(left) && left < 86400 * 3) return pill('warn', `Истекает ${when}`);
+      return pill('ok', `Сохранён · до ${when}`);
+    }
+    return pill('ok', `Сохранён ${maskToken(token)}`);
   }
 
   function getSyncMeta() {
@@ -250,6 +288,27 @@
       productTitle: o.productTitle,
       returnCause: o.returnCause
     };
+  }
+
+  function orderCacheId(o) {
+    if (o?.id != null && o.id !== '') return String(o.id);
+    if (o?.orderId != null && o.orderId !== '') return `oid:${o.orderId}:${o.skuTitle || ''}`;
+    const t = orderDateMs(o);
+    return t ? `t:${t}:${o.skuTitle || ''}:${o.amount || 0}` : '';
+  }
+
+  function mergeOrderLists(existing, incoming) {
+    const keepFrom = Date.now() - ORDERS_KEEP_DAYS * 86400000;
+    const byId = new Map();
+    (existing || []).concat(incoming || []).forEach((o) => {
+      if (!o) return;
+      const t = orderDateMs(o);
+      if (t > 0 && t < keepFrom) return;
+      const id = orderCacheId(o);
+      if (!id) return;
+      byId.set(id, o);
+    });
+    return Array.from(byId.values()).sort((a, b) => orderDateMs(b) - orderDateMs(a));
   }
 
   function slimSku(sku) {
@@ -731,42 +790,188 @@
     ];
   }
 
+  const UZ_CALENDAR_EVENTS = [
+    { m: 1, d: 1, span: 3, lift: 1.22, name: 'Новый год' },
+    { m: 1, d: 14, span: 2, lift: 1.06, name: 'День защитника' },
+    { m: 2, d: 14, span: 3, lift: 1.18, name: '14 февраля' },
+    { m: 3, d: 8, span: 4, lift: 1.32, name: '8 Марта' },
+    { m: 3, d: 21, span: 5, lift: 1.28, name: 'Навруз' },
+    { m: 5, d: 9, span: 2, lift: 1.08, name: '9 Мая' },
+    { m: 9, d: 1, span: 4, lift: 1.22, name: 'День независимости' },
+    { m: 10, d: 1, span: 2, lift: 1.1, name: 'День учителя' },
+    { m: 11, d: 11, span: 4, lift: 1.18, name: '11.11' },
+    { m: 11, d: 24, span: 8, lift: 1.3, name: 'Black Friday / 11.11+' },
+    { m: 12, d: 8, span: 2, lift: 1.08, name: 'День Конституции' },
+    { m: 12, d: 31, span: 5, lift: 1.28, name: 'Новый год' }
+  ];
+
+  function mean(arr) {
+    if (!arr.length) return 0;
+    return arr.reduce((s, x) => s + x, 0) / arr.length;
+  }
+
+  function median(arr) {
+    if (!arr.length) return 0;
+    const a = arr.slice().sort((x, y) => x - y);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+
+  function robustDailyRate(values) {
+    if (!values.length) return 0;
+    const med = median(values);
+    const avg = mean(values);
+    return 0.7 * med + 0.3 * Math.min(avg, med * 2.5 + 0.05);
+  }
+
+  function sliceLastDays(buckets, days) {
+    const n = Math.min(days, buckets.length);
+    return Array.from(buckets.slice(buckets.length - n));
+  }
+
+  function calendarLift(supplyDate, targetDays) {
+    const start = new Date(`${String(supplyDate).slice(0, 10)}T12:00:00`);
+    if (!Number.isFinite(start.getTime())) return { lift: 1, names: [] };
+    const names = [];
+    let lift = 1;
+    for (let i = 0; i < targetDays; i++) {
+      const d = new Date(start.getTime() + i * 86400000);
+      const m = d.getMonth() + 1;
+      const day = d.getDate();
+      UZ_CALENDAR_EVENTS.forEach((ev) => {
+        for (let k = 0; k < ev.span; k++) {
+          const dt = new Date(d.getFullYear(), ev.m - 1, ev.d + k);
+          if (dt.getMonth() + 1 === m && dt.getDate() === day) {
+            lift = Math.max(lift, ev.lift);
+            if (!names.includes(ev.name)) names.push(ev.name);
+          }
+        }
+      });
+    }
+    return { lift, names };
+  }
+
+  function yoyWindowRate(buckets, fromMs, supplyMs, targetDays) {
+    const yoyStart = supplyMs - 365 * 86400000;
+    const yoyEnd = yoyStart + targetDays * 86400000;
+    const startIdx = Math.floor((yoyStart - fromMs) / 86400000);
+    const endIdx = Math.floor((yoyEnd - fromMs) / 86400000);
+    const vals = [];
+    for (let i = startIdx; i < endIdx; i++) {
+      if (i >= 0 && i < buckets.length) vals.push(buckets[i]);
+    }
+    return vals.length ? mean(vals) : 0;
+  }
+
+  function flattenShipmentItems(sh) {
+    const out = [];
+    if (Array.isArray(sh?.items)) out.push(...sh.items);
+    if (Array.isArray(sh?.positions)) out.push(...sh.positions);
+    (sh?.boxes || []).forEach((b) => (b.items || []).forEach((it) => out.push(it)));
+    return out;
+  }
+
+  function lastShipmentMsForAliases(aliases) {
+    const want = new Set();
+    (aliases || []).forEach((a) => {
+      const s = String(a ?? '').trim();
+      if (!s) return;
+      want.add(s);
+      want.add(normalizeSkuKey(s));
+    });
+    let last = 0;
+    (_shipments || []).forEach((sh) => {
+      const st = String(sh.status || sh.recordStatus || '').toLowerCase();
+      if (st === 'draft') return;
+      const t =
+        Date.parse(sh.date || sh.shipmentDate || sh.sentAt || sh.updatedAt || 0) || 0;
+      if (!t) return;
+      flattenShipmentItems(sh).forEach((it) => {
+        const keys = [it.sku, it.uzumSku, it.uzum_sku, it.article1c, it.name, it.calc?.mpSkuUzum];
+        if (keys.some((k) => k && (want.has(String(k).trim()) || want.has(normalizeSkuKey(k))))) {
+          if (t > last) last = t;
+        }
+      });
+    });
+    return last;
+  }
+
+  function productPaidStorage(p) {
+    const amt = Number(p?.paidStorageAmount || p?.paidStoragePriceItem || 0) || 0;
+    return !!(p?.paidStorage || p?.pstorage || amt > 0);
+  }
+
   function calcSalesVelocity(sku, orders) {
     const now = Date.now();
-    const from30 = now - 30 * 86400000;
     const aliases = skuAliasesFromProduct(sku);
-    const skuOrders = (orders || []).filter((o) => {
-      const t = orderDateMs(o);
-      return t >= from30 && t <= now && orderQtyForSku(o, aliases) > 0;
-    });
-
-    let totalSold = 0;
-    let oldestMs = now;
-    skuOrders.forEach((o) => {
-      const t = orderDateMs(o);
-      if (t > 0 && t < oldestMs) oldestMs = t;
-      totalSold += orderQtyForSku(o, aliases);
-    });
-
-    const daysOfData = Math.max(1, (now - oldestMs) / 86400000);
-    const salesPerDay = totalSold / daysOfData;
-
+    const from = now - ORDERS_KEEP_DAYS * 86400000;
+    const nDays = ORDERS_KEEP_DAYS + 1;
+    const buckets = new Float64Array(nDays);
     const hourlyMap = {};
-    skuOrders.forEach((o) => {
+    let totalSold = 0;
+    let lastSale = 0;
+    let firstSale = 0;
+
+    (orders || []).forEach((o) => {
       const t = orderDateMs(o);
-      if (!t) return;
-      const hour = new Date(t).getHours();
+      if (t < from || t > now) return;
       const q = orderQtyForSku(o, aliases);
+      if (q <= 0) return;
+      const idx = Math.min(nDays - 1, Math.max(0, Math.floor((t - from) / 86400000)));
+      buckets[idx] += q;
+      totalSold += q;
+      if (!firstSale || t < firstSale) firstSale = t;
+      if (t > lastSale) lastSale = t;
+      const hour = new Date(t).getHours();
       hourlyMap[hour] = (hourlyMap[hour] || 0) + q;
     });
+
+    const v14 = robustDailyRate(sliceLastDays(buckets, 14));
+    const v30 = robustDailyRate(sliceLastDays(buckets, 30));
+    const v90 = robustDailyRate(sliceLastDays(buckets, 90));
+    const v180 = robustDailyRate(sliceLastDays(buckets, 180));
+    const v365 = robustDailyRate(sliceLastDays(buckets, 365));
+    const sold14 = sliceLastDays(buckets, 14).reduce((s, x) => s + x, 0);
+    const sold30 = sliceLastDays(buckets, 30).reduce((s, x) => s + x, 0);
+    const sold90 = sliceLastDays(buckets, 90).reduce((s, x) => s + x, 0);
+
+    let salesPerDay = v14 * 0.4 + v30 * 0.3 + v90 * 0.18 + v180 * 0.08 + v365 * 0.04;
+    const avgd = Number(sku?.avgdsales || 0) || 0;
+    if (avgd > 0 && sold30 > 0) salesPerDay = salesPerDay * 0.85 + avgd * 0.15;
+
+    const daysSinceLastSale = lastSale ? (now - lastSale) / 86400000 : 999;
+    const trend = v90 > 0.05 ? v14 / v90 : sold30 > 0 ? 1 : 0;
+    let status = 'active';
+    if (daysSinceLastSale >= 60 || (sold90 < 1 && daysSinceLastSale >= 30)) status = 'abandoned';
+    else if (daysSinceLastSale >= 21 || trend < 0.35) status = 'dying';
+    else if (trend > 1.4 && sold14 > 0) status = 'rising';
+
+    if (status === 'abandoned') salesPerDay = 0;
+    else if (status === 'dying') salesPerDay *= Math.max(0.15, Math.min(trend, 0.45));
+
     const peakHour = Object.entries(hourlyMap).sort((a, b) => b[1] - a[1])[0]?.[0];
+    const historyDays = firstSale ? Math.max(1, (now - firstSale) / 86400000) : 0;
 
     return {
       salesPerDay,
       totalSold,
-      daysOfData,
+      daysOfData: historyDays,
       peakHour,
-      hasData: totalSold > 0
+      hasData: totalSold > 0,
+      v14,
+      v30,
+      v90,
+      v180,
+      v365,
+      sold14,
+      sold30,
+      sold90,
+      lastSale,
+      daysSinceLastSale,
+      trend,
+      status,
+      buckets,
+      fromMs: from
     };
   }
 
@@ -780,47 +985,110 @@
     return { daysLeft: Math.round(daysLeft), depletionDate };
   }
 
-  function calcRecommendedQty(product, velocity, targetDays, supplyDate) {
-    const salesPerDay = velocity.salesPerDay || 0;
-    if (salesPerDay <= 0) return { qty: 0, stockAtSupply: product.stockQty || 0, neededForPeriod: 0, reason: 'Нет данных о продажах' };
+  function calcRecommendedQty(product, velocity, targetDays, supplyDate, extras) {
+    const reasons = [];
+    const stock = product.stockQty || 0;
+    if (velocity.status === 'abandoned' || velocity.salesPerDay <= 0) {
+      return {
+        qty: 0,
+        stockAtSupply: stock,
+        neededForPeriod: 0,
+        reason: velocity.status === 'abandoned'
+          ? `Заброшен: нет продаж ${Math.round(velocity.daysSinceLastSale)} дн.`
+          : 'Нет актуального спроса'
+      };
+    }
 
     const supplyMs = supplyDate ? new Date(`${String(supplyDate).slice(0, 10)}T12:00:00`).getTime() : Date.now();
     const daysUntilSupply = Math.max(0, (supplyMs - Date.now()) / 86400000);
-    const stockAtSupply = Math.max(0, (product.stockQty || 0) - salesPerDay * daysUntilSupply);
-    const needed = salesPerDay * targetDays;
-    const rawQty = Math.max(0, needed - stockAtSupply);
-    const recommended = Math.ceil(rawQty * 1.1);
+    const stockAtSupply = Math.max(0, stock - velocity.salesPerDay * daysUntilSupply);
+
+    const cal = calendarLift(supplyDate, targetDays);
+    let daily = velocity.salesPerDay;
+    if (cal.lift > 1 && velocity.status !== 'dying') {
+      daily *= 1 + (cal.lift - 1) * 0.5;
+      reasons.push(`календарь: ${cal.names.join(', ')} ×${cal.lift.toFixed(2)}`);
+    }
+    const yoy = yoyWindowRate(velocity.buckets, velocity.fromMs, supplyMs, targetDays);
+    if (yoy > 0 && velocity.status === 'active') {
+      daily = daily * 0.75 + yoy * 0.25;
+      reasons.push(`прошлый год в эти даты ${yoy.toFixed(2)} шт/д`);
+    }
+
+    const needed = daily * targetDays;
+    let rawQty = Math.max(0, needed - stockAtSupply);
+
+    const cap30 = velocity.sold30 * (targetDays / 30) * 1.35;
+    const cap90 = velocity.sold90 * (targetDays / 90) * 1.2;
+    const cap = Math.min(
+      Number.isFinite(cap30) ? cap30 : Infinity,
+      Number.isFinite(cap90) && velocity.sold90 > 0 ? cap90 : Infinity
+    );
+    if (Number.isFinite(cap) && rawQty > cap) {
+      rawQty = cap;
+      reasons.push('потолок по факту продаж 30/90 дн');
+    }
+
+    if (extras?.paidStorage) {
+      if (velocity.status === 'dying' || velocity.daysSinceLastSale >= 14 || stockAtSupply >= needed * 0.6) {
+        reasons.unshift('уже платное хранение — не увеличиваем запас');
+        return {
+          qty: 0,
+          stockAtSupply: Math.round(stockAtSupply),
+          neededForPeriod: Math.round(needed),
+          reason: reasons.join(' · ')
+        };
+      }
+      rawQty *= 0.5;
+      reasons.unshift('уже платное хранение — режем партию вдвое');
+    }
+
+    if (extras?.daysSinceShip >= 120 && velocity.status !== 'rising') {
+      rawQty = 0;
+      reasons.unshift('давно не отгружали с нашего склада');
+    }
+
+    const buf = velocity.status === 'rising' ? 1.05 : 1;
+    const recommended = Math.ceil(rawQty * buf);
     const packSize = Math.max(1, Number(product.packSize) || 1);
     const finalQty = Math.ceil(recommended / packSize) * packSize;
+    if (velocity.status === 'dying' && finalQty > 0) reasons.unshift('спрос падает — консервативно');
+    reasons.push(`${daily.toFixed(2)} шт/день × ${targetDays} дн`);
     return {
       qty: finalQty,
       stockAtSupply: Math.round(stockAtSupply),
       neededForPeriod: Math.round(needed),
-      reason: `${salesPerDay.toFixed(1)} шт/день × ${targetDays} дней`
+      reason: reasons.join(' · ')
     };
   }
 
-  function calcStorageCostForBatch(product, qty, targetDays) {
+  function calcStorageCostForBatch(product, qty, targetDays, paidAlready) {
     const liters = Math.ceil(Number(product.volumeLiters) || 0);
-    const turnover = Number(product.calc?.productTurnover) || targetDays;
+    const turnover = Number(product.calc?.productTurnover) || product.turnoverDays || targetDays;
     const stockStatus = product.calc?.productStockStatus || 'existing';
     let storagePerDayPerUnit = 0;
     if (typeof calcStoragePerDay === 'function' && liters > 0) {
       storagePerDayPerUnit = Number(calcStoragePerDay(liters, turnover, stockStatus, 0).amount) || 0;
     }
-    const paidDays = Math.max(0, targetDays - 60);
+    const freeDays = paidAlready ? 0 : Math.min(60, targetDays);
+    const paidDays = Math.max(0, targetDays - (paidAlready ? 0 : 60));
     const storageCostPerUnit = storagePerDayPerUnit * paidDays;
     const totalStorageCost = storageCostPerUnit * qty;
     return {
       storagePerDayPerUnit,
       storageCostPerUnit,
       totalStorageCost,
-      freeDays: Math.min(60, targetDays),
-      paidDays
+      freeDays,
+      paidDays,
+      paidAlready: !!paidAlready
     };
   }
 
-  function calcPriority(daysLeft, targetDays) {
+  function calcPriority(daysLeft, targetDays, flags) {
+    if (flags?.abandoned) return { level: 'skip', label: '⛔ Не поставлять', color: '#6b7280' };
+    if (flags?.paidStorage && (flags?.recQty || 0) <= 0) {
+      return { level: 'paid', label: '💸 Платное хранение', color: '#7c3aed' };
+    }
     if (daysLeft === null) return { level: 'unknown', label: '❓ Нет данных', color: '#6b7280' };
     if (daysLeft <= 7) return { level: 'critical', label: '🔴 Срочно', color: '#ef4444' };
     if (daysLeft <= 21) return { level: 'warning', label: '🟡 Скоро', color: '#f59e0b' };
@@ -840,7 +1108,12 @@
       packSize: Number(p.packSize || meta?.packSize || 1) || 1,
       volumeLiters,
       calc,
-      costGross: productCost(p)
+      costGross: productCost(p),
+      paidStorage: productPaidStorage(p),
+      paidStorageAmount: Number(p.paidStorageAmount || 0) || 0,
+      avgdsales: Number(p.avgdsales || 0) || 0,
+      turnoverDays: p.turnoverDays,
+      archived: !!p.archived
     };
   }
 
@@ -853,10 +1126,20 @@
       .map((raw) => {
         const product = forecastProductShape(raw);
         const velocity = calcSalesVelocity(raw, orders);
+        const aliases = skuAliasesFromProduct(raw);
+        const lastShip = lastShipmentMsForAliases(aliases);
+        const daysSinceShip = lastShip ? (Date.now() - lastShip) / 86400000 : 999;
+        const recQty = calcRecommendedQty(product, velocity, targetDays, supplyDate, {
+          paidStorage: product.paidStorage,
+          daysSinceShip
+        });
         const { daysLeft, depletionDate } = calcDaysLeft(product, velocity);
-        const recQty = calcRecommendedQty(product, velocity, targetDays, supplyDate);
-        const storage = calcStorageCostForBatch(product, recQty.qty, targetDays);
-        const priority = calcPriority(daysLeft, targetDays);
+        const storage = calcStorageCostForBatch(product, recQty.qty, targetDays, product.paidStorage);
+        const priority = calcPriority(daysLeft, targetDays, {
+          abandoned: velocity.status === 'abandoned',
+          paidStorage: product.paidStorage,
+          recQty: recQty.qty
+        });
         const batchCost = recQty.qty * (product.costGross || 0);
         return {
           sku: product.sku,
@@ -866,25 +1149,33 @@
           daysLeft,
           depletionDate,
           recQty: recQty.qty,
+          recReason: recQty.reason,
           stockAtSupply: recQty.stockAtSupply,
           batchCost,
           totalStorageCost: storage.totalStorageCost,
           storageCostPerUnit: storage.storageCostPerUnit,
           freeDays: storage.freeDays,
           paidDays: storage.paidDays,
+          paidStorage: product.paidStorage,
+          paidStorageAmount: product.paidStorageAmount,
           totalBatchExpense: batchCost + storage.totalStorageCost,
           priority,
           velocity,
           hasData: velocity.hasData,
           volumeLiters: product.volumeLiters,
-          costGross: product.costGross
+          costGross: product.costGross,
+          trend: velocity.trend,
+          status: velocity.status,
+          daysSinceLastSale: velocity.daysSinceLastSale,
+          sold30: velocity.sold30,
+          sold90: velocity.sold90
         };
       })
-      .filter((r) => r.salesPerDay >= minSalesFilter || r.stockQty > 0)
+      .filter((r) => r.salesPerDay >= minSalesFilter || r.stockQty > 0 || r.status === 'abandoned' || r.paidStorage)
       .sort((a, b) => {
-        const priorityOrder = { critical: 0, warning: 1, normal: 2, ok: 3, unknown: 4 };
-        const pa = priorityOrder[a.priority.level];
-        const pb = priorityOrder[b.priority.level];
+        const priorityOrder = { critical: 0, warning: 1, normal: 2, paid: 3, ok: 4, skip: 5, unknown: 6 };
+        const pa = priorityOrder[a.priority.level] ?? 9;
+        const pb = priorityOrder[b.priority.level] ?? 9;
         if (pa !== pb) return pa - pb;
         return (a.daysLeft ?? 999) - (b.daysLeft ?? 999);
       });
@@ -1018,6 +1309,7 @@
 
   async function loadAllData() {
     showLoader();
+    await hydrateToken();
     const fbProducts = await loadFromFirebase('products');
     const fbShipments = await loadFromFirebase('shipments');
     const fbFinance = await loadFromFirebase('finance_payments');
@@ -1204,7 +1496,7 @@
       alert('Сначала вставь API-ключ (Настройки → API ключи Uzum)');
       return;
     }
-    localStorage.setItem(TOKEN_KEY, token);
+    await persistToken(token);
     _syncBusy = true;
     setSyncBusy(true, 'Идёт синхронизация с Uzum OpenAPI…');
 
@@ -1223,8 +1515,8 @@
       const shopName = shop?.name || shop?.title || getSyncMeta().shopName || '';
       if (!shopId) throw new Error('Магазины не найдены по API-ключу');
 
-      // Синк всегда тянет минимум 90 дней, UI-фильтр режет уже на клиенте
-      const dateFrom = Date.now() - Math.max(90, Number(_periodDays) || 90) * 86400000;
+      // История заказов ~1.5 года; мержим с кэшем, UI-фильтр режет уже на клиенте
+      const dateFrom = Date.now() - ORDERS_KEEP_DAYS * 86400000;
       const dateTo = Date.now();
       void dateTo;
 
@@ -1256,10 +1548,10 @@
       try {
         const rawOrders = [];
         const size = 100;
-        const maxPages = 30;
+        const maxPages = 80;
         for (let page = 0; page < maxPages; page++) {
           if (page > 0) await sleep(900);
-          setSyncBusy(true, `Загрузка заказов… стр. ${page + 1}`);
+          setSyncBusy(true, `Загрузка заказов (~1.5 года)… стр. ${page + 1}`);
           const data = await uzumJson(
             `v1/finance/orders?page=${page}&size=${size}&group=false&shopIds=${shopId}`
           );
@@ -1271,14 +1563,13 @@
             if (!dateFrom || t >= dateFrom) rawOrders.push(slimOrder(o));
             else older += 1;
           });
-          // лента от новых к старым — выходим, когда вся страница старше периода
+          // лента от новых к старым — выходим, когда вся страница старше 1.5 лет
           if (older === chunk.length) break;
           const total = Number(data?.totalElements);
-          // totalElements у Uzum часто 0/мусор — не стопаем по нему, если ≤0
           if (Number.isFinite(total) && total > 0 && (page + 1) * size >= total) break;
           if (chunk.length < size) break;
         }
-        orders = rawOrders;
+        orders = mergeOrderLists(orders, rawOrders);
         await writeCache(ORDERS_KEY, orders);
       } catch (e) {
         warnings.push(`Заказы: ${e?.message || e}`);
@@ -1553,12 +1844,14 @@
       return;
     }
     localStorage.setItem(TOKEN_KEY, raw);
+    void persistToken(raw);
     void syncUzum();
   }
 
   function clearToken() {
     if (!confirm('Удалить API-ключ Uzum и кэш OpenAPI?')) return;
     localStorage.removeItem(TOKEN_KEY);
+    void idbDel(TOKEN_KEY);
     try {
       localStorage.removeItem(ORDERS_KEY);
       localStorage.removeItem(API_PRODUCTS_KEY);
@@ -2702,6 +2995,8 @@
 
     const critical = forecast.filter((r) => r.priority.level === 'critical').length;
     const warning = forecast.filter((r) => r.priority.level === 'warning').length;
+    const skipN = forecast.filter((r) => r.priority.level === 'skip' || r.status === 'abandoned').length;
+    const paidN = forecast.filter((r) => r.paidStorage).length;
     const totalQty = forecast.reduce((s, r) => s + r.recQty, 0);
     const totalCost = forecast.reduce((s, r) => s + r.totalBatchExpense, 0);
 
@@ -2709,15 +3004,34 @@
       .map((r, idx) => {
         const daysLeftTxt = r.daysLeft !== null ? `${r.daysLeft} дн.` : '—';
         const depleteTxt = r.depletionDate ? r.depletionDate.toLocaleDateString('ru-RU') : '—';
+        const daysSince = Number.isFinite(r.daysSinceLastSale) ? Math.round(r.daysSinceLastSale) : null;
+        const trendTxt =
+          r.status === 'abandoned'
+            ? 'заброшен'
+            : r.status === 'dying'
+              ? 'спрос падает'
+              : r.status === 'rising'
+                ? 'растёт'
+                : r.sold30
+                  ? `30д: ${r.sold30} шт`
+                  : '';
+        const paidTxt = r.paidStorage ? ' · 💸 платное хранение' : '';
         const saleTxt = r.salesPerDay > 0 ? `${r.salesPerDay.toFixed(2)} шт/день` : '—';
-        const storageTxt = r.paidDays > 0 ? money(r.totalStorageCost) : `${r.freeDays} дн. бесплатно`;
+        const storageTxt = r.paidStorage
+          ? r.paidDays > 0
+            ? `${money(r.totalStorageCost)} (уже платное)`
+            : 'уже платное хранение'
+          : r.paidDays > 0
+            ? money(r.totalStorageCost)
+            : `${r.freeDays} дн. бесплатно`;
         return `<tr data-fc-idx="${idx}" style="cursor:pointer">
       <td>
         <strong>${esc(r.name)}</strong><br>
-        <span style="font-size:11px;color:var(--muted)">${esc(r.sku)}</span>
+        <span style="font-size:11px;color:var(--muted)">${esc(r.sku)}${paidTxt}</span>
+        ${r.recReason ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;max-width:280px">${esc(r.recReason)}</div>` : ''}
       </td>
       <td><strong>${r.stockQty}</strong> шт</td>
-      <td>${saleTxt}</td>
+      <td>${saleTxt}${trendTxt ? `<div style="font-size:11px;color:var(--muted)">${esc(trendTxt)}${daysSince != null && daysSince < 900 ? ` · посл. продажа ${daysSince} дн` : ''}</div>` : ''}</td>
       <td>
         <span style="font-weight:700;color:${esc(r.priority.color)}">
           ${daysLeftTxt}
@@ -2798,8 +3112,8 @@
 
       </div>
       <div style="margin-top:10px;font-size:12px;color:var(--muted)">
-        📊 Анализ на основе ${_orders.length} заказов за последние 30 дней ·
-        ${_products.length} SKU · данные обновлены: ${
+        📊 Умный прогноз: ${_orders.length} заказов (до ~1.5 года) ·
+        ${_products.length} SKU · остатки + платное хранение Uzum · календарь UZ/акции · данные: ${
           syncedAt ? new Date(syncedAt).toLocaleString('ru-RU') : 'не синхронизировано'
         }
       </div>
@@ -2808,7 +3122,7 @@
     <div class="sc-kpi-row cols-4" style="margin-bottom:20px">
       ${kpiCard('🔴 СРОЧНО (≤7 дней)', `${critical} SKU`, 'нужна поставка немедленно', 'red')}
       ${kpiCard('🟡 СКОРО (≤21 день)', `${warning} SKU`, 'планируй в эту поставку', 'orange')}
-      ${kpiCard('📦 ВСЕГО К ОТПРАВКЕ', `${totalQty.toLocaleString('ru-RU')} ед.`, 'в эту поставку', 'blue')}
+      ${kpiCard('📦 ВСЕГО К ОТПРАВКЕ', `${totalQty.toLocaleString('ru-RU')} ед.`, `не возить: ${skipN} · платное хран.: ${paidN}`, 'blue')}
       ${kpiCard('💰 СТОИМ. ПОСТАВКИ', money(totalCost), 'партия + хранение', '')}
     </div>
 
@@ -2948,7 +3262,9 @@
         'Стоим.партии',
         'Хранение',
         'Итого',
-        'Приоритет'
+        'Приоритет',
+        'Сигнал',
+        'Платное хранение'
       ],
       ...forecast.map((r) => [
         r.sku,
@@ -2961,7 +3277,9 @@
         r.batchCost,
         r.totalStorageCost,
         r.totalBatchExpense,
-        r.priority.label
+        r.priority.label,
+        r.recReason || r.status || '',
+        r.paidStorage ? 'да' : 'нет'
       ])
     ]);
   }
@@ -3141,6 +3459,12 @@
     const root = document.getElementById('settingsTabContent');
     if (!root) return;
     const token = getToken();
+    const tokenMeta = readJwtMeta(token);
+    const tokenHint = token
+      ? tokenMeta?.expired
+        ? 'Сохранённый ключ просрочен. Создай новый на seller.uzum.uz → API ключи и вставь один раз — мы запомним его в этом браузере (localStorage + IndexedDB).'
+        : `Ключ уже сохранён в этом браузере (${maskToken(token)}). Вставлять заново не нужно — жми «Синхронизировать». Новое значение — только если ключ сменился или просрочен.`
+      : 'Вставь ключ один раз. Он останется в браузере, поле специально пустое (не показываем секрет).';
     const meta = getSyncMeta();
     const apiProducts = await readCache(API_PRODUCTS_KEY, []);
     const cachedOrders = await readCache(ORDERS_KEY, []);
@@ -3168,8 +3492,9 @@
           </div>
           <label style="display:block;margin-bottom:12px">
             <div style="font-size:13px;font-weight:600;margin-bottom:6px">API-ключ (без Bearer)</div>
+            <p class="sub" style="margin:0 0 8px">${esc(tokenHint)}</p>
             <div style="display:flex;gap:8px">
-              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="Вставь API-ключ" value="" autocomplete="off">
+              <input type="password" id="sc-token-inp" class="sc-token-input" placeholder="${token ? 'Оставь пустым — ключ уже сохранён' : 'Вставь API-ключ один раз'}" value="" autocomplete="off">
               <button type="button" class="btn-secondary" data-sc-toggle-token>👁</button>
             </div>
           </label>
@@ -3620,7 +3945,7 @@
 
   function init(force) {
     bindEvents();
-    ensureAutoOrdersRefresh();
+    void hydrateToken().then(() => ensureAutoOrdersRefresh());
     if (!_initialized || force) {
       _initialized = true;
       void loadAllData().then(() => {
