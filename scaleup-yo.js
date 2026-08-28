@@ -15,6 +15,7 @@
   const DISMISSED_KEY = 'yo_scaleup_dismissed_insights';
   const SETTINGS_KEY = 'yo_scaleup_settings';
   const FORECAST_KEY = 'yo_forecast_settings';
+  const SIDEBAR_KEY = 'yo_sc_sidebar_collapsed';
 
   let _view = 'dashboard';
   let _periodMode = 'today'; // today | month | days | day | custom
@@ -311,6 +312,22 @@
     return Array.from(byId.values()).sort((a, b) => orderDateMs(b) - orderDateMs(a));
   }
 
+  function mergeExpenseLists(existing, incoming) {
+    const keepFrom = Date.now() - ORDERS_KEEP_DAYS * 86400000;
+    const byId = new Map();
+    (existing || []).concat(incoming || []).forEach((e) => {
+      if (!e) return;
+      const t = expenseDateMs(e);
+      if (t > 0 && t < keepFrom) return;
+      const id =
+        e.id != null && e.id !== ''
+          ? String(e.id)
+          : `x:${e.externalId || ''}:${t}:${e.paymentPrice || e.amount || 0}`;
+      byId.set(id, e);
+    });
+    return Array.from(byId.values()).sort((a, b) => expenseDateMs(b) - expenseDateMs(a));
+  }
+
   function slimSku(sku) {
     if (!sku || typeof sku !== 'object') return sku;
     return {
@@ -364,23 +381,26 @@
 
   function slimExpense(e) {
     if (!e || typeof e !== 'object') return e;
+    const src = e.source;
+    const source =
+      src && typeof src === 'object' ? String(src.name || src.code || src.title || src.type || '') : src;
     return {
       id: e.id,
       type: e.type,
       status: e.status,
-      paymentPrice: e.paymentPrice ?? e.amount,
-      amount: e.amount,
-      dateCreated: e.dateCreated,
+      paymentPrice: e.paymentPrice ?? e.amount ?? e.sum ?? e.price ?? e.total,
+      amount: e.amount ?? e.paymentPrice ?? e.sum,
+      dateCreated: e.dateCreated ?? e.createdAt ?? e.paymentDate ?? e.operationDate ?? e.dateCreate,
       dateService: e.dateService,
       dateUpdated: e.dateUpdated,
-      date: e.date,
-      source: e.source,
-      code: e.code,
+      date: e.date ?? e.createdAt ?? e.paymentDate,
+      source,
+      code: e.code ?? src?.code,
       shopId: e.shopId,
       externalId: e.externalId,
       comment: e.comment,
-      name: e.name,
-      title: e.title || e.name
+      name: e.name || e.title || e.description || e.comment,
+      title: e.title || e.name || e.description
     };
   }
 
@@ -643,7 +663,9 @@
       const meta = {
         volumeLiters,
         packSize: Number(p?.packSize || p?.boxQty || 0) || 1,
-        calc: p?.calc && typeof p.calc === 'object' ? p.calc : {}
+        calc: p?.calc && typeof p.calc === 'object' ? p.calc : {},
+        article1c: String(p?.article1c || '').trim(),
+        code1c: String(p?.code1c || '').trim()
       };
       add(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum, meta);
       add(p.sku, meta);
@@ -1109,6 +1131,8 @@
       volumeLiters,
       calc,
       costGross: productCost(p),
+      article1c: String(meta?.article1c || p.article1c || '').trim(),
+      code1c: String(meta?.code1c || p.code1c || '').trim(),
       paidStorage: productPaidStorage(p),
       paidStorageAmount: Number(p.paidStorageAmount || 0) || 0,
       avgdsales: Number(p.avgdsales || 0) || 0,
@@ -1144,6 +1168,8 @@
         return {
           sku: product.sku,
           name: product.name,
+          article1c: product.article1c || '',
+          code1c: product.code1c || '',
           stockQty: product.stockQty,
           salesPerDay: velocity.salesPerDay,
           daysLeft,
@@ -1581,7 +1607,7 @@
       try {
         const rawExp = [];
         const size = 50;
-        const maxPages = 40;
+        const maxPages = 80;
         for (let page = 0; page < maxPages; page++) {
           if (page > 0) await sleep(800);
           setSyncBusy(true, `Загрузка расходов… стр. ${page + 1}`);
@@ -1590,9 +1616,13 @@
           );
           const chunk = Array.isArray(data?.payload?.payments)
             ? data.payload.payments
-            : Array.isArray(data?.payments)
-              ? data.payments
-              : unwrapList(data, ['paymentList', 'payments', 'expenses', 'items']);
+            : Array.isArray(data?.payload?.paymentList)
+              ? data.payload.paymentList
+              : Array.isArray(data?.payments)
+                ? data.payments
+                : Array.isArray(data?.payload)
+                  ? data.payload
+                  : unwrapList(data, ['paymentList', 'payments', 'expenses', 'items']);
           if (!chunk.length) break;
           let older = 0;
           chunk.forEach((e) => {
@@ -1604,9 +1634,11 @@
             rawExp.push(slimExpense(e));
           });
           if (older === chunk.length) break;
+          const total = Number(data?.payload?.totalElements ?? data?.totalElements);
+          if (Number.isFinite(total) && total > 0 && (page + 1) * size >= total) break;
           if (chunk.length < size) break;
         }
-        expenses = rawExp;
+        expenses = mergeExpenseLists(expenses, rawExp);
         await writeCache(EXPENSES_KEY, expenses);
       } catch (e) {
         warnings.push(`Расходы: ${e?.message || e}`);
@@ -1935,22 +1967,49 @@
   }
 
   function expenseDateMs(e) {
-    const raw = e?.dateCreated ?? e?.dateService ?? e?.dateUpdated ?? e?.date;
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
-    if (raw == null || raw === '') return 0;
-    const asNum = Number(raw);
-    if (Number.isFinite(asNum) && asNum > 1e11) return asNum; // unix ms
-    if (Number.isFinite(asNum) && asNum > 1e9 && asNum < 1e11) return asNum * 1000; // unix sec
-    const parsed = Date.parse(String(raw));
-    return Number.isFinite(parsed) ? parsed : 0;
+    const candidates = [
+      e?.dateCreated,
+      e?.dateService,
+      e?.dateUpdated,
+      e?.date,
+      e?.createdAt,
+      e?.paymentDate,
+      e?.operationDate,
+      e?.dateCreate,
+      e?.timestamp,
+      e?.time,
+      e?.created,
+      e?.dates?.created,
+      e?.dates?.dateCreated
+    ];
+    for (const raw of candidates) {
+      if (raw == null || raw === '') continue;
+      if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        if (raw > 1e11) return raw;
+        if (raw > 1e9) return raw * 1000;
+        continue;
+      }
+      const asNum = Number(raw);
+      if (Number.isFinite(asNum) && asNum > 1e11) return asNum;
+      if (Number.isFinite(asNum) && asNum > 1e9 && asNum < 1e11) return asNum * 1000;
+      const parsed = Date.parse(String(raw));
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return 0;
   }
 
   function expensesInPeriod() {
     const r = getPeriodRange();
-    return _expenses.filter((e) => {
+    const dated = [];
+    const undated = [];
+    (_expenses || []).forEach((e) => {
       const t = expenseDateMs(e);
-      return t >= r.from && t <= r.to;
+      if (!t) undated.push(e);
+      else if (t >= r.from && t <= r.to) dated.push(e);
     });
+    // Без даты не прячем на вкладке расходов — иначе список выглядит «пустым»
+    if (_finSub === 'expenses') return dated.concat(undated);
+    return dated;
   }
 
   function expenseTotal(list) {
@@ -2360,7 +2419,16 @@
   }
 
   function viewExpenses() {
-    const list = expensesInPeriod();
+    let list = expensesInPeriod();
+    let widerNote = '';
+    if (!list.length && (_expenses || []).length) {
+      const from = Date.now() - 90 * 86400000;
+      list = _expenses.filter((e) => {
+        const t = expenseDateMs(e);
+        return !t || t >= from;
+      });
+      widerNote = `За выбранный период (${esc(getPeriodRange().label)}) расходов нет. Показаны ${_expenses.length} шт из кэша за ~90 дней. Смени период на 30/90 дн, чтобы фильтр совпал.`;
+    }
     const outcomes = list.filter((e) => !expenseIsReturn(e));
     const returns = list.filter((e) => expenseIsReturn(e));
     const groups = groupExpensesBySource(outcomes);
@@ -2382,6 +2450,13 @@
     };
 
     return `${periodToolbarHtml()}${financeTabsHtml('expenses')}
+      ${
+        widerNote
+          ? `<div class="sc-insight warn" style="margin-bottom:14px"><div class="sc-insight-body"><div class="sc-insight-title">Расходы не попали в период</div><div style="font-size:13px;color:var(--muted)">${widerNote}</div></div></div>`
+          : !_expenses.length
+            ? `<div class="sc-insight warn" style="margin-bottom:14px"><div class="sc-insight-body"><div class="sc-insight-title">Кэш расходов пуст</div><div style="font-size:13px;color:var(--muted)">Нажми «Синхронизировать» в Настройках API — Uzum expenses подтянутся в IndexedDB.</div><div class="sc-insight-btns"><button type="button" class="sc-insight-action" data-sc-goview="__settings">Настройки API →</button></div></div></div>`
+            : ''
+      }
       <div class="sc-exp-layout">
         <div class="sc-card">
           <div class="sc-card-title">Структура расходов</div>
@@ -3015,41 +3090,39 @@
                 : r.sold30
                   ? `30д: ${r.sold30} шт`
                   : '';
-        const paidTxt = r.paidStorage ? ' · 💸 платное хранение' : '';
-        const saleTxt = r.salesPerDay > 0 ? `${r.salesPerDay.toFixed(2)} шт/день` : '—';
-        const storageTxt = r.paidStorage
-          ? r.paidDays > 0
-            ? `${money(r.totalStorageCost)} (уже платное)`
-            : 'уже платное хранение'
-          : r.paidDays > 0
-            ? money(r.totalStorageCost)
-            : `${r.freeDays} дн. бесплатно`;
-        return `<tr data-fc-idx="${idx}" style="cursor:pointer">
-      <td>
-        <strong>${esc(r.name)}</strong><br>
-        <span style="font-size:11px;color:var(--muted)">${esc(r.sku)}${paidTxt}</span>
-        ${r.recReason ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;max-width:280px">${esc(r.recReason)}</div>` : ''}
+        const saleTxt = r.salesPerDay > 0 ? `${r.salesPerDay.toFixed(2)}/д` : '—';
+        const codesLine = [r.article1c && `1С: ${r.article1c}`, r.code1c && `код ${r.code1c}`]
+          .filter(Boolean)
+          .join(' · ');
+        const tip = [
+          r.name,
+          r.sku,
+          codesLine,
+          daysSince != null && daysSince < 900 ? `посл. продажа ${daysSince} дн` : '',
+          r.recReason
+        ]
+          .filter(Boolean)
+          .join('\n');
+        return `<tr data-fc-idx="${idx}" class="sc-fc-row" style="cursor:pointer" title="${esc(tip)}">
+      <td class="sc-fc-product">
+        <span class="sc-fc-name">${esc(r.name)}</span>
+        <span class="sc-fc-sku">${esc(r.sku)}${r.paidStorage ? ' · 💸' : ''}</span>
       </td>
-      <td><strong>${r.stockQty}</strong> шт</td>
-      <td>${saleTxt}${trendTxt ? `<div style="font-size:11px;color:var(--muted)">${esc(trendTxt)}${daysSince != null && daysSince < 900 ? ` · посл. продажа ${daysSince} дн` : ''}</div>` : ''}</td>
+      <td class="sc-fc-mono">${esc(r.article1c || '—')}</td>
+      <td class="sc-fc-mono">${esc(r.code1c || '—')}</td>
+      <td><strong>${r.stockQty}</strong></td>
+      <td>${saleTxt}${trendTxt ? `<span class="sc-fc-sub">${esc(trendTxt)}</span>` : ''}</td>
       <td>
-        <span style="font-weight:700;color:${esc(r.priority.color)}">
-          ${daysLeftTxt}
-        </span>
+        <span style="font-weight:700;color:${esc(r.priority.color)}">${daysLeftTxt}</span>
       </td>
-      <td style="font-size:12px">${depleteTxt}</td>
+      <td>${depleteTxt}</td>
       <td>
-        <strong style="color:var(--accent)">${r.recQty}</strong> ед.
-        <div style="font-size:11px;color:var(--muted)">остаток на дату: ${r.stockAtSupply} шт</div>
+        <strong style="color:var(--accent)">${r.recQty}</strong>
+        <span class="sc-fc-sub">на дату ${r.stockAtSupply}</span>
       </td>
-      <td>${r.costGross ? money(r.batchCost) : '—'}</td>
-      <td style="font-size:12px">${storageTxt}</td>
-      <td style="font-weight:700">${r.costGross ? money(r.totalBatchExpense) : '—'}</td>
+      <td>${r.costGross ? money(r.totalBatchExpense) : '—'}</td>
       <td>
-        <span style="padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;
-          background:${esc(r.priority.color)}20;color:${esc(r.priority.color)}">
-          ${esc(r.priority.label)}
-        </span>
+        <span class="sc-fc-prio" style="background:${esc(r.priority.color)}20;color:${esc(r.priority.color)}">${esc(r.priority.label)}</span>
       </td>
     </tr>`;
       })
@@ -3106,9 +3179,14 @@
           🔄 Пересчитать прогноз
         </button>
 
-        <button type="button" class="sc-export" style="margin-left:auto" data-sc-export-forecast>
-          ⬇ Экспорт CSV
-        </button>
+        <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn-primary" data-sc-export-forecast>
+            ⬇ Excel
+          </button>
+          <button type="button" class="sc-export" data-sc-export-forecast-csv>
+            CSV
+          </button>
+        </div>
 
       </div>
       <div style="margin-top:10px;font-size:12px;color:var(--muted)">
@@ -3136,19 +3214,19 @@
       </div>
     </div>
 
-    <div class="sc-table-wrap">
-      <table class="sc-table" id="fc-table">
+    <div class="sc-table-wrap sc-forecast-table-wrap">
+      <table class="sc-table sc-forecast-table" id="fc-table">
         <thead>
           <tr>
             <th>Товар</th>
+            <th>Артикул 1С</th>
+            <th>Код 1С</th>
             <th>Остаток</th>
             <th>Прод./день</th>
-            <th>Осталось дней</th>
+            <th>Дней</th>
             <th>Дата ≈0</th>
             <th>К поставке</th>
-            <th>Стоим. партии</th>
-            <th>Хранение</th>
-            <th>Итого расходов</th>
+            <th>Итого</th>
             <th>Приоритет</th>
           </tr>
         </thead>
@@ -3240,20 +3318,13 @@
     wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-  function exportForecast() {
-    const fSettings = readForecastSettings();
-    const forecast =
-      _forecastCache.length
-        ? _forecastCache
-        : buildForecast(_products, _orders, {
-            targetDays: fSettings.targetDays,
-            supplyDate: fSettings.supplyDate,
-            minSalesFilter: fSettings.minSales
-          });
-    exportCsv(`forecast-${fSettings.supplyDate}.csv`, [
+  function forecastExportRows(forecast) {
+    return [
       [
-        'SKU',
+        'SKU Uzum',
         'Название',
+        'Артикул 1С',
+        'Код 1С',
         'Остаток',
         'Прод/день',
         'Осталось дней',
@@ -3266,22 +3337,71 @@
         'Сигнал',
         'Платное хранение'
       ],
-      ...forecast.map((r) => [
+      ...(forecast || []).map((r) => [
         r.sku,
         r.name,
+        r.article1c || '',
+        r.code1c || '',
         r.stockQty,
-        (r.salesPerDay || 0).toFixed(2),
+        Number((r.salesPerDay || 0).toFixed(2)),
         r.daysLeft ?? '',
         r.depletionDate ? r.depletionDate.toLocaleDateString('ru-RU') : '',
         r.recQty,
         r.batchCost,
         r.totalStorageCost,
         r.totalBatchExpense,
-        r.priority.label,
+        r.priority?.label || '',
         r.recReason || r.status || '',
         r.paidStorage ? 'да' : 'нет'
       ])
-    ]);
+    ];
+  }
+
+  function currentForecastList() {
+    const fSettings = readForecastSettings();
+    return _forecastCache.length
+      ? _forecastCache
+      : buildForecast(_products, _orders, {
+          targetDays: fSettings.targetDays,
+          supplyDate: fSettings.supplyDate,
+          minSalesFilter: fSettings.minSales
+        });
+  }
+
+  function exportForecast() {
+    const fSettings = readForecastSettings();
+    const rows = forecastExportRows(currentForecastList());
+    const filename = `forecast-${fSettings.supplyDate}.xlsx`;
+    if (typeof XLSX !== 'undefined' && XLSX.utils && typeof XLSX.writeFile === 'function') {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols'] = [
+        { wch: 22 },
+        { wch: 36 },
+        { wch: 22 },
+        { wch: 16 },
+        { wch: 10 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 16 },
+        { wch: 14 },
+        { wch: 16 },
+        { wch: 18 },
+        { wch: 40 },
+        { wch: 16 }
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Прогноз поставок');
+      XLSX.writeFile(wb, filename);
+      return;
+    }
+    exportCsv(filename.replace(/\.xlsx$/, '.csv'), rows);
+  }
+
+  function exportForecastCsv() {
+    const fSettings = readForecastSettings();
+    exportCsv(`forecast-${fSettings.supplyDate}.csv`, forecastExportRows(currentForecastList()));
   }
 
   function recalcForecast() {
@@ -3735,7 +3855,7 @@
     document.getElementById('scSidebar')?.classList.remove('open');
     const overlay = document.getElementById('scSidebarOverlay');
     if (overlay) overlay.hidden = true;
-    document.getElementById('scMenuBtn')?.setAttribute('aria-expanded', 'false');
+    syncSidebarToggleUi();
   }
 
   function openScMobileNav() {
@@ -3743,7 +3863,39 @@
     document.getElementById('scSidebar')?.classList.add('open');
     const overlay = document.getElementById('scSidebarOverlay');
     if (overlay) overlay.hidden = false;
-    document.getElementById('scMenuBtn')?.setAttribute('aria-expanded', 'true');
+    syncSidebarToggleUi();
+  }
+
+  function isScMobileLayout() {
+    return window.matchMedia('(max-width: 980px)').matches;
+  }
+
+  function syncSidebarToggleUi() {
+    const btn = document.getElementById('scMenuBtn');
+    if (!btn) return;
+    const expanded = isScMobileLayout()
+      ? document.body.classList.contains('sc-nav-open')
+      : !document.body.classList.contains('sc-sidebar-collapsed');
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    btn.title = expanded ? 'Скрыть меню' : 'Показать меню';
+  }
+
+  function applySidebarCollapsed(collapsed) {
+    document.body.classList.toggle('sc-sidebar-collapsed', !!collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
+    } catch (_) { /* ignore */ }
+    if (!collapsed) closeScMobileNav();
+    else syncSidebarToggleUi();
+  }
+
+  function toggleScSidebar() {
+    if (isScMobileLayout()) {
+      if (document.body.classList.contains('sc-nav-open')) closeScMobileNav();
+      else openScMobileNav();
+      return;
+    }
+    applySidebarCollapsed(!document.body.classList.contains('sc-sidebar-collapsed'));
   }
 
   function bindEvents() {
@@ -3757,10 +3909,9 @@
         if (typeof openPage === 'function') openPage('dashboard-page');
         return;
       }
-      if (e.target.closest('#scMenuBtn')) {
+      if (e.target.closest('#scMenuBtn') || e.target.closest('[data-sc-collapse-sidebar]')) {
         e.preventDefault();
-        if (document.body.classList.contains('sc-nav-open')) closeScMobileNav();
-        else openScMobileNav();
+        toggleScSidebar();
         return;
       }
       if (e.target.closest('#scSidebarOverlay')) {
@@ -3831,6 +3982,10 @@
       }
       if (e.target.closest('[data-sc-export-forecast]')) {
         exportForecast();
+        return;
+      }
+      if (e.target.closest('[data-sc-export-forecast-csv]')) {
+        exportForecastCsv();
         return;
       }
       const fcRow = e.target.closest('#fc-table tbody tr[data-fc-idx]');
@@ -3945,6 +4100,11 @@
 
   function init(force) {
     bindEvents();
+    try {
+      applySidebarCollapsed(localStorage.getItem(SIDEBAR_KEY) === '1');
+    } catch (_) {
+      syncSidebarToggleUi();
+    }
     void hydrateToken().then(() => ensureAutoOrdersRefresh());
     if (!_initialized || force) {
       _initialized = true;
@@ -3974,6 +4134,7 @@
     recalcNew,
     showForecastChart,
     exportForecast,
+    exportForecastCsv,
     recalcForecast,
     toggleToken,
     saveToken,

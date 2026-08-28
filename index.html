@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-10-fin-period" />
+  <link rel="stylesheet" href="style.css?v=2026-08-28-forecast-ui" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -2073,10 +2073,13 @@
               <button type="button" class="sc-nav" data-sc-open-settings>⚙️ Настройки</button>
             </div>
           </div>
+          <button type="button" class="sc-sidebar-hide" data-sc-collapse-sidebar title="Скрыть меню">
+            ← Скрыть меню
+          </button>
         </aside>
         <main class="sc-main">
           <div class="sc-topbar">
-            <button type="button" class="sc-menu-btn" id="scMenuBtn" aria-label="Меню аналитики" aria-expanded="false">
+            <button type="button" class="sc-menu-btn" id="scMenuBtn" aria-label="Показать или скрыть меню" aria-expanded="true">
               <span></span><span></span><span></span>
             </button>
             <div class="sc-topbar-meta" id="sc-data-source">Загрузка…</div>
@@ -2166,6 +2169,6 @@
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
   <script src="script.js?v=2026-08-17-product-copy"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-08-22-forecast-smart"></script>
+  <script src="scaleup-yo.js?v=2026-08-28-forecast-xlsx"></script>
 </body>
 </html>
