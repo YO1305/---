@@ -6131,6 +6131,7 @@ function applyWmsBulkLineCosts() {
   });
   renderWmsBoxes();
   renderWmsLiveTotals();
+  renderWmsDraftSummary();
 }
 
 function addWmsBoxesBulk() {
