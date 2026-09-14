@@ -1223,10 +1223,44 @@
                 <input id="wmsShipmentDate" class="input" type="date" />
               </div>
             </div>
+            <div class="wms-bulk-bar" id="wmsBulkCostsBar">
+              <p class="sub" style="margin:0;">Массово на все товары</p>
+              <p class="hint" style="margin:0;">Укажи суммы один раз сверху — они проставятся на все позиции во всех коробках. Новые товары тоже получат эти значения.</p>
+              <div class="grid">
+                <div class="field">
+                  <label for="wmsBulkInboundCost">Логистика до склада, сум</label>
+                  <input id="wmsBulkInboundCost" class="input" type="number" min="0" step="0.01" value="0" />
+                </div>
+                <div class="field">
+                  <label for="wmsBulkTransportBoxCost">Коробка транспортная, сум</label>
+                  <input id="wmsBulkTransportBoxCost" class="input" type="number" min="0" step="0.01" value="0" />
+                </div>
+              </div>
+              <button type="button" id="wmsBulkApplyCostsBtn" class="btn-primary">Применить ко всем товарам</button>
+            </div>
+            <div class="wms-bulk-bar" id="wmsBulkBoxesBar">
+              <p class="sub" style="margin:0;">Массово добавить коробки</p>
+              <p class="hint" style="margin:0;">Выбери размер и количество — сразу создастся нужное число коробок (например 40 одинаковых).</p>
+              <div class="grid wms-bulk-boxes-grid">
+                <div class="field">
+                  <label for="wmsBulkBoxComponent">Размер коробки</label>
+                  <select id="wmsBulkBoxComponent" class="select">
+                    <option value="">— Выберите размер —</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="wmsBulkBoxCount">Количество коробок</label>
+                  <input id="wmsBulkBoxCount" class="input" type="number" min="1" max="200" step="1" value="40" />
+                </div>
+              </div>
+              <div class="wms-bulk-boxes-actions">
+                <button type="button" id="wmsBulkAddBoxesBtn" class="btn-primary">Добавить коробки</button>
+                <button type="button" id="wmsAddBoxBtn" class="btn-secondary">+ Одна коробка</button>
+              </div>
+            </div>
             <p class="sub" style="margin-top:14px;">Коробки</p>
             <p class="hint hidden" id="wmsUzumPayoutHint"></p>
             <div id="wmsBoxesContainer" class="wms-boxes-container"></div>
-            <button type="button" id="wmsAddBoxBtn" class="btn-secondary wms-add-box-btn">+ Добавить коробку</button>
             <div class="grid" style="margin-top:18px;">
               <div class="field">
                 <label for="wmsTruckCost">Грузовик до склада, сум</label>
@@ -2163,7 +2197,7 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-08-17-product-copy"></script>
+  <script src="script.js?v=2026-09-14-wms-bulk"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
 </body>
