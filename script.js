@@ -6066,7 +6066,93 @@ function refreshWmsUnitEconModalIfDraftLine(boxId, lineId) {
 }
 
 function resetWmsDraft() {
-  wmsState.draft = { boxes: [{ id: newWmsBoxId(), componentId: '', items: [] }] };
+  wmsState.draft = {
+    boxes: [{ id: newWmsBoxId(), componentId: '', items: [] }],
+    bulkInboundLogisticsCost: 0,
+    bulkTransportBoxCost: 0
+  };
+}
+
+function readWmsBulkCostsFromUi() {
+  const inbound = Math.max(0, n(document.getElementById('wmsBulkInboundCost')?.value));
+  const boxCost = Math.max(0, n(document.getElementById('wmsBulkTransportBoxCost')?.value));
+  if (wmsState.draft) {
+    wmsState.draft.bulkInboundLogisticsCost = inbound;
+    wmsState.draft.bulkTransportBoxCost = boxCost;
+  }
+  return { inbound, boxCost };
+}
+
+function fillWmsBulkCostInputs() {
+  const d = wmsState.draft || {};
+  let inbound = d.bulkInboundLogisticsCost;
+  let boxCost = d.bulkTransportBoxCost;
+  if (inbound == null || boxCost == null) {
+    for (const b of d.boxes || []) {
+      for (const line of b.items || []) {
+        const calc = ensureWmsLineCalc(line);
+        if (inbound == null && Number.isFinite(n(calc.inboundLogisticsCost))) inbound = n(calc.inboundLogisticsCost);
+        if (boxCost == null && Number.isFinite(n(calc.transportBoxCost))) boxCost = n(calc.transportBoxCost);
+        if (inbound != null && boxCost != null) break;
+      }
+      if (inbound != null && boxCost != null) break;
+    }
+  }
+  const inEl = document.getElementById('wmsBulkInboundCost');
+  const boxEl = document.getElementById('wmsBulkTransportBoxCost');
+  if (inEl) inEl.value = String(Number.isFinite(Number(inbound)) ? inbound : 0);
+  if (boxEl) boxEl.value = String(Number.isFinite(Number(boxCost)) ? boxCost : 0);
+}
+
+function fillWmsBulkBoxSelect() {
+  const sel = document.getElementById('wmsBulkBoxComponent');
+  if (!sel) return;
+  const prev = sel.value;
+  const boxComponents = getBoxComponentsForSelect();
+  let html = '<option value="">— Выберите размер —</option>';
+  boxComponents.forEach(c => {
+    html += `<option value="${escapeAttr(String(c.id))}">${escapeHtml(c.name)} (${escapeHtml(fmtMoney(Number(c.deliveryCostTashkent || 0)))})</option>`;
+  });
+  sel.innerHTML = html;
+  if (prev && Array.from(sel.options).some(o => o.value === prev)) sel.value = prev;
+}
+
+function applyWmsBulkCostsToLine(line) {
+  const { inbound, boxCost } = readWmsBulkCostsFromUi();
+  const calc = ensureWmsLineCalc(line);
+  calc.inboundLogisticsCost = inbound;
+  calc.transportBoxCost = boxCost;
+  syncWmsLineFinancials(line);
+}
+
+function applyWmsBulkLineCosts() {
+  (wmsState.draft.boxes || []).forEach(boxObj => {
+    (boxObj.items || []).forEach(line => applyWmsBulkCostsToLine(line));
+  });
+  renderWmsBoxes();
+  renderWmsLiveTotals();
+}
+
+function addWmsBoxesBulk() {
+  const componentId = document.getElementById('wmsBulkBoxComponent')?.value || '';
+  const count = Math.max(1, Math.min(200, Math.floor(Number(document.getElementById('wmsBulkBoxCount')?.value) || 0)));
+  if (!componentId) {
+    alert('Выбери размер коробки.');
+    return;
+  }
+  if (!wmsState.draft.boxes) wmsState.draft.boxes = [];
+  wmsState.draft.boxes = wmsState.draft.boxes.filter(b =>
+    (Array.isArray(b.items) && b.items.length) || String(b.componentId || '').trim()
+  );
+  for (let i = 0; i < count; i++) {
+    wmsState.draft.boxes.push({ id: newWmsBoxId(), componentId, items: [] });
+  }
+  if (!wmsState.draft.boxes.length) {
+    wmsState.draft.boxes.push({ id: newWmsBoxId(), componentId, items: [] });
+  }
+  renderWmsBoxes();
+  renderWmsLiveTotals();
+  renderWmsDraftSummary();
 }
 
 function openWmsAssemble() {
@@ -6086,6 +6172,8 @@ function openWmsAssemble() {
   const load = document.getElementById('wmsLoaderCost');
   if (truck) truck.value = '200000';
   if (load) load.value = '50000';
+  fillWmsBulkCostInputs();
+  fillWmsBulkBoxSelect();
   setWmsMarketplaceUi('Uzum Market');
   panel?.classList.remove('hidden');
   renderWmsBoxes();
@@ -6175,7 +6263,9 @@ async function openWmsEditDraft(shipmentId) {
         componentId: box.componentId || '',
         items: (box.items || []).map(it => deepCloneJson(it))
       }))
-      : [{ id: newWmsBoxId(), componentId: '', items: [] }]
+      : [{ id: newWmsBoxId(), componentId: '', items: [] }],
+    bulkInboundLogisticsCost: sh.bulkInboundLogisticsCost,
+    bulkTransportBoxCost: sh.bulkTransportBoxCost
   };
   const nameEl = document.getElementById('wmsShipmentName');
   const dateEl = document.getElementById('wmsShipmentDate');
@@ -6185,6 +6275,8 @@ async function openWmsEditDraft(shipmentId) {
   if (dateEl) dateEl.value = sh.date || sh.shipmentDate || todayIso();
   if (truck) truck.value = String(sh.truckCost != null ? sh.truckCost : 200000);
   if (load) load.value = String(sh.loaderCost != null ? sh.loaderCost : 50000);
+  fillWmsBulkCostInputs();
+  fillWmsBulkBoxSelect();
   setWmsMarketplaceUi(sh.marketplace);
   document.getElementById('wmsAssemblePanel')?.classList.remove('hidden');
   renderWmsBoxes();
@@ -6270,6 +6362,7 @@ async function handleWmsLineQtyCommit(inp) {
 function renderWmsBoxes() {
   const container = document.getElementById('wmsBoxesContainer');
   if (!container) return;
+  fillWmsBulkBoxSelect();
   const boxComponents = getBoxComponentsForSelect();
   const boxes = wmsState.draft.boxes || [];
   const uzumOnly = isWmsUzumMarketplaceSelected();
@@ -6288,9 +6381,6 @@ function renderWmsBoxes() {
     let rows = '';
     (box.items || []).forEach(line => {
       syncWmsLineFinancials(line);
-      const calc = ensureWmsLineCalc(line);
-      const inboundVal = n(calc.inboundLogisticsCost);
-      const transportBoxVal = n(calc.transportBoxCost);
       const q = Math.max(0, Math.floor(Number(line.qty || 0)));
       const uc = Number(line.unitCost ?? line.financialSnapshot?.costGross ?? 0);
       // Snapshot: fixedUzumPayout (не перезаписывается и не триггерит API при открытии)
@@ -6311,8 +6401,6 @@ function renderWmsBoxes() {
         <td>${escapeHtml(line.financialSnapshot?.name || line.name || '—')}</td>
         <td class="sku-cell">${escapeHtml(line.sku || '—')}</td>
         <td><input class="input wms-qty-input" type="number" min="1" step="1" value="${q}" data-wms-qty="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" data-prev-qty="${q}" title="Количество в коробке (остаток на складе пересчитывается сразу)" /></td>
-        <td><input class="input wms-inbound-input" type="number" min="0" step="0.01" value="${Number.isFinite(inboundVal) ? inboundVal : 0}" data-wms-inbound="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" title="Логистика до склада (в себестоимость)" /></td>
-        <td><input class="input wms-inbound-input" type="number" min="0" step="0.01" value="${Number.isFinite(transportBoxVal) ? transportBoxVal : 0}" data-wms-transport-box="${escapeAttr(box.id)}" data-line="${escapeAttr(line.lineId)}" title="Коробка транспортная (в себестоимость)" /></td>
         <td data-wms-cell-unit>${escapeHtml(fmtMoney(uc))}</td>
         <td data-wms-cell-sum>${escapeHtml(fmtMoney(q * uc))}</td>
         ${payoutCell}
@@ -6326,7 +6414,7 @@ function renderWmsBoxes() {
       // ВАЖНО: никаких запросов к API.
     });
     if (!rows) {
-      rows = `<tr><td colspan="${uzumOnly ? 9 : 8}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
+      rows = `<tr><td colspan="${uzumOnly ? 7 : 6}" class="muted" style="padding:12px;">Нет товаров. Нажми «Добавить товар».</td></tr>`;
     }
     const payoutHead = uzumOnly ? '<th>К ВЫВОДУ (СУМ)</th>' : '';
 
@@ -6374,7 +6462,7 @@ function renderWmsBoxes() {
         <select class="select" data-wms-box-component="${escapeAttr(box.id)}">${opts}</select>
       </div>
       <div class="table-wrap wms-box-items">
-        <table><thead><tr><th>Товар</th><th>SKU</th><th>Шт</th><th>Логистика до склада</th><th>Коробка трансп.</th><th>Себест. 1 шт</th><th>Сумма</th>${payoutHead}<th></th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>Товар</th><th>SKU</th><th>Шт</th><th>Себест. 1 шт</th><th>Сумма</th>${payoutHead}<th></th></tr></thead><tbody>${rows}</tbody></table>
       </div>
       <div class="wms-item-cards">${mobileCards}</div>
     `;
@@ -6451,27 +6539,6 @@ function renderWmsBoxes() {
       openWmsProductPickModal();
     });
   });
-  function bindWmsLineCostInput(inp, calcField) {
-    inp.addEventListener('input', () => {
-      const boxId = inp.getAttribute(`data-wms-${calcField === 'inboundLogisticsCost' ? 'inbound' : 'transport-box'}`);
-      const lineId = inp.getAttribute('data-line');
-      const found = findWmsDraftLine(boxId, lineId);
-      if (!found) return;
-      ensureWmsLineCalc(found.line)[calcField] = n(inp.value);
-      syncWmsLineFinancials(found.line);
-      const tr = inp.closest('tr');
-      const q = Math.max(0, Math.floor(Number(found.line.qty || 0)));
-      const uc = Number(found.line.unitCost || 0);
-      const unitCell = tr?.querySelector('[data-wms-cell-unit]');
-      const sumCell = tr?.querySelector('[data-wms-cell-sum]');
-      if (unitCell) unitCell.textContent = fmtMoney(uc);
-      if (sumCell) sumCell.textContent = fmtMoney(q * uc);
-      renderWmsLiveTotals();
-      refreshWmsUnitEconModalIfDraftLine(boxId, lineId);
-    });
-  }
-  container.querySelectorAll('[data-wms-inbound]').forEach(inp => bindWmsLineCostInput(inp, 'inboundLogisticsCost'));
-  container.querySelectorAll('[data-wms-transport-box]').forEach(inp => bindWmsLineCostInput(inp, 'transportBoxCost'));
   container.querySelectorAll('[data-wms-qty]').forEach(inp => {
     inp.addEventListener('change', () => void handleWmsLineQtyCommit(inp));
   });
@@ -6673,8 +6740,8 @@ async function confirmWmsPickProduct() {
     // Жёсткий снапшот: заполняется ТОЛЬКО при первичном добавлении в коробку (Uzum only)
     fixedUzumPayout: null
   };
+  applyWmsBulkCostsToLine(newLine);
   box.items.push(newLine);
-  syncWmsLineFinancials(newLine);
   closeWmsProductPickModal();
   renderWmsBoxes();
   renderWmsLiveTotals();
@@ -6718,6 +6785,8 @@ function buildWmsShipmentRecordFromUi(status, shipmentId) {
     updatedAt: nowIso,
     truckCost: t.truck,
     loaderCost: t.loader,
+    bulkInboundLogisticsCost: readWmsBulkCostsFromUi().inbound,
+    bulkTransportBoxCost: readWmsBulkCostsFromUi().boxCost,
     boxes: boxesSnapshot,
     items: flat.map(it => {
       const clone = deepCloneJson(it);
@@ -8203,6 +8272,12 @@ document.getElementById('wmsAddBoxBtn')?.addEventListener('click', () => {
   renderWmsBoxes();
   renderWmsLiveTotals();
   renderWmsDraftSummary();
+});
+document.getElementById('wmsBulkApplyCostsBtn')?.addEventListener('click', () => {
+  applyWmsBulkLineCosts();
+});
+document.getElementById('wmsBulkAddBoxesBtn')?.addEventListener('click', () => {
+  addWmsBoxesBulk();
 });
 document.getElementById('wmsSaveDraftBtn')?.addEventListener('click', () => void saveWmsShipmentDraft());
 document.getElementById('wmsSendShipmentBtn')?.addEventListener('click', () => void sendWmsShipment());
