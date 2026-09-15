@@ -7515,6 +7515,469 @@ function triggerBlobDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
+const ZK_DRIVE_STORAGE_KEY = 'yo_zk_drive_url';
+const ZK_TEMPLATE_URL = 'assets/zk-green-corridor-template.xlsx';
+const ZK_DATA_START_ROW = 3;
+let zkInvoiceTemplateBufferCache = null;
+let zkParsedInvoices = [];
+
+function isoToExcelDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function formatZkFileDate(iso) {
+  const d = isoToExcelDate(iso);
+  if (!d) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = String(d.getFullYear());
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+function formatZkSheetName(iso) {
+  const d = isoToExcelDate(iso);
+  if (!d) return 'ЗК';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd},${mm}`.slice(0, 31);
+}
+
+function parseRuDateToDate(raw) {
+  const s = String(raw || '').trim();
+  let m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$/);
+  if (m) {
+    let y = Number(m[3]);
+    if (y < 100) y += 2000;
+    const d = new Date(y, Number(m[2]) - 1, Number(m[1]));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return isoToExcelDate(s);
+  return null;
+}
+
+function parseLooseNumber(raw) {
+  const s = String(raw || '').replace(/\s+/g, '').replace(/\u00a0/g, '').replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function uniqueNonEmptyStrings(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((item) => {
+    const v = String(item || '').replace(/\s+/g, ' ').trim();
+    if (!v) return;
+    const key = v.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  });
+  return out;
+}
+
+function findProductByUzumBarcode(barcode) {
+  const code = normalizeUzumBarcode(barcode);
+  if (!code) return null;
+  return readProductsSafe().find((p) => normalizeUzumBarcode(p?.uzum_barcode) === code) || null;
+}
+
+function productDisplayNameForZk(product) {
+  if (!product) return '';
+  return String(product.name || product.article1c || product.sku || '').replace(/\s+/g, ' ').trim();
+}
+
+function ensurePdfJsReady() {
+  const lib = (typeof window !== 'undefined' && (window.pdfjsLib || window['pdfjs-dist/build/pdf'])) || null;
+  if (!lib || typeof lib.getDocument !== 'function') {
+    throw new Error('PDF.js не загрузился. Проверьте подключение pdf.min.js.');
+  }
+  if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
+    lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  return lib;
+}
+
+function rebuildPdfTextLines(items) {
+  const rows = [];
+  (items || []).forEach((item) => {
+    const str = String(item?.str || '').replace(/\s+/g, ' ').trim();
+    if (!str) return;
+    const transform = Array.isArray(item.transform) ? item.transform : [];
+    const x = Number(transform[4] || 0);
+    const y = Math.round(Number(transform[5] || 0) / 3) * 3;
+    let row = rows.find((r) => r.y === y);
+    if (!row) {
+      row = { y, parts: [] };
+      rows.push(row);
+    }
+    row.parts.push({ x, str });
+  });
+  rows.sort((a, b) => b.y - a.y);
+  return rows.map((row) => row.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(' ')).filter(Boolean);
+}
+
+async function extractPdfPlainText(arrayBuffer) {
+  const pdfjs = ensurePdfJsReady();
+  const loading = pdfjs.getDocument({ data: arrayBuffer });
+  const pdf = await loading.promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i += 1) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    pages.push(rebuildPdfTextLines(content.items || []).join('\n'));
+  }
+  return pages.join('\n\n');
+}
+
+function parseZkInvoiceText(text, fileName) {
+  const warnings = [];
+  const raw = String(text || '').replace(/\u00a0/g, ' ');
+  const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const joined = lines.join('\n');
+
+  let actNumber = '';
+  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка)\s*№|№\s*(?:акта|накладной))\s*[:№-]?\s*(\d{6,20})/i);
+  if (actLabel) actNumber = actLabel[1];
+  if (!actNumber) {
+    const fromFile = String(fileName || '').match(/(\d{9,14})/);
+    if (fromFile) actNumber = fromFile[1];
+  }
+  if (!actNumber) {
+    const candidates = [...joined.matchAll(/\b(1[0-9]{10,12})\b/g)].map((m) => m[1]);
+    if (candidates.length) {
+      const counts = new Map();
+      candidates.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
+      actNumber = [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
+    }
+  }
+  if (!actNumber) warnings.push('нет номера акта');
+
+  let invoiceDate = null;
+  const dateLabel = joined.match(/(?:дата\s*(?:отгрузки|накладной|акта|поставки|документа)|отгружен[оа]?)\s*[:\-]?\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})/i);
+  if (dateLabel) invoiceDate = parseRuDateToDate(dateLabel[1]);
+  if (!invoiceDate) {
+    const allDates = [...joined.matchAll(/\b(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b/g)].map((m) => parseRuDateToDate(m[1])).filter(Boolean);
+    if (allDates.length) invoiceDate = allDates[0];
+  }
+  if (!invoiceDate) warnings.push('нет даты в накладной');
+
+  let qty = 0;
+  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*единиц|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?)\s*[:\-]?\s*([\d\s]{1,12})/i);
+  if (qtyLabel) qty = Math.floor(parseLooseNumber(qtyLabel[1]));
+
+  let sum = 0;
+  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
+  if (sumLabel) sum = Math.round(parseLooseNumber(sumLabel[1]));
+
+  const skipRe = /направлен|накладн|штрихкод|количество|себестоим|сумма|итого|всего|страниц|акт\b|дата|поставк|sku|артикул|номер|ссылка|google|диск|коробк|логистик|инструкц|template|barcode/i;
+  const names = [];
+  const barcodeHits = [];
+  lines.forEach((line) => {
+    const codes = [...line.matchAll(/\b(\d{8,14})\b/g)].map((m) => m[1]);
+    codes.forEach((code) => {
+      const product = findProductByUzumBarcode(code);
+      if (product) {
+        barcodeHits.push({ code, product, line });
+        const nm = productDisplayNameForZk(product);
+        if (nm) names.push(nm);
+      }
+    });
+    const nums = line.match(/(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)(?:\s+(\d+(?:[.,]\d+)?))?/);
+    if (nums && barcodeHits.length) {
+      const last = barcodeHits[barcodeHits.length - 1];
+      if (last && last.line === line) {
+        const a = parseLooseNumber(nums[1]);
+        const b = parseLooseNumber(nums[2]);
+        const c = nums[3] != null ? parseLooseNumber(nums[3]) : 0;
+        if (a > 0 && a < 100000 && Number.isInteger(a)) {
+          last.qty = a;
+          last.amount = c > 0 ? c : (b > a ? b : 0);
+        }
+      }
+    }
+    if (!skipRe.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line) && line.length >= 12 && line.length <= 180) {
+      const cleaned = line.replace(/\b\d{8,14}\b/g, '').replace(/\s+/g, ' ').trim();
+      if (cleaned.length >= 12 && !skipRe.test(cleaned)) names.push(cleaned);
+    }
+  });
+
+  const lineQty = barcodeHits.reduce((acc, x) => acc + Math.max(0, Math.floor(Number(x.qty || 0))), 0);
+  const lineSum = barcodeHits.reduce((acc, x) => acc + Math.max(0, Number(x.amount || 0)), 0);
+  if (!qty && lineQty) qty = lineQty;
+  if (!sum && lineSum) sum = Math.round(lineSum);
+  if (!qty) {
+    const fallbackQty = joined.match(/\b(\d{1,5})\s*(?:шт|pcs)\b/i);
+    if (fallbackQty) qty = Math.floor(parseLooseNumber(fallbackQty[1]));
+  }
+  if (!qty) warnings.push('нет количества');
+  if (!sum) warnings.push('нет суммы');
+
+  const composition = uniqueNonEmptyStrings(names);
+  if (!composition.length) warnings.push('нет состава товара');
+
+  return {
+    fileName: String(fileName || ''),
+    actNumber: String(actNumber || '').trim(),
+    composition,
+    skuCount: composition.length,
+    qty: Math.max(0, Math.floor(Number(qty || 0))),
+    sum: Math.max(0, Math.round(Number(sum || 0))),
+    invoiceDate,
+    warnings
+  };
+}
+
+async function parseZkInvoiceXlsx(arrayBuffer, fileName) {
+  if (typeof window === 'undefined' || !window.XLSX) {
+    throw new Error('SheetJS не загрузился.');
+  }
+  const wb = window.XLSX.read(arrayBuffer, { type: 'array' });
+  const sheetName = (wb.SheetNames || [])[0];
+  const sheet = sheetName ? wb.Sheets[sheetName] : null;
+  if (!sheet) {
+    return parseZkInvoiceText('', fileName);
+  }
+  const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+  const header = (rows[0] || []).map((c) => String(c || '').toLowerCase());
+  const isUzumTpl = header.some((h) => h.includes('штрихкод')) && header.some((h) => h.includes('себестоим'));
+  if (isUzumTpl) {
+    const names = [];
+    let qty = 0;
+    let sum = 0;
+    rows.slice(1).forEach((row) => {
+      const barcode = normalizeUzumBarcode(row[0]);
+      const cost = parseLooseNumber(row[1]);
+      const q = Math.max(0, Math.floor(parseLooseNumber(row[2])));
+      if (!q) return;
+      qty += q;
+      sum += q * cost;
+      const product = findProductByUzumBarcode(barcode);
+      const nm = productDisplayNameForZk(product) || barcode;
+      if (nm) names.push(nm);
+    });
+    const composition = uniqueNonEmptyStrings(names);
+    const fromFile = String(fileName || '').match(/(\d{9,14})/);
+    const warnings = [];
+    if (!fromFile) warnings.push('нет номера акта — укажите его в имени файла');
+    if (!composition.length) warnings.push('нет состава товара');
+    return {
+      fileName: String(fileName || ''),
+      actNumber: fromFile ? fromFile[1] : '',
+      composition,
+      skuCount: composition.length,
+      qty,
+      sum: Math.round(sum),
+      invoiceDate: null,
+      warnings
+    };
+  }
+  const text = rows.map((row) => (row || []).join(' ')).join('\n');
+  return parseZkInvoiceText(text, fileName);
+}
+
+async function collectZkSourceFiles(fileList) {
+  const files = Array.from(fileList || []);
+  const out = [];
+  for (const file of files) {
+    const name = String(file?.name || '').toLowerCase();
+    if (name.endsWith('.zip')) {
+      ensureJsZipReady();
+      const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
+      const entries = Object.values(zip.files || {});
+      for (const entry of entries) {
+        if (entry.dir) continue;
+        const en = String(entry.name || '').toLowerCase();
+        if (!(en.endsWith('.pdf') || en.endsWith('.xlsx'))) continue;
+        const buf = await entry.async('arraybuffer');
+        const base = String(entry.name || '').split('/').pop();
+        out.push({ name: base, buffer: buf, kind: en.endsWith('.pdf') ? 'pdf' : 'xlsx' });
+      }
+      continue;
+    }
+    if (name.endsWith('.pdf')) {
+      out.push({ name: file.name, buffer: await file.arrayBuffer(), kind: 'pdf' });
+      continue;
+    }
+    if (name.endsWith('.xlsx')) {
+      out.push({ name: file.name, buffer: await file.arrayBuffer(), kind: 'xlsx' });
+    }
+  }
+  return out;
+}
+
+async function parseZkSourceFile(source) {
+  if (source.kind === 'xlsx') return parseZkInvoiceXlsx(source.buffer, source.name);
+  const text = await extractPdfPlainText(source.buffer);
+  if (!String(text || '').trim()) {
+    return {
+      fileName: source.name,
+      actNumber: (String(source.name).match(/(\d{9,14})/) || [])[1] || '',
+      composition: [],
+      skuCount: 0,
+      qty: 0,
+      sum: 0,
+      invoiceDate: null,
+      warnings: ['в PDF нет текста — нужен текстовый, не сканированный файл']
+    };
+  }
+  return parseZkInvoiceText(text, source.name);
+}
+
+function setZkStatus(text) {
+  const el = document.getElementById('wmsZkStatus');
+  if (el) el.textContent = text;
+}
+
+function renderZkPreview(rows) {
+  const host = document.getElementById('wmsZkPreview');
+  if (!host) return;
+  if (!rows.length) {
+    host.classList.add('hidden');
+    host.innerHTML = '';
+    return;
+  }
+  const body = rows.map((row, idx) => {
+    const warn = (row.warnings || []).length
+      ? `<div class="wms-zk-warn">${escapeHtml(row.warnings.join('; '))}</div>`
+      : '';
+    const date = row.invoiceDate
+      ? row.invoiceDate.toLocaleDateString('ru-RU')
+      : '—';
+    return `<tr>
+      <td>${idx + 1}</td>
+      <td>${escapeHtml(row.fileName || '')}${warn}</td>
+      <td>${escapeHtml(row.actNumber || '—')}</td>
+      <td>${escapeHtml((row.composition || []).join(' / ') || '—')}</td>
+      <td>${row.skuCount || 0}</td>
+      <td>${(row.qty || 0).toLocaleString('ru-RU')}</td>
+      <td>${(row.sum || 0).toLocaleString('ru-RU')}</td>
+      <td>${escapeHtml(date)}</td>
+    </tr>`;
+  }).join('');
+  host.innerHTML = `<table><thead><tr>
+    <th>№</th><th>Файл</th><th>Номер акта</th><th>Состав</th><th>SKU</th><th>Единиц</th><th>Сумма</th><th>Дата накладной</th>
+  </tr></thead><tbody>${body}</tbody></table>`;
+  host.classList.remove('hidden');
+}
+
+async function handleZkInvoicesSelected(fileList) {
+  zkParsedInvoices = [];
+  renderZkPreview([]);
+  const files = Array.from(fileList || []);
+  if (!files.length) {
+    setZkStatus('Файлы не выбраны.');
+    return;
+  }
+  setZkStatus('Читаю накладные…');
+  try {
+    const sources = await collectZkSourceFiles(files);
+    if (!sources.length) {
+      setZkStatus('В выборе нет PDF или Excel-накладных.');
+      return;
+    }
+    const parsed = [];
+    for (let i = 0; i < sources.length; i += 1) {
+      setZkStatus(`Обрабатываю ${i + 1} из ${sources.length}: ${sources[i].name}`);
+      parsed.push(await parseZkSourceFile(sources[i]));
+    }
+    parsed.sort((a, b) => String(a.actNumber || a.fileName).localeCompare(String(b.actNumber || b.fileName), 'ru', { numeric: true }));
+    zkParsedInvoices = parsed;
+    const warnCount = parsed.filter((r) => (r.warnings || []).length).length;
+    setZkStatus(`Готово: ${parsed.length} накладных${warnCount ? `, с пометками: ${warnCount}` : ''}.`);
+    renderZkPreview(parsed);
+  } catch (e) {
+    console.error('handleZkInvoicesSelected:', e);
+    setZkStatus(e?.message || 'Не удалось прочитать файлы.');
+  }
+}
+
+async function loadZkTemplateBuffer() {
+  if (zkInvoiceTemplateBufferCache) return zkInvoiceTemplateBufferCache;
+  const resp = await fetch(ZK_TEMPLATE_URL, { cache: 'no-store' });
+  if (!resp.ok) throw new Error('Не найден шаблон assets/zk-green-corridor-template.xlsx');
+  zkInvoiceTemplateBufferCache = await resp.arrayBuffer();
+  return zkInvoiceTemplateBufferCache;
+}
+
+function applyZkDataRow(sheet, rowNum, invoice, driveUrl, arrivalDate) {
+  const row = sheet.getRow(rowNum);
+  row.getCell(1).value = 'NON FOOD';
+  row.getCell(2).value = '3P';
+  row.getCell(3).value = (invoice.composition || []).join(' / ');
+  const act = String(invoice.actNumber || '').trim();
+  row.getCell(4).value = /^\d+$/.test(act) ? Number(act) : (act || null);
+  const url = String(driveUrl || '').trim();
+  if (url) {
+    row.getCell(5).value = { text: url, hyperlink: url };
+  } else {
+    row.getCell(5).value = null;
+  }
+  row.getCell(6).value = Number(invoice.skuCount || 0);
+  row.getCell(7).value = Number(invoice.qty || 0);
+  row.getCell(8).value = Number(invoice.sum || 0);
+  const invDate = invoice.invoiceDate instanceof Date ? invoice.invoiceDate : arrivalDate;
+  row.getCell(9).value = invDate || null;
+  row.getCell(10).value = arrivalDate || null;
+  if (invDate) row.getCell(9).numFmt = 'dd.mm.yyyy';
+  if (arrivalDate) row.getCell(10).numFmt = 'dd.mm.yyyy';
+}
+
+async function generateZkExcelFromParsed() {
+  const arrivalIso = document.getElementById('wmsZkArrivalDate')?.value || '';
+  const driveUrl = String(document.getElementById('wmsZkDriveUrl')?.value || '').trim();
+  if (!arrivalIso) {
+    alert('Укажи дату прибытия товара.');
+    return;
+  }
+  if (!zkParsedInvoices.length) {
+    alert('Сначала загрузи PDF (или ZIP) накладных.');
+    return;
+  }
+  try {
+    ensureExcelJsReady();
+    const arrivalDate = isoToExcelDate(arrivalIso);
+    const templateBuffer = cloneArrayBuffer(await loadZkTemplateBuffer());
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(templateBuffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error('В шаблоне ЗК нет листа.');
+    sheet.name = formatZkSheetName(arrivalIso);
+    const clearTo = Math.max(sheet.rowCount || 0, ZK_DATA_START_ROW + zkParsedInvoices.length + 5);
+    for (let r = ZK_DATA_START_ROW; r <= clearTo; r += 1) {
+      const row = sheet.getRow(r);
+      for (let c = 1; c <= 12; c += 1) row.getCell(c).value = null;
+    }
+    zkParsedInvoices.forEach((invoice, idx) => {
+      applyZkDataRow(sheet, ZK_DATA_START_ROW + idx, invoice, driveUrl, arrivalDate);
+    });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    triggerBlobDownload(blob, `ЗК ${formatZkFileDate(arrivalIso)}.xlsx`);
+    try { localStorage.setItem(ZK_DRIVE_STORAGE_KEY, driveUrl); } catch (_) {}
+  } catch (e) {
+    console.error('generateZkExcelFromParsed:', e);
+    alert(e?.message || 'Не удалось собрать файл ЗК.');
+  }
+}
+
+function initZkGreenCorridorUi() {
+  const dateEl = document.getElementById('wmsZkArrivalDate');
+  if (dateEl && !dateEl.value) dateEl.value = todayIso();
+  const urlEl = document.getElementById('wmsZkDriveUrl');
+  if (urlEl && !urlEl.value) {
+    try { urlEl.value = localStorage.getItem(ZK_DRIVE_STORAGE_KEY) || ''; } catch (_) {}
+  }
+  document.getElementById('wmsZkInvoicesInput')?.addEventListener('change', (e) => {
+    void handleZkInvoicesSelected(e.target.files);
+  });
+  document.getElementById('wmsZkGenerateBtn')?.addEventListener('click', () => {
+    void generateZkExcelFromParsed();
+  });
+}
+
 function collectShipmentBoxesForExport(sh) {
   if (sh?.version === 2 && Array.isArray(sh.boxes) && sh.boxes.length) {
     return sh.boxes.map((box, idx) => ({ box, index: idx + 1 }));
@@ -8305,6 +8768,7 @@ renderComponentsList();
 renderWmsHistory();
 renderWmsDraftSummary();
 updateComponentsAutocomplete();
+initZkGreenCorridorUi();
 
 /** Ежемесячные отчёты маркетплейсов (Excel → JSON), вкладка «Аналитика» */
 function applyAnalyticsTabMarketplaceLayout() {

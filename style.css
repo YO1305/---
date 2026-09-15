@@ -1218,6 +1218,28 @@ body.dark-mode .component-row {
   align-items: center;
 }
 .wms-bulk-boxes-actions button { margin: 0; }
+.wms-zk-preview {
+  margin-top: 10px;
+  overflow: auto;
+  max-height: 320px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+.wms-zk-preview table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.wms-zk-preview th,
+.wms-zk-preview td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+  vertical-align: top;
+}
+.wms-zk-preview th { font-weight: 800; }
+.wms-zk-warn { color: #b45309; font-weight: 700; }
 .wms-boxes-container {
   display: grid;
   gap: 14px;

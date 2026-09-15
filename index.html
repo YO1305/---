@@ -1197,6 +1197,30 @@
             </div>
           </div>
 
+          <div class="card" id="wmsZkCard">
+            <h2>Зелёный коридор (ЗК)</h2>
+            <p class="hint" style="margin-top:8px;">Загрузи PDF-накладные (по одной на коробку/акт). Укажи дату прибытия и ссылку на Google Диск с этими накладными — скачается Excel в формате ЗК.</p>
+            <div class="grid" style="margin-top:12px;">
+              <div class="field">
+                <label for="wmsZkArrivalDate">Дата прибытия товара</label>
+                <input id="wmsZkArrivalDate" class="input" type="date" />
+              </div>
+              <div class="field">
+                <label for="wmsZkDriveUrl">Ссылка на накладные (Google Диск)</label>
+                <input id="wmsZkDriveUrl" class="input" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+              </div>
+            </div>
+            <div class="field" style="margin-top:12px;">
+              <label for="wmsZkInvoicesInput">Накладные PDF (можно несколько или ZIP)</label>
+              <input id="wmsZkInvoicesInput" class="input" type="file" accept=".pdf,.zip,.xlsx,application/pdf,application/zip" multiple />
+            </div>
+            <p class="hint" id="wmsZkStatus" style="margin-top:8px;">Файлы не выбраны.</p>
+            <div id="wmsZkPreview" class="wms-zk-preview hidden"></div>
+            <div class="wms-bulk-boxes-actions" style="margin-top:12px;">
+              <button type="button" id="wmsZkGenerateBtn" class="btn-primary">Скачать ЗК Excel</button>
+            </div>
+          </div>
+
           <div id="wmsAssemblePanel" class="card wms-assemble hidden">
             <div class="wms-assemble-head">
               <h2>Сборка поставки</h2>
@@ -2191,13 +2215,14 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-09-14-wms-bulk"></script>
+  <script src="script.js?v=2026-09-15-wms-zk"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
 </body>
