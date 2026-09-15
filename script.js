@@ -7589,47 +7589,266 @@ function productDisplayNameForZk(product) {
   return String(product.name || product.article1c || product.sku || '').replace(/\s+/g, ' ').trim();
 }
 
+const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174';
+
 function ensurePdfJsReady() {
   const lib = (typeof window !== 'undefined' && (window.pdfjsLib || window['pdfjs-dist/build/pdf'])) || null;
   if (!lib || typeof lib.getDocument !== 'function') {
     throw new Error('PDF.js не загрузился. Проверьте подключение pdf.min.js.');
   }
-  if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
-    lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  if (lib.GlobalWorkerOptions) {
+    lib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/build/pdf.worker.min.js`;
   }
   return lib;
+}
+
+function cloneUint8(arrayBuffer) {
+  const src = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+  const copy = new Uint8Array(src.byteLength);
+  copy.set(src);
+  return copy;
 }
 
 function rebuildPdfTextLines(items) {
   const rows = [];
   (items || []).forEach((item) => {
-    const str = String(item?.str || '').replace(/\s+/g, ' ').trim();
-    if (!str) return;
+    const str = String(item?.str || '');
+    if (!str && !item?.hasEOL) return;
     const transform = Array.isArray(item.transform) ? item.transform : [];
     const x = Number(transform[4] || 0);
-    const y = Math.round(Number(transform[5] || 0) / 3) * 3;
-    let row = rows.find((r) => r.y === y);
+    const y = Math.round(Number(transform[5] || 0) / 4) * 4;
+    let row = rows.find((r) => Math.abs(r.y - y) <= 4);
     if (!row) {
       row = { y, parts: [] };
       rows.push(row);
     }
     row.parts.push({ x, str });
+    if (item?.hasEOL) row.parts.push({ x: x + 10000, str: '\n' });
   });
   rows.sort((a, b) => b.y - a.y);
-  return rows.map((row) => row.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(' ')).filter(Boolean);
+  return rows
+    .map((row) => row.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(''))
+    .map((line) => line.replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim())
+    .filter(Boolean);
 }
 
-async function extractPdfPlainText(arrayBuffer) {
+function decodePdfLiteralString(raw) {
+  let s = String(raw || '');
+  s = s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+  s = s.replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\');
+  s = s.replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8) || 0));
+  return s;
+}
+
+function decodePdfHexString(hex) {
+  const clean = String(hex || '').replace(/[^0-9a-fA-F]/g, '');
+  if (clean.length < 4) return '';
+  const bytes = [];
+  for (let i = 0; i < clean.length; i += 2) {
+    bytes.push(parseInt(clean.slice(i, i + 2) || '00', 16));
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let out = '';
+    for (let i = 2; i + 1 < bytes.length; i += 2) {
+      out += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+    }
+    return out;
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+  } catch (_) {
+    return bytes.map((b) => String.fromCharCode(b)).join('');
+  }
+}
+
+async function inflatePdfFlateBytes(bytes) {
+  if (typeof DecompressionStream === 'undefined') return '';
+  const tryDecode = async (kind) => {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(kind));
+    const buf = await new Response(stream).arrayBuffer();
+    return new TextDecoder('latin1').decode(buf);
+  };
+  try {
+    return await tryDecode('deflate');
+  } catch (_) {
+    try {
+      return await tryDecode('deflate-raw');
+    } catch (e2) {
+      return '';
+    }
+  }
+}
+
+async function extractRawPdfStrings(arrayBuffer) {
+  const bytes = cloneUint8(arrayBuffer);
+  const latin1 = new TextDecoder('latin1').decode(bytes);
+  const chunks = [latin1];
+  const re = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = re.exec(latin1))) {
+    const head = latin1.slice(Math.max(0, match.index - 280), match.index);
+    if (!/\/FlateDecode/.test(head)) continue;
+    const start = match.index + match[0].indexOf('stream') + (latin1[match.index + 6] === '\r' ? 8 : 7);
+    const end = latin1.indexOf('endstream', start);
+    if (end < 0) continue;
+    let payload = bytes.subarray(start, end);
+    if (payload.length && payload[0] === 0x0d) payload = payload.subarray(1);
+    if (payload.length && payload[0] === 0x0a) payload = payload.subarray(1);
+    const inflated = await inflatePdfFlateBytes(payload);
+    if (inflated) chunks.push(inflated);
+  }
+  const texts = [];
+  chunks.forEach((chunk) => {
+    [...chunk.matchAll(/\((?:\\.|[^\\)]){2,}\)(?:\s*Tj|\s*TJ)/g)].forEach((m) => {
+      const inner = m[0].slice(1, m[0].lastIndexOf(')'));
+      const decoded = decodePdfLiteralString(inner).replace(/[^\S\n]+/g, ' ').trim();
+      if (decoded.length >= 2) texts.push(decoded);
+    });
+    [...chunk.matchAll(/<([0-9A-Fa-f\s]{8,})>\s*(?:Tj|TJ)/g)].forEach((m) => {
+      const decoded = decodePdfHexString(m[1]).replace(/[^\S\n]+/g, ' ').trim();
+      if (decoded.length >= 2) texts.push(decoded);
+    });
+  });
+  return uniqueNonEmptyStrings(texts).join('\n');
+}
+
+async function extractPdfJsText(arrayBuffer) {
   const pdfjs = ensurePdfJsReady();
-  const loading = pdfjs.getDocument({ data: arrayBuffer });
+  const data = cloneUint8(arrayBuffer);
+  const loading = pdfjs.getDocument({
+    data,
+    cMapUrl: `${PDFJS_CDN}/cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    disableFontFace: false
+  });
   const pdf = await loading.promise;
   const pages = [];
   for (let i = 1; i <= pdf.numPages; i += 1) {
     const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    pages.push(rebuildPdfTextLines(content.items || []).join('\n'));
+    const content = await page.getTextContent({ includeMarkedContent: true, disableCombineTextItems: false });
+    const items = (content.items || []).filter((it) => it && typeof it.str === 'string');
+    pages.push(rebuildPdfTextLines(items).join('\n'));
+  }
+  try { await pdf.destroy(); } catch (_) {}
+  return pages.join('\n\n');
+}
+
+async function loadScriptOnce(src, check) {
+  if (check()) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Не удалось загрузить ${src}`));
+    document.head.appendChild(s);
+  });
+  if (!check()) throw new Error(`Скрипт не инициализировался: ${src}`);
+}
+
+async function ocrPdfPages(arrayBuffer, onStatus) {
+  await loadScriptOnce(
+    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    () => !!(typeof window !== 'undefined' && window.Tesseract)
+  );
+  const pdfjs = ensurePdfJsReady();
+  const data = cloneUint8(arrayBuffer);
+  const pdf = await pdfjs.getDocument({
+    data,
+    cMapUrl: `${PDFJS_CDN}/cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
+    isEvalSupported: false,
+    useSystemFonts: true
+  }).promise;
+  const maxPages = Math.min(pdf.numPages, 40);
+  const worker = await window.Tesseract.createWorker('rus+eng');
+  const pages = [];
+  try {
+    for (let i = 1; i <= maxPages; i += 1) {
+      if (typeof onStatus === 'function') onStatus(`Распознаю страницу ${i} из ${maxPages}…`);
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const result = await worker.recognize(canvas);
+      pages.push(String(result?.data?.text || '').trim());
+    }
+  } finally {
+    try { await worker.terminate(); } catch (_) {}
+    try { await pdf.destroy(); } catch (_) {}
   }
   return pages.join('\n\n');
+}
+
+async function extractPdfPlainText(arrayBuffer, onStatus) {
+  let text = '';
+  try {
+    text = await extractPdfJsText(arrayBuffer);
+  } catch (e) {
+    console.warn('extractPdfJsText:', e);
+  }
+  if (String(text || '').replace(/\s+/g, '').length < 12) {
+    try {
+      const raw = await extractRawPdfStrings(arrayBuffer);
+      if (String(raw || '').replace(/\s+/g, '').length > String(text || '').replace(/\s+/g, '').length) {
+        text = [text, raw].filter(Boolean).join('\n');
+      }
+    } catch (e) {
+      console.warn('extractRawPdfStrings:', e);
+    }
+  }
+  if (String(text || '').replace(/\s+/g, '').length < 12) {
+    try {
+      text = await ocrPdfPages(arrayBuffer, onStatus);
+    } catch (e) {
+      console.warn('ocrPdfPages:', e);
+    }
+  }
+  return String(text || '').trim();
+}
+
+function collectCatalogNamesInText(text) {
+  const blob = String(text || '').toLowerCase();
+  if (!blob) return [];
+  const names = [];
+  readProductsSafe().forEach((p) => {
+    const nm = productDisplayNameForZk(p);
+    if (nm.length >= 8 && blob.includes(nm.toLowerCase())) names.push(nm);
+  });
+  return uniqueNonEmptyStrings(names);
+}
+
+function splitUzumInvoiceChunks(text) {
+  const raw = String(text || '').replace(/\u00a0/g, ' ');
+  const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const headerRe = /(?:поставка|акт|накладная|отправление)\s*№?\s*[:.]?\s*(11\d{9,12}|\d{10,14})/i;
+  const headerIdx = [];
+  lines.forEach((line, idx) => {
+    if (headerRe.test(line)) headerIdx.push(idx);
+  });
+  if (headerIdx.length >= 2) {
+    const chunks = [];
+    headerIdx.forEach((start, i) => {
+      const end = i + 1 < headerIdx.length ? headerIdx[i + 1] : lines.length;
+      chunks.push(lines.slice(start, end).join('\n'));
+    });
+    return chunks;
+  }
+  const idLineIdx = [];
+  lines.forEach((line, idx) => {
+    if (/\b11\d{9,10}\b/.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line)) idLineIdx.push(idx);
+  });
+  if (idLineIdx.length >= 2) {
+    return idLineIdx.map((idx) => lines[idx]);
+  }
+  return [raw];
 }
 
 function parseZkInvoiceText(text, fileName) {
@@ -7639,14 +7858,14 @@ function parseZkInvoiceText(text, fileName) {
   const joined = lines.join('\n');
 
   let actNumber = '';
-  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка)\s*№|№\s*(?:акта|накладной))\s*[:№-]?\s*(\d{6,20})/i);
+  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка|отправление)\s*№|№\s*(?:акта|накладной|поставки)|id\s*поставки)\s*[:№-]?\s*(\d{6,20})/i);
   if (actLabel) actNumber = actLabel[1];
   if (!actNumber) {
-    const fromFile = String(fileName || '').match(/(\d{9,14})/);
-    if (fromFile) actNumber = fromFile[1];
+    const fromFile = String(fileName || '').match(/(11\d{9,12}|\d{10,14})/);
+    if (fromFile && !/uzum|business|поставк/i.test(fileName)) actNumber = fromFile[1];
   }
   if (!actNumber) {
-    const candidates = [...joined.matchAll(/\b(1[0-9]{10,12})\b/g)].map((m) => m[1]);
+    const candidates = [...joined.matchAll(/\b(11[0-9]{9,12})\b/g)].map((m) => m[1]);
     if (candidates.length) {
       const counts = new Map();
       candidates.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
@@ -7656,7 +7875,7 @@ function parseZkInvoiceText(text, fileName) {
   if (!actNumber) warnings.push('нет номера акта');
 
   let invoiceDate = null;
-  const dateLabel = joined.match(/(?:дата\s*(?:отгрузки|накладной|акта|поставки|документа)|отгружен[оа]?)\s*[:\-]?\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})/i);
+  const dateLabel = joined.match(/(?:дата\s*(?:отгрузки|накладной|акта|поставки|документа|создания)|отгружен[оа]?)\s*[:\-]?\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})/i);
   if (dateLabel) invoiceDate = parseRuDateToDate(dateLabel[1]);
   if (!invoiceDate) {
     const allDates = [...joined.matchAll(/\b(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b/g)].map((m) => parseRuDateToDate(m[1])).filter(Boolean);
@@ -7665,15 +7884,19 @@ function parseZkInvoiceText(text, fileName) {
   if (!invoiceDate) warnings.push('нет даты в накладной');
 
   let qty = 0;
-  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*единиц|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?)\s*[:\-]?\s*([\d\s]{1,12})/i);
+  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*(?:единиц|товаров|шт)?|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?)\s*[:\-]?\s*([\d\s]{1,12})/i);
   if (qtyLabel) qty = Math.floor(parseLooseNumber(qtyLabel[1]));
 
   let sum = 0;
-  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
+  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате|себестоимость\s*всего)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
   if (sumLabel) sum = Math.round(parseLooseNumber(sumLabel[1]));
+  if (!sum) {
+    const uzs = joined.match(/([\d\s]{3,})(?:[.,]\d{1,2})?\s*(?:сум|uzs)\b/i);
+    if (uzs) sum = Math.round(parseLooseNumber(uzs[1]));
+  }
 
-  const skipRe = /направлен|накладн|штрихкод|количество|себестоим|сумма|итого|всего|страниц|акт\b|дата|поставк|sku|артикул|номер|ссылка|google|диск|коробк|логистик|инструкц|template|barcode/i;
-  const names = [];
+  const skipRe = /направлен|штрихкод товара|себестоим|страниц|ссылка на акт|google диск|логистик|инструкц|template|barcode|uzum business|личный кабинет/i;
+  const names = collectCatalogNamesInText(joined);
   const barcodeHits = [];
   lines.forEach((line) => {
     const codes = [...line.matchAll(/\b(\d{8,14})\b/g)].map((m) => m[1]);
@@ -7698,9 +7921,11 @@ function parseZkInvoiceText(text, fileName) {
         }
       }
     }
-    if (!skipRe.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line) && line.length >= 12 && line.length <= 180) {
-      const cleaned = line.replace(/\b\d{8,14}\b/g, '').replace(/\s+/g, ' ').trim();
-      if (cleaned.length >= 12 && !skipRe.test(cleaned)) names.push(cleaned);
+    if (!skipRe.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line) && line.length >= 12 && line.length <= 220) {
+      const cleaned = line.replace(/\b11\d{9,12}\b/g, '').replace(/\b\d{8,14}\b/g, '').replace(/\s+/g, ' ').trim();
+      if (cleaned.length >= 12 && !skipRe.test(cleaned) && !/^(дата|номер|итого|всего|сумма)\b/i.test(cleaned)) {
+        names.push(cleaned);
+      }
     }
   });
 
@@ -7715,7 +7940,7 @@ function parseZkInvoiceText(text, fileName) {
   if (!qty) warnings.push('нет количества');
   if (!sum) warnings.push('нет суммы');
 
-  const composition = uniqueNonEmptyStrings(names);
+  const composition = uniqueNonEmptyStrings(names).filter((nm) => nm.length <= 220).slice(0, 12);
   if (!composition.length) warnings.push('нет состава товара');
 
   return {
@@ -7808,22 +8033,30 @@ async function collectZkSourceFiles(fileList) {
   return out;
 }
 
-async function parseZkSourceFile(source) {
-  if (source.kind === 'xlsx') return parseZkInvoiceXlsx(source.buffer, source.name);
-  const text = await extractPdfPlainText(source.buffer);
-  if (!String(text || '').trim()) {
-    return {
+async function parseZkSourceFile(source, onStatus) {
+  if (source.kind === 'xlsx') {
+    const one = await parseZkInvoiceXlsx(source.buffer, source.name);
+    return [one];
+  }
+  const text = await extractPdfPlainText(source.buffer, onStatus);
+  if (!String(text || '').replace(/\s+/g, '')) {
+    return [{
       fileName: source.name,
-      actNumber: (String(source.name).match(/(\d{9,14})/) || [])[1] || '',
+      actNumber: '',
       composition: [],
       skuCount: 0,
       qty: 0,
       sum: 0,
       invoiceDate: null,
-      warnings: ['в PDF нет текста — нужен текстовый, не сканированный файл']
-    };
+      warnings: ['не удалось прочитать PDF — нет текста и распознавание не сработало']
+    }];
   }
-  return parseZkInvoiceText(text, source.name);
+  const chunks = splitUzumInvoiceChunks(text);
+  return chunks.map((chunk, idx) => {
+    const parsed = parseZkInvoiceText(chunk, source.name);
+    if (chunks.length > 1) parsed.fileName = `${source.name} · ${idx + 1}`;
+    return parsed;
+  });
 }
 
 function setZkStatus(text) {
@@ -7881,7 +8114,10 @@ async function handleZkInvoicesSelected(fileList) {
     const parsed = [];
     for (let i = 0; i < sources.length; i += 1) {
       setZkStatus(`Обрабатываю ${i + 1} из ${sources.length}: ${sources[i].name}`);
-      parsed.push(await parseZkSourceFile(sources[i]));
+      const rows = await parseZkSourceFile(sources[i], (msg) => {
+        setZkStatus(`Файл ${i + 1}/${sources.length}: ${msg}`);
+      });
+      parsed.push(...rows);
     }
     parsed.sort((a, b) => String(a.actNumber || a.fileName).localeCompare(String(b.actNumber || b.fileName), 'ru', { numeric: true }));
     zkParsedInvoices = parsed;
@@ -7936,6 +8172,16 @@ async function generateZkExcelFromParsed() {
     alert('Сначала загрузи PDF (или ZIP) накладных.');
     return;
   }
+  const filled = zkParsedInvoices.filter((row) =>
+    String(row.actNumber || '').trim()
+    || (row.composition || []).length
+    || Number(row.qty || 0) > 0
+    || Number(row.sum || 0) > 0
+  );
+  if (!filled.length) {
+    alert('Накладные не распознались — пустой ЗК не сохраняю. Подожди, пока статус станет «Готово», или сохрани PDF из Uzum через Печать → «Сохранить как PDF».');
+    return;
+  }
   try {
     ensureExcelJsReady();
     const arrivalDate = isoToExcelDate(arrivalIso);
@@ -7945,12 +8191,12 @@ async function generateZkExcelFromParsed() {
     const sheet = workbook.worksheets[0];
     if (!sheet) throw new Error('В шаблоне ЗК нет листа.');
     sheet.name = formatZkSheetName(arrivalIso);
-    const clearTo = Math.max(sheet.rowCount || 0, ZK_DATA_START_ROW + zkParsedInvoices.length + 5);
+    const clearTo = Math.max(sheet.rowCount || 0, ZK_DATA_START_ROW + filled.length + 5);
     for (let r = ZK_DATA_START_ROW; r <= clearTo; r += 1) {
       const row = sheet.getRow(r);
       for (let c = 1; c <= 12; c += 1) row.getCell(c).value = null;
     }
-    zkParsedInvoices.forEach((invoice, idx) => {
+    filled.forEach((invoice, idx) => {
       applyZkDataRow(sheet, ZK_DATA_START_ROW + idx, invoice, driveUrl, arrivalDate);
     });
     const buffer = await workbook.xlsx.writeBuffer();
