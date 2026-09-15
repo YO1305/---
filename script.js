@@ -7590,16 +7590,79 @@ function productDisplayNameForZk(product) {
 }
 
 const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174';
+let pdfWorkerBlobUrl = null;
+let zkBusy = false;
+let zkJobId = 0;
+
+function zkTextLen(text) {
+  return String(text || '').replace(/\s+/g, '').length;
+}
+
+async function withTimeout(promise, ms, message) {
+  let timer = 0;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), ms);
+      })
+    ]);
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
+}
+
+async function mapPool(items, limit, mapper) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const idx = next;
+      next += 1;
+      out[idx] = await mapper(items[idx], idx);
+    }
+  }
+  const n = Math.max(1, Math.min(limit, items.length || 1));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return out;
+}
+
+function setZkBusy(busy, label) {
+  zkBusy = !!busy;
+  const btn = document.getElementById('wmsZkGenerateBtn');
+  if (!btn) return;
+  btn.disabled = zkBusy;
+  btn.textContent = zkBusy ? (label || 'Обрабатываю накладные…') : 'Скачать ЗК Excel';
+}
 
 function ensurePdfJsReady() {
   const lib = (typeof window !== 'undefined' && (window.pdfjsLib || window['pdfjs-dist/build/pdf'])) || null;
   if (!lib || typeof lib.getDocument !== 'function') {
     throw new Error('PDF.js не загрузился. Проверьте подключение pdf.min.js.');
   }
-  if (lib.GlobalWorkerOptions) {
-    lib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/build/pdf.worker.min.js`;
+  if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
+    lib.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl || `${PDFJS_CDN}/build/pdf.worker.min.js`;
   }
   return lib;
+}
+
+async function ensurePdfWorker() {
+  const pdfjs = ensurePdfJsReady();
+  if (pdfWorkerBlobUrl) {
+    pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl;
+    return pdfjs;
+  }
+  try {
+    const res = await withTimeout(fetch(`${PDFJS_CDN}/build/pdf.worker.min.js`), 8000, 'worker timeout');
+    if (!res.ok) throw new Error('worker http');
+    const blob = await res.blob();
+    pdfWorkerBlobUrl = URL.createObjectURL(blob);
+    pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl;
+  } catch (e) {
+    console.warn('ensurePdfWorker fallback CDN:', e);
+    pdfjs.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/build/pdf.worker.min.js`;
+  }
+  return pdfjs;
 }
 
 function cloneUint8(arrayBuffer) {
@@ -7712,8 +7775,8 @@ async function extractRawPdfStrings(arrayBuffer) {
   return uniqueNonEmptyStrings(texts).join('\n');
 }
 
-async function extractPdfJsText(arrayBuffer) {
-  const pdfjs = ensurePdfJsReady();
+async function extractPdfJsText(arrayBuffer, onStatus) {
+  const pdfjs = await ensurePdfWorker();
   const data = cloneUint8(arrayBuffer);
   const loading = pdfjs.getDocument({
     data,
@@ -7721,18 +7784,35 @@ async function extractPdfJsText(arrayBuffer) {
     cMapPacked: true,
     standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
     isEvalSupported: false,
-    useSystemFonts: true,
-    disableFontFace: false
+    useSystemFonts: false,
+    disableFontFace: true
   });
-  const pdf = await loading.promise;
-  const pages = [];
-  for (let i = 1; i <= pdf.numPages; i += 1) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent({ includeMarkedContent: true, disableCombineTextItems: false });
-    const items = (content.items || []).filter((it) => it && typeof it.str === 'string');
-    pages.push(rebuildPdfTextLines(items).join('\n'));
+  let pdf;
+  try {
+    pdf = await withTimeout(loading.promise, 20000, 'PDF.js слишком долго открывает файл');
+  } catch (e) {
+    try { loading.destroy(); } catch (_) {}
+    throw e;
   }
-  try { await pdf.destroy(); } catch (_) {}
+  const pages = [];
+  const maxPages = Math.min(pdf.numPages || 0, 120);
+  try {
+    for (let i = 1; i <= maxPages; i += 1) {
+      if (typeof onStatus === 'function' && (i === 1 || i % 10 === 0 || i === maxPages)) {
+        onStatus(`Читаю страницы PDF ${i}/${maxPages}`);
+      }
+      const page = await withTimeout(pdf.getPage(i), 8000, `страница ${i}`);
+      const content = await withTimeout(
+        page.getTextContent({ includeMarkedContent: false, disableCombineTextItems: false }),
+        8000,
+        `текст стр. ${i}`
+      );
+      const items = (content.items || []).filter((it) => it && typeof it.str === 'string');
+      pages.push(rebuildPdfTextLines(items).join('\n'));
+    }
+  } finally {
+    try { await pdf.destroy(); } catch (_) {}
+  }
   return pages.join('\n\n');
 }
 
@@ -7750,34 +7830,39 @@ async function loadScriptOnce(src, check) {
 }
 
 async function ocrPdfPages(arrayBuffer, onStatus) {
-  await loadScriptOnce(
-    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
-    () => !!(typeof window !== 'undefined' && window.Tesseract)
+  await withTimeout(
+    loadScriptOnce(
+      'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+      () => !!(typeof window !== 'undefined' && window.Tesseract)
+    ),
+    15000,
+    'не загрузился OCR'
   );
-  const pdfjs = ensurePdfJsReady();
+  const pdfjs = await ensurePdfWorker();
   const data = cloneUint8(arrayBuffer);
-  const pdf = await pdfjs.getDocument({
+  const loading = pdfjs.getDocument({
     data,
     cMapUrl: `${PDFJS_CDN}/cmaps/`,
     cMapPacked: true,
     standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
     isEvalSupported: false,
-    useSystemFonts: true
-  }).promise;
-  const maxPages = Math.min(pdf.numPages, 40);
-  const worker = await window.Tesseract.createWorker('rus+eng');
+    disableFontFace: true
+  });
+  const pdf = await withTimeout(loading.promise, 20000, 'OCR: PDF не открылся');
+  const maxPages = Math.min(pdf.numPages, 8);
+  const worker = await withTimeout(window.Tesseract.createWorker('rus+eng'), 20000, 'OCR worker');
   const pages = [];
   try {
     for (let i = 1; i <= maxPages; i += 1) {
       if (typeof onStatus === 'function') onStatus(`Распознаю страницу ${i} из ${maxPages}…`);
       const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 2 });
+      const viewport = page.getViewport({ scale: 1.6 });
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      const result = await worker.recognize(canvas);
+      await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 10000, 'рендер OCR');
+      const result = await withTimeout(worker.recognize(canvas), 25000, `OCR стр. ${i}`);
       pages.push(String(result?.data?.text || '').trim());
     }
   } finally {
@@ -7787,24 +7872,25 @@ async function ocrPdfPages(arrayBuffer, onStatus) {
   return pages.join('\n\n');
 }
 
-async function extractPdfPlainText(arrayBuffer, onStatus) {
+async function extractPdfPlainText(arrayBuffer, onStatus, opts = {}) {
   let text = '';
   try {
-    text = await extractPdfJsText(arrayBuffer);
+    if (typeof onStatus === 'function') onStatus('Читаю текстовый слой PDF');
+    text = await extractPdfJsText(arrayBuffer, onStatus);
   } catch (e) {
     console.warn('extractPdfJsText:', e);
   }
-  if (String(text || '').replace(/\s+/g, '').length < 12) {
+  if (zkTextLen(text) < 12) {
     try {
-      const raw = await extractRawPdfStrings(arrayBuffer);
-      if (String(raw || '').replace(/\s+/g, '').length > String(text || '').replace(/\s+/g, '').length) {
-        text = [text, raw].filter(Boolean).join('\n');
-      }
+      if (typeof onStatus === 'function') onStatus('Достаю строки из PDF-потоков');
+      const raw = await withTimeout(extractRawPdfStrings(arrayBuffer), 12000, 'raw pdf timeout');
+      if (zkTextLen(raw) > zkTextLen(text)) text = [text, raw].filter(Boolean).join('\n');
     } catch (e) {
       console.warn('extractRawPdfStrings:', e);
     }
   }
-  if (String(text || '').replace(/\s+/g, '').length < 12) {
+  const allowOcr = opts.allowOcr !== false;
+  if (allowOcr && zkTextLen(text) < 12) {
     try {
       text = await ocrPdfPages(arrayBuffer, onStatus);
     } catch (e) {
@@ -7858,7 +7944,7 @@ function parseZkInvoiceText(text, fileName) {
   const joined = lines.join('\n');
 
   let actNumber = '';
-  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка|отправление)\s*№|№\s*(?:акта|накладной|поставки)|id\s*поставки)\s*[:№-]?\s*(\d{6,20})/i);
+  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка|отправление|invoice|akt)\s*№?|№\s*(?:акта|накладной|поставки)|id\s*поставки)\s*[:№-]?\s*(\d{6,20})/i);
   if (actLabel) actNumber = actLabel[1];
   if (!actNumber) {
     const fromFile = String(fileName || '').match(/(11\d{9,12}|\d{10,14})/);
@@ -7884,11 +7970,11 @@ function parseZkInvoiceText(text, fileName) {
   if (!invoiceDate) warnings.push('нет даты в накладной');
 
   let qty = 0;
-  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*(?:единиц|товаров|шт)?|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?)\s*[:\-]?\s*([\d\s]{1,12})/i);
+  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*(?:единиц|товаров|шт)?|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?|qty)\s*[:\-]?\s*([\d\s]{1,12})/i);
   if (qtyLabel) qty = Math.floor(parseLooseNumber(qtyLabel[1]));
 
   let sum = 0;
-  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате|себестоимость\s*всего)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
+  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате|себестоимость\s*всего|sum)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
   if (sumLabel) sum = Math.round(parseLooseNumber(sumLabel[1]));
   if (!sum) {
     const uzs = joined.match(/([\d\s]{3,})(?:[.,]\d{1,2})?\s*(?:сум|uzs)\b/i);
@@ -7923,7 +8009,12 @@ function parseZkInvoiceText(text, fileName) {
     }
     if (!skipRe.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line) && line.length >= 12 && line.length <= 220) {
       const cleaned = line.replace(/\b11\d{9,12}\b/g, '').replace(/\b\d{8,14}\b/g, '').replace(/\s+/g, ' ').trim();
-      if (cleaned.length >= 12 && !skipRe.test(cleaned) && !/^(дата|номер|итого|всего|сумма)\b/i.test(cleaned)) {
+      if (
+        cleaned.length >= 12
+        && !skipRe.test(cleaned)
+        && !/^(дата|номер|итого|всего|сумма|qty|sum|akt|invoice|data)\b/i.test(cleaned)
+        && !/отгруз/i.test(cleaned)
+      ) {
         names.push(cleaned);
       }
     }
@@ -8033,13 +8124,13 @@ async function collectZkSourceFiles(fileList) {
   return out;
 }
 
-async function parseZkSourceFile(source, onStatus) {
+async function parseZkSourceFile(source, onStatus, opts = {}) {
   if (source.kind === 'xlsx') {
     const one = await parseZkInvoiceXlsx(source.buffer, source.name);
     return [one];
   }
-  const text = await extractPdfPlainText(source.buffer, onStatus);
-  if (!String(text || '').replace(/\s+/g, '')) {
+  const text = await extractPdfPlainText(source.buffer, onStatus, opts);
+  if (!zkTextLen(text)) {
     return [{
       fileName: source.name,
       actNumber: '',
@@ -8048,7 +8139,7 @@ async function parseZkSourceFile(source, onStatus) {
       qty: 0,
       sum: 0,
       invoiceDate: null,
-      warnings: ['не удалось прочитать PDF — нет текста и распознавание не сработало']
+      warnings: ['не удалось прочитать PDF — нет текста (обработка не зависла, файл пропущен)']
     }];
   }
   const chunks = splitUzumInvoiceChunks(text);
@@ -8097,36 +8188,72 @@ function renderZkPreview(rows) {
 }
 
 async function handleZkInvoicesSelected(fileList) {
+  const jobId = ++zkJobId;
+  const files = Array.from(fileList || []);
   zkParsedInvoices = [];
   renderZkPreview([]);
-  const files = Array.from(fileList || []);
   if (!files.length) {
+    setZkBusy(false);
     setZkStatus('Файлы не выбраны.');
     return;
   }
-  setZkStatus('Читаю накладные…');
+  setZkBusy(true, `Обрабатываю 0 / ${files.length}…`);
+  setZkStatus(`Читаю ${files.length} файл(ов). Можно выбрать и 70 PDF сразу — не нажимай «Скачать», пока не будет «Готово».`);
   try {
     const sources = await collectZkSourceFiles(files);
+    if (jobId !== zkJobId) return;
     if (!sources.length) {
       setZkStatus('В выборе нет PDF или Excel-накладных.');
       return;
     }
+    const allowOcr = sources.length <= 12;
+    let doneFiles = 0;
     const parsed = [];
-    for (let i = 0; i < sources.length; i += 1) {
-      setZkStatus(`Обрабатываю ${i + 1} из ${sources.length}: ${sources[i].name}`);
-      const rows = await parseZkSourceFile(sources[i], (msg) => {
-        setZkStatus(`Файл ${i + 1}/${sources.length}: ${msg}`);
-      });
+    await mapPool(sources, 4, async (source) => {
+      if (jobId !== zkJobId) return;
+      let rows = [];
+      try {
+        rows = await parseZkSourceFile(
+          source,
+          (msg) => {
+            if (jobId !== zkJobId) return;
+            setZkStatus(`${doneFiles}/${sources.length}: ${source.name} — ${msg}`);
+          },
+          { allowOcr }
+        );
+      } catch (e) {
+        rows = [{
+          fileName: source.name,
+          actNumber: '',
+          composition: [],
+          skuCount: 0,
+          qty: 0,
+          sum: 0,
+          invoiceDate: null,
+          warnings: [e?.message || 'ошибка файла']
+        }];
+      }
+      if (jobId !== zkJobId) return;
       parsed.push(...rows);
-    }
+      doneFiles += 1;
+      zkParsedInvoices = parsed.slice();
+      renderZkPreview(zkParsedInvoices);
+      setZkBusy(true, `Обрабатываю ${doneFiles} / ${sources.length}…`);
+      setZkStatus(`Готово файлов: ${doneFiles} из ${sources.length}. Накладных пока: ${parsed.length}.`);
+    });
+    if (jobId !== zkJobId) return;
     parsed.sort((a, b) => String(a.actNumber || a.fileName).localeCompare(String(b.actNumber || b.fileName), 'ru', { numeric: true }));
     zkParsedInvoices = parsed;
+    const filled = parsed.filter((r) => r.actNumber || (r.composition || []).length || r.qty || r.sum).length;
     const warnCount = parsed.filter((r) => (r.warnings || []).length).length;
-    setZkStatus(`Готово: ${parsed.length} накладных${warnCount ? `, с пометками: ${warnCount}` : ''}.`);
+    setZkStatus(`Готово: ${parsed.length} накладных из ${sources.length} файл(ов), с данными: ${filled}${warnCount ? `, с пометками: ${warnCount}` : ''}. Можно скачивать ЗК.`);
     renderZkPreview(parsed);
   } catch (e) {
+    if (jobId !== zkJobId) return;
     console.error('handleZkInvoicesSelected:', e);
     setZkStatus(e?.message || 'Не удалось прочитать файлы.');
+  } finally {
+    if (jobId === zkJobId) setZkBusy(false);
   }
 }
 
@@ -8168,8 +8295,17 @@ async function generateZkExcelFromParsed() {
     alert('Укажи дату прибытия товара.');
     return;
   }
+  if (zkBusy) {
+    alert('Накладные ещё обрабатываются. Дождись статуса «Готово» — кнопка станет снова активной.');
+    return;
+  }
   if (!zkParsedInvoices.length) {
-    alert('Сначала загрузи PDF (или ZIP) накладных.');
+    const picked = document.getElementById('wmsZkInvoicesInput')?.files?.length || 0;
+    if (picked) {
+      alert(`Выбрано файлов: ${picked}, но разбор ещё не закончен или не дал строк. Дождись «Готово».`);
+      return;
+    }
+    alert('Сначала загрузи PDF (или ZIP) накладных. Можно сразу много файлов, хоть 70 штук.');
     return;
   }
   const filled = zkParsedInvoices.filter((row) =>
