@@ -7629,10 +7629,18 @@ async function mapPool(items, limit, mapper) {
 
 function setZkBusy(busy, label) {
   zkBusy = !!busy;
-  const btn = document.getElementById('wmsZkGenerateBtn');
-  if (!btn) return;
-  btn.disabled = zkBusy;
-  btn.textContent = zkBusy ? (label || 'Обрабатываю накладные…') : 'Скачать ЗК Excel';
+  const gen = document.getElementById('wmsZkGenerateBtn');
+  if (gen) {
+    gen.disabled = zkBusy;
+    gen.textContent = zkBusy ? (label || 'Обрабатываю накладные…') : 'Скачать ЗК Excel';
+  }
+  const apiBtn = document.getElementById('wmsZkFromApiBtn');
+  if (apiBtn) {
+    apiBtn.disabled = zkBusy;
+    apiBtn.textContent = zkBusy && /api|openapi|uzum/i.test(String(label || ''))
+      ? (label || 'Читаю OpenAPI…')
+      : 'Подтянуть из API Uzum';
+  }
 }
 
 function ensurePdfJsReady() {
@@ -8182,7 +8190,7 @@ function renderZkPreview(rows) {
     </tr>`;
   }).join('');
   host.innerHTML = `<table><thead><tr>
-    <th>№</th><th>Файл</th><th>Номер акта</th><th>Состав</th><th>SKU</th><th>Единиц</th><th>Сумма</th><th>Дата накладной</th>
+    <th>№</th><th>Источник</th><th>Номер акта</th><th>Состав</th><th>SKU</th><th>Единиц</th><th>Сумма</th><th>Дата накладной</th>
   </tr></thead><tbody>${body}</tbody></table>`;
   host.classList.remove('hidden');
 }
@@ -8305,7 +8313,7 @@ async function generateZkExcelFromParsed() {
       alert(`Выбрано файлов: ${picked}, но разбор ещё не закончен или не дал строк. Дождись «Готово».`);
       return;
     }
-    alert('Сначала загрузи PDF (или ZIP) накладных. Можно сразу много файлов, хоть 70 штук.');
+    alert('Нет строк ЗК. Нажми «Подтянуть из API Uzum» или загрузи PDF/ZIP накладных.');
     return;
   }
   const filled = zkParsedInvoices.filter((row) =>
@@ -8355,9 +8363,362 @@ function initZkGreenCorridorUi() {
   document.getElementById('wmsZkInvoicesInput')?.addEventListener('change', (e) => {
     void handleZkInvoicesSelected(e.target.files);
   });
+  document.getElementById('wmsZkFromApiBtn')?.addEventListener('click', () => {
+    void loadZkFromUzumApi();
+  });
   document.getElementById('wmsZkGenerateBtn')?.addEventListener('click', () => {
     void generateZkExcelFromParsed();
   });
+}
+
+function yoScaleUpApi() {
+  return (typeof window !== 'undefined' && window.ScaleUpYO) || null;
+}
+
+function zkSleep(ms) {
+  const api = yoScaleUpApi();
+  if (typeof api?.sleep === 'function') return api.sleep(ms);
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function zkUnwrapList(data, keys) {
+  const api = yoScaleUpApi();
+  if (typeof api?.unwrapList === 'function') {
+    const list = api.unwrapList(data, keys);
+    if (Array.isArray(list) && list.length) return list;
+  }
+  if (Array.isArray(data)) return data;
+  const extra = keys || [];
+  for (const k of extra) {
+    if (Array.isArray(data?.[k])) return data[k];
+  }
+  if (Array.isArray(data?.payload?.payments)) return data.payload.payments;
+  if (Array.isArray(data?.payload?.productList)) return data.payload.productList;
+  if (Array.isArray(data?.payload)) return data.payload;
+  if (Array.isArray(data?.content)) return data.content;
+  if (data && typeof data === 'object') {
+    for (const v of Object.values(data)) {
+      if (Array.isArray(v) && v.length && typeof v[0] === 'object') return v;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const nested = zkUnwrapList(v, extra);
+        if (nested.length) return nested;
+      }
+    }
+  }
+  return [];
+}
+
+function zkPick(obj, keys) {
+  if (!obj || typeof obj !== 'object') return '';
+  for (const k of keys) {
+    const v = obj[k];
+    if (v != null && String(v).trim() !== '' && v !== false) return v;
+  }
+  return '';
+}
+
+function zkToDate(raw) {
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const s = String(raw).trim();
+  const ru = parseRuDateToDate(s);
+  if (ru) return ru;
+  const t = Date.parse(s);
+  if (Number.isFinite(t)) return new Date(t);
+  return null;
+}
+
+function zkYoUnitCost(product) {
+  if (!product) return 0;
+  return Number(
+    product.costPriceUzs
+    || product.costGross
+    || product.unitCost
+    || product.cost
+    || product.cogs
+    || 0
+  ) || 0;
+}
+
+function zkNameFromCatalogOrApi(item) {
+  const barcode = normalizeUzumBarcode(
+    zkPick(item, ['barcode', 'skuBarcode', 'uzumBarcode', 'ean', 'gtin'])
+  );
+  const product = barcode ? findProductByUzumBarcode(barcode) : null;
+  const fromYo = productDisplayNameForZk(product);
+  if (fromYo) return { name: fromYo, product, barcode };
+  const name = String(
+    zkPick(item, ['productTitle', 'title', 'skuTitle', 'skuFullTitle', 'name', 'sku', 'article'])
+    || barcode
+    || ''
+  ).replace(/\s+/g, ' ').trim();
+  return { name, product, barcode };
+}
+
+function zkExtractSupplyItems(supply) {
+  if (!supply || typeof supply !== 'object') return [];
+  const keys = [
+    'items', 'itemList', 'skus', 'skuList', 'products', 'productList',
+    'contents', 'cargoItems', 'positions', 'lines', 'details', 'goods'
+  ];
+  let items = zkUnwrapList(supply, keys);
+  if (!items.length && supply.payload && typeof supply.payload === 'object') {
+    items = zkUnwrapList(supply.payload, keys);
+  }
+  return items.filter((it) => it && typeof it === 'object');
+}
+
+function mapUzumSupplyToZkRow(supply, extraItems, sourceLabel) {
+  const warnings = [];
+  const obj = supply && typeof supply === 'object' ? supply : {};
+  const items = (extraItems && extraItems.length) ? extraItems : zkExtractSupplyItems(obj);
+  const actRaw = zkPick(obj, [
+    'actNumber', 'actId', 'invoiceNumber', 'invoiceId', 'number', 'supplyNumber',
+    'cargoNumber', 'barcode', 'id', 'supplyId', 'cargoId', 'shipmentId', 'externalId'
+  ]);
+  let actNumber = String(actRaw || '').trim();
+  const actMatch = actNumber.match(/(11\d{9,12}|\d{10,14})/);
+  if (actMatch) actNumber = actMatch[1];
+  if (!actNumber) warnings.push('нет номера акта');
+
+  const invoiceDate = zkToDate(zkPick(obj, [
+    'dateShipped', 'shippedDate', 'shipmentDate', 'createdAt', 'dateCreated',
+    'date', 'created', 'acceptedAt', 'inboundDate', 'supplyDate'
+  ])) || null;
+  if (!invoiceDate) warnings.push('нет даты в накладной');
+
+  const names = [];
+  let qty = 0;
+  let sum = 0;
+  items.forEach((it) => {
+    const hit = zkNameFromCatalogOrApi(it);
+    const q = Math.max(0, Math.floor(Number(
+      zkPick(it, ['quantity', 'qty', 'amount', 'count', 'units', 'skuQuantity']) || 0
+    )));
+    const lineSumRaw = Number(zkPick(it, ['sum', 'total', 'amountSum', 'purchaseSum', 'costSum']) || 0);
+    const unit = Number(zkPick(it, ['purchasePrice', 'cost', 'price', 'unitCost', 'sellerPrice']) || 0) || zkYoUnitCost(hit.product);
+    if (hit.name) names.push(hit.name);
+    if (q) qty += q;
+    if (lineSumRaw > 0) sum += lineSumRaw;
+    else if (q && unit) sum += q * unit;
+  });
+
+  if (!qty) {
+    qty = Math.max(0, Math.floor(Number(zkPick(obj, ['quantity', 'qty', 'totalQuantity', 'skuQuantity', 'unitsCount']) || 0)));
+  }
+  if (!sum) {
+    sum = Math.round(Number(zkPick(obj, ['sum', 'total', 'totalCost', 'purchaseSum', 'amount']) || 0));
+  }
+  if (!qty) warnings.push('нет количества');
+  if (!sum) warnings.push('нет суммы');
+
+  const composition = uniqueNonEmptyStrings(names).filter((nm) => nm.length <= 220).slice(0, 12);
+  if (!composition.length) warnings.push('нет состава товара');
+
+  return {
+    fileName: String(sourceLabel || 'OpenAPI Uzum'),
+    actNumber: String(actNumber || '').trim(),
+    composition,
+    skuCount: composition.length || Math.max(0, Number(zkPick(obj, ['skuCount', 'skuQuantity', 'uniqueSkuCount']) || 0)),
+    qty: Math.max(0, Math.floor(Number(qty || 0))),
+    sum: Math.max(0, Math.round(Number(sum || 0))),
+    invoiceDate,
+    warnings
+  };
+}
+
+function zkSupplyListCandidatePaths(shopId) {
+  const sid = encodeURIComponent(String(shopId || ''));
+  const withShop = [
+    'v1/fbo/supplies',
+    'v2/fbo/supplies',
+    'v1/supplies',
+    'v1/fbo/cargo',
+    'v1/cargo',
+    'v1/fbo/inbound',
+    'v1/fbo/invoices',
+    'v1/invoices',
+    'v1/fbo/acts',
+    'v1/stock/supplies',
+    'v2/fbs/supplies'
+  ];
+  return [
+    ...withShop.map((base) => `${base}?page=0&size=50&shopIds=${sid}`),
+    ...withShop.slice(0, 4).map((base) => `${base}?page=0&size=50`)
+  ];
+}
+
+function zkPathResource(path) {
+  return String(path || '').split('?')[0].replace(/\/+$/, '');
+}
+
+async function zkUzumJson(path) {
+  const api = yoScaleUpApi();
+  if (!api || typeof api.uzumJson !== 'function') {
+    throw new Error('Модуль аналитики ScaleUpYO ещё не загрузился. Обнови страницу.');
+  }
+  return api.uzumJson(path);
+}
+
+async function probeUzumZkSupplyEndpoint(shopId, onStatus) {
+  const paths = zkSupplyListCandidatePaths(shopId);
+  const tried = [];
+  for (let i = 0; i < paths.length; i += 1) {
+    const path = paths[i];
+    if (typeof onStatus === 'function') {
+      onStatus(`OpenAPI: проверяю ${zkPathResource(path)} (${i + 1}/${paths.length})`);
+    }
+    try {
+      const data = await zkUzumJson(path);
+      const list = zkUnwrapList(data, [
+        'supplies', 'supplyList', 'cargoList', 'invoices', 'acts', 'shipments',
+        'orders', 'items', 'payload', 'content', 'data', 'result'
+      ]);
+      return { path, data, list, tried };
+    } catch (e) {
+      const status = Number(e?.status || 0);
+      tried.push(`${zkPathResource(path)} → ${status || e?.message || 'err'}`);
+      if (status === 401) throw e;
+      if (status === 429) await zkSleep(2500);
+      else if (i < paths.length - 1) await zkSleep(220);
+    }
+  }
+  return { path: '', data: null, list: [], tried };
+}
+
+async function fetchUzumSupplyPages(foundPath, onStatus) {
+  const resource = zkPathResource(foundPath);
+  const out = [];
+  const size = 50;
+  for (let page = 0; page < 30; page += 1) {
+    if (page > 0) await zkSleep(700);
+    const next = foundPath.replace(/page=\d+/, `page=${page}`);
+    if (typeof onStatus === 'function') onStatus(`OpenAPI: страница поставок ${page + 1}`);
+    const data = await zkUzumJson(next);
+    const chunk = zkUnwrapList(data, [
+      'supplies', 'supplyList', 'cargoList', 'invoices', 'acts', 'shipments',
+      'orders', 'items', 'payload', 'content', 'data', 'result'
+    ]);
+    if (!chunk.length) break;
+    out.push(...chunk);
+    if (chunk.length < size) break;
+  }
+  return { resource, items: out };
+}
+
+async function fetchUzumSupplyDetails(resource, supply, onStatus) {
+  const id = zkPick(supply, ['id', 'supplyId', 'cargoId', 'invoiceId', 'actId', 'shipmentId']);
+  if (!id) return zkExtractSupplyItems(supply);
+  const local = zkExtractSupplyItems(supply);
+  if (local.length) return local;
+  const detailPaths = [
+    `${resource}/${encodeURIComponent(id)}`,
+    `${resource}/${encodeURIComponent(id)}/items`,
+    `${resource}/${encodeURIComponent(id)}/skus`
+  ];
+  for (const p of detailPaths) {
+    try {
+      if (typeof onStatus === 'function') onStatus(`OpenAPI: состав ${id}`);
+      const data = await zkUzumJson(p);
+      const items = zkExtractSupplyItems(data).length ? zkExtractSupplyItems(data) : zkUnwrapList(data, ['items', 'skuList', 'productList']);
+      if (items.length) return items;
+      if (data && typeof data === 'object' && (data.id || data.supplyId)) {
+        const nested = zkExtractSupplyItems(data);
+        if (nested.length) return nested;
+      }
+    } catch (e) {
+      if (Number(e?.status) === 401) throw e;
+      await zkSleep(180);
+    }
+  }
+  return local;
+}
+
+async function loadZkFromUzumApi() {
+  const jobId = ++zkJobId;
+  const api = yoScaleUpApi();
+  const token = String(api?.getToken?.() || localStorage.getItem('yo_uzum_bearer_token') || '').trim();
+  if (!token) {
+    alert('Сначала вставь API-ключ Uzum в Настройки → API ключи (тот же, что для Аналитики).');
+    return;
+  }
+  zkParsedInvoices = [];
+  renderZkPreview([]);
+  setZkBusy(true, 'Читаю OpenAPI Uzum…');
+  setZkStatus('Подключаюсь к Seller OpenAPI через тот же прокси, что аналитика…');
+  try {
+    const shopsRaw = await zkUzumJson('v1/shops');
+    if (jobId !== zkJobId) return;
+    const shops = zkUnwrapList(shopsRaw, ['shops', 'organizations']);
+    const shop = shops[0] || null;
+    const shopId = shop?.id || shop?.shopId || api?.getSyncMeta?.()?.shopId;
+    if (!shopId) throw new Error('Магазины не найдены по API-ключу. Проверь ключ в Аналитике.');
+
+    setZkStatus(`Магазин #${shopId}. Ищу эндпоинт поставок/актов в OpenAPI…`);
+    const probed = await probeUzumZkSupplyEndpoint(shopId, (msg) => {
+      if (jobId === zkJobId) setZkStatus(msg);
+    });
+    if (jobId !== zkJobId) return;
+
+    if (!probed.path) {
+      const sample = (probed.tried || []).slice(0, 8).join('; ');
+      setZkStatus(
+        'OpenAPI аналитики отвечает (магазины есть), но эндпоинта FBO-поставок/актов нет: проверены v1/v2 fbo/supplies, cargo, inbound, invoices, acts. ' +
+        'Заказы finance и FBS — это продажи, не накладные 11… на склад. Загрузи PDF из кабинета Uzum → Поставки. ' +
+        (sample ? `Коды: ${sample}` : '')
+      );
+      return;
+    }
+
+    const pages = await fetchUzumSupplyPages(probed.path, (msg) => {
+      if (jobId === zkJobId) setZkStatus(msg);
+    });
+    if (jobId !== zkJobId) return;
+    const supplies = pages.items.length ? pages.items : probed.list;
+    if (!supplies.length) {
+      setZkStatus(`Эндпоинт найден (${zkPathResource(probed.path)}), но список поставок пустой. Попробуй PDF или сначала создай поставку в кабинете Uzum.`);
+      return;
+    }
+
+    const parsed = [];
+    for (let i = 0; i < supplies.length; i += 1) {
+      if (jobId !== zkJobId) return;
+      const supply = supplies[i];
+      setZkBusy(true, `OpenAPI ${i + 1} / ${supplies.length}…`);
+      setZkStatus(`Читаю состав поставки ${i + 1} из ${supplies.length}…`);
+      let items = [];
+      try {
+        items = await fetchUzumSupplyDetails(pages.resource, supply, (msg) => {
+          if (jobId === zkJobId) setZkStatus(msg);
+        });
+      } catch (e) {
+        items = zkExtractSupplyItems(supply);
+      }
+      parsed.push(mapUzumSupplyToZkRow(supply, items, `OpenAPI · ${zkPathResource(probed.path)}`));
+      zkParsedInvoices = parsed.slice();
+      renderZkPreview(zkParsedInvoices);
+      if (i < supplies.length - 1) await zkSleep(250);
+    }
+    if (jobId !== zkJobId) return;
+    parsed.sort((a, b) => String(a.actNumber || a.fileName).localeCompare(String(b.actNumber || b.fileName), 'ru', { numeric: true }));
+    zkParsedInvoices = parsed;
+    const filled = parsed.filter((r) => r.actNumber || (r.composition || []).length || r.qty || r.sum).length;
+    const warnCount = parsed.filter((r) => (r.warnings || []).length).length;
+    setZkStatus(`Готово из API: ${parsed.length} поставок (${zkPathResource(probed.path)}), с данными: ${filled}${warnCount ? `, с пометками: ${warnCount}` : ''}. Можно скачивать ЗК.`);
+    renderZkPreview(parsed);
+  } catch (e) {
+    if (jobId !== zkJobId) return;
+    console.error('loadZkFromUzumApi:', e);
+    const apiHelp = yoScaleUpApi()?.explainUzumHttpError?.(e?.status, e?.body || e?.message);
+    setZkStatus(apiHelp || e?.message || 'Не удалось прочитать OpenAPI.');
+  } finally {
+    if (jobId === zkJobId) setZkBusy(false);
+  }
 }
 
 function collectShipmentBoxesForExport(sh) {
