@@ -7916,7 +7916,7 @@ function isZkJunkLine(line) {
   const s = String(line || '').replace(/\s+/g, ' ').trim();
   if (!s) return true;
   if (s.length > 240) return true;
-  return /акт\s*при[её]ма|номер\s*документа|номер\s*договора|фио|телефон|инн|мчж|mchj|юр\.?\s*адрес|республика\s*узбекистан|юнусабад|сергелий|эшонбулок|насырова|товары\s*сдал|товары\s*принял|личный\s*кабинет|uzum\s*business|google\s*диск|ссылка\s*на\s*акт|страниц|инструкц|template|barcode|штрихкод\s*товара|sku\s*товара|описание\s*товара|омисяние|закупочн|вакупочн|09:00|21:00|направлени|1p\s*\/\s*3p|non\s*food|планируем/i.test(s);
+  return /акт\s*при[её]ма|номер\s*документа|номер\s*договора|фио|телефон|инн|мчж|mchj|\bmch\b|urganch|bahmal|юр\.?\s*адрес|республика\s*узбекистан|юнусабад|сергелий|эшонбулок|насырова|товары\s*сдал|товары\s*принял|личный\s*кабинет|uzum\s*business|google\s*диск|ссылка\s*на\s*акт|страниц|инструкц|template|barcode|штрихкод\s*товара|штрис|sku\s*товара|описание\s*товара|омисяние|закупочн|вакупочн|09:00|21:00|направлени|1p\s*\/\s*3p|non\s*food|планируем|итого\s*количество|сумма\s*накладной/i.test(s);
 }
 
 function looksLikeZkProductName(line) {
@@ -7925,7 +7925,10 @@ function looksLikeZkProductName(line) {
   if (isZkJunkLine(s)) return false;
   if (zkCyrLen(s) < 8) return false;
   if (/^[\d\s./:-]+$/.test(s)) return false;
-  if (/^(дата|номер|итого|всего|сумма|кол-во|qty|sum|akt|invoice)\b/i.test(s)) return false;
+  if (/^(дата|номер|итого|всего|сумма|кол-во|количество|qty|sum|akt|invoice)\b/i.test(s)) return false;
+  if (/сумма\s*накладной|итого\s*количество|себестоимость/i.test(s)) return false;
+  const cyrWords = (s.match(/[А-Яа-яЁё]{4,}/g) || []).length;
+  if (cyrWords < 2) return false;
   return true;
 }
 
@@ -7938,6 +7941,9 @@ function cleanZkProductName(line) {
   s = s.replace(/\b\d+:\d{2}\b/g, ' ');
   s = s.replace(/\s+/g, ' ').trim();
   s = s.replace(/^[\d.*)\]]+\s*/, '');
+  s = s.replace(/^[A-Za-z]\s+/, '');
+  s = s.replace(/^\d{3,7}\s+/, '');
+  s = s.replace(/\s+\d+(?:[.,]\d+)?(?:\s+\d+(?:[.,]\d+)?){0,3}\s*$/, '');
   s = s.replace(/\s+(шт|pcs)\.?$/i, '');
   s = s.replace(/[.,;:]+$/g, '');
   return s.replace(/\s+/g, ' ').trim();
@@ -8076,7 +8082,7 @@ function extractZkQtySum(joined, lines) {
       .map((m) => parseLooseNumber(m[1]))
       .filter((n) => Number.isFinite(n) && n > 0);
     nums.forEach((n) => {
-      if (n >= 50000 && n <= 20000000) money.push(Math.round(n));
+      if (n >= 200000 && n <= 20000000) money.push(Math.round(n));
       if (Number.isInteger(n) && n >= 1 && n <= 400) qtys.push(n);
     });
   });
