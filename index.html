@@ -1199,7 +1199,7 @@
 
           <div class="card" id="wmsZkCard">
             <h2>Зелёный коридор (ЗК)</h2>
-            <p class="hint" style="margin-top:8px;">Загрузи PDF накладных Uzum (можно один общий файл «Поставки — Uzum Business» на все коробки, несколько PDF или ZIP). Укажи дату прибытия и ссылку на Google Диск — скачается Excel в формате ЗК.</p>
+            <p class="hint" style="margin-top:8px;">Загрузи PDF актов Uzum (можно много файлов или ZIP). Из каждого акта в Excel ЗК попадают: название товара, номер акта, количество, сумма накладной. Дата прибытия и ссылка на Google Диск — поля сверху. Кнопка API — запасной путь, кабинетные акты надёжнее брать из PDF.</p>
             <div class="grid" style="margin-top:12px;">
               <div class="field">
                 <label for="wmsZkArrivalDate">Дата прибытия товара</label>
@@ -1210,11 +1210,14 @@
                 <input id="wmsZkDriveUrl" class="input" type="url" placeholder="https://drive.google.com/drive/folders/..." />
               </div>
             </div>
+            <div class="wms-bulk-boxes-actions" style="margin-top:12px;">
+              <button type="button" id="wmsZkFromApiBtn" class="btn-secondary">Подтянуть из API Uzum</button>
+            </div>
             <div class="field" style="margin-top:12px;">
-              <label for="wmsZkInvoicesInput">Накладные PDF (можно несколько или ZIP)</label>
+              <label for="wmsZkInvoicesInput">Акты PDF / ZIP / Excel</label>
               <input id="wmsZkInvoicesInput" class="input" type="file" accept=".pdf,.zip,.xlsx,application/pdf,application/zip" multiple />
             </div>
-            <p class="hint" id="wmsZkStatus" style="margin-top:8px;">Файлы не выбраны.</p>
+            <p class="hint" id="wmsZkStatus" style="margin-top:8px;">Выбери PDF актов — после «Готово» скачай Excel.</p>
             <div id="wmsZkPreview" class="wms-zk-preview hidden"></div>
             <div class="wms-bulk-boxes-actions" style="margin-top:12px;">
               <button type="button" id="wmsZkGenerateBtn" class="btn-primary">Скачать ЗК Excel</button>
@@ -2222,8 +2225,8 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-09-15-wms-zk-pdf3"></script>
+  <script src="script.js?v=2026-09-16-wms-zk-parse4"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
+  <script src="scaleup-yo.js?v=2026-09-15-zk-api1"></script>
 </body>
 </html>

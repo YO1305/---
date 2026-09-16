@@ -3073,6 +3073,17 @@
     clearToken,
     syncUzum,
     syncOrdersFresh,
-    renderSettingsPage
+    renderSettingsPage,
+    getToken: () => cleanToken(getToken()),
+    uzumJson,
+    unwrapList,
+    getSyncMeta,
+    readCache,
+    writeCache,
+    fetchPaged,
+    flattenApiProducts,
+    sleep,
+    explainUzumHttpError,
+    API_PRODUCTS_KEY
   };
 })();

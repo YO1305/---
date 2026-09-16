@@ -7629,10 +7629,18 @@ async function mapPool(items, limit, mapper) {
 
 function setZkBusy(busy, label) {
   zkBusy = !!busy;
-  const btn = document.getElementById('wmsZkGenerateBtn');
-  if (!btn) return;
-  btn.disabled = zkBusy;
-  btn.textContent = zkBusy ? (label || 'Обрабатываю накладные…') : 'Скачать ЗК Excel';
+  const gen = document.getElementById('wmsZkGenerateBtn');
+  if (gen) {
+    gen.disabled = zkBusy;
+    gen.textContent = zkBusy ? (label || 'Обрабатываю накладные…') : 'Скачать ЗК Excel';
+  }
+  const apiBtn = document.getElementById('wmsZkFromApiBtn');
+  if (apiBtn) {
+    apiBtn.disabled = zkBusy;
+    apiBtn.textContent = zkBusy && /api|openapi|uzum/i.test(String(label || ''))
+      ? (label || 'Читаю OpenAPI…')
+      : 'Подтянуть из API Uzum';
+  }
 }
 
 function ensurePdfJsReady() {
@@ -7795,7 +7803,7 @@ async function extractPdfJsText(arrayBuffer, onStatus) {
     throw e;
   }
   const pages = [];
-  const maxPages = Math.min(pdf.numPages || 0, 120);
+  const maxPages = Math.min(pdf.numPages || 0, 250);
   try {
     for (let i = 1; i <= maxPages; i += 1) {
       if (typeof onStatus === 'function' && (i === 1 || i % 10 === 0 || i === maxPages)) {
@@ -7856,7 +7864,7 @@ async function ocrPdfPages(arrayBuffer, onStatus) {
     for (let i = 1; i <= maxPages; i += 1) {
       if (typeof onStatus === 'function') onStatus(`Распознаю страницу ${i} из ${maxPages}…`);
       const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 1.6 });
+      const viewport = page.getViewport({ scale: 2.1 });
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
@@ -7900,39 +7908,220 @@ async function extractPdfPlainText(arrayBuffer, onStatus, opts = {}) {
   return String(text || '').trim();
 }
 
+function zkCyrLen(s) {
+  return (String(s || '').match(/[А-Яа-яЁё]/g) || []).length;
+}
+
+function isZkJunkLine(line) {
+  const s = String(line || '').replace(/\s+/g, ' ').trim();
+  if (!s) return true;
+  if (s.length > 240) return true;
+  return /акт\s*при[её]ма|номер\s*документа|номер\s*договора|фио|телефон|инн|мчж|mchj|\bmch\b|urganch|bahmal|юр\.?\s*адрес|республика\s*узбекистан|юнусабад|сергелий|эшонбулок|насырова|товары\s*сдал|товары\s*принял|личный\s*кабинет|uzum\s*business|google\s*диск|ссылка\s*на\s*акт|страниц|инструкц|template|barcode|штрихкод\s*товара|штрис|sku\s*товара|описание\s*товара|омисяние|закупочн|вакупочн|09:00|21:00|направлени|1p\s*\/\s*3p|non\s*food|планируем|итого\s*количество|сумма\s*накладной/i.test(s);
+}
+
+function looksLikeZkProductName(line) {
+  const s = String(line || '').replace(/\s+/g, ' ').trim();
+  if (s.length < 10 || s.length > 180) return false;
+  if (isZkJunkLine(s)) return false;
+  if (zkCyrLen(s) < 8) return false;
+  if (/^[\d\s./:-]+$/.test(s)) return false;
+  if (/^(дата|номер|итого|всего|сумма|кол-во|количество|qty|sum|akt|invoice)\b/i.test(s)) return false;
+  if (/сумма\s*накладной|итого\s*количество|себестоимость/i.test(s)) return false;
+  const cyrWords = (s.match(/[А-Яа-яЁё]{4,}/g) || []).length;
+  if (cyrWords < 2) return false;
+  return true;
+}
+
+function cleanZkProductName(line) {
+  let s = String(line || '').replace(/\u00a0/g, ' ');
+  s = s.replace(/[|]+/g, ' ');
+  s = s.replace(/\b11\d{9,12}\b/g, ' ');
+  s = s.replace(/\b\d{8,14}\b/g, ' ');
+  s = s.replace(/\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b/g, ' ');
+  s = s.replace(/\b\d+:\d{2}\b/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  s = s.replace(/^[\d.*)\]]+\s*/, '');
+  s = s.replace(/^[A-Za-z]\s+/, '');
+  s = s.replace(/^\d{3,7}\s+/, '');
+  s = s.replace(/\s+\d+(?:[.,]\d+)?(?:\s+\d+(?:[.,]\d+)?){0,3}\s*$/, '');
+  s = s.replace(/\s+(шт|pcs)\.?$/i, '');
+  s = s.replace(/[.,;:]+$/g, '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function coerceUzumActNumber(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (/^11\d{9,12}$/.test(d)) return d;
+  if (d.length >= 7 && d.length <= 10 && !/^0/.test(d) && !/^998/.test(d)) {
+    return `11${d.padStart(10, '0')}`;
+  }
+  return '';
+}
+
+function pickZkActNumber(text, fileName) {
+  const joined = String(text || '');
+  const fromFile = String(fileName || '').match(/\b(11\d{9,12})\b/);
+  if (fromFile && !/uzum|business|поставк/i.test(fileName)) return fromFile[1];
+
+  const full = [...joined.matchAll(/\b(11\d{9,12})\b/g)].map((m) => m[1]);
+  if (full.length) {
+    const counts = new Map();
+    full.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
+  }
+
+  const labelRe = /номер\s*(?:документа|акта|накладной|поставки|отправления)|(?:акт|накладная|поставка)\s*№?/i;
+  const idx = joined.search(labelRe);
+  if (idx >= 0) {
+    const window = joined.slice(idx, idx + 180);
+    const nums = [...window.matchAll(/\b(\d{7,14})\b/g)]
+      .map((m) => m[1])
+      .filter((n) => !/^(19|20)\d{2}$/.test(n) && !/^0/.test(n));
+    for (const n of nums) {
+      const coerced = coerceUzumActNumber(n);
+      if (coerced) return coerced;
+    }
+  }
+
+  if (fromFile) return fromFile[1];
+  return '';
+}
+
+function pickZkInvoiceDate(text) {
+  const joined = String(text || '');
+  const labeled = [...joined.matchAll(/(?:дата\s*(?:отгрузки|накладной|акта|поставки|документа|создания)|отгружен[оа]?)[^\d]{0,24}(\d{1,2}[./]\d{1,2}[./]\d{2,4})/gi)]
+    .map((m) => ({ raw: m[1], date: parseRuDateToDate(m[1]), nearSlot: /09:00|21:00/.test(joined.slice(Math.max(0, m.index - 12), m.index + 40)) }));
+  const all = [...joined.matchAll(/\b(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b/g)].map((m) => {
+    const after = joined.slice(m.index, m.index + 28);
+    const before = joined.slice(Math.max(0, m.index - 18), m.index);
+    return {
+      raw: m[1],
+      date: parseRuDateToDate(m[1]),
+      slot: /09:00|21:00/.test(after) || /01[./]01[./]/.test(m[1])
+    };
+  }).filter((x) => x.date);
+  const score = (item) => {
+    if (!item?.date) return -999;
+    const y = item.date.getFullYear();
+    const md = item.date.getDate() === 1 && item.date.getMonth() === 0;
+    let s = 0;
+    if (y >= 2024 && y <= 2026) s += 5;
+    if (y === 2027 && md) s -= 4;
+    if (item.slot) s -= 6;
+    return s;
+  };
+  const pool = [...labeled, ...all].filter((x) => x.date);
+  if (!pool.length) return null;
+  pool.sort((a, b) => score(b) - score(a));
+  return pool[0].date;
+}
+
 function collectCatalogNamesInText(text) {
   const blob = String(text || '').toLowerCase();
   if (!blob) return [];
   const names = [];
   readProductsSafe().forEach((p) => {
     const nm = productDisplayNameForZk(p);
-    if (nm.length >= 8 && blob.includes(nm.toLowerCase())) names.push(nm);
+    if (!nm || nm.length < 8) return;
+    const low = nm.toLowerCase();
+    if (blob.includes(low)) {
+      names.push(nm);
+      return;
+    }
+    const stem = low.slice(0, Math.min(28, low.length));
+    if (stem.length >= 12 && blob.includes(stem)) names.push(nm);
+    const words = low.split(/[\s,./]+/).filter((w) => w.length > 3).slice(0, 4).join(' ');
+    if (words.length >= 14 && blob.includes(words)) names.push(nm);
   });
   return uniqueNonEmptyStrings(names);
+}
+
+function zkLineFragments(lines) {
+  const out = [];
+  (lines || []).forEach((line) => {
+    String(line || '').split(/\s*\/\s*|\s*\|\s*/).forEach((part) => {
+      const t = String(part || '').replace(/\s+/g, ' ').trim();
+      if (t) out.push(t);
+    });
+  });
+  return out;
+}
+
+function extractZkProductNames(lines, joined) {
+  const catalog = collectCatalogNamesInText(joined);
+  if (catalog.length) return catalog.slice(0, 8);
+  const frags = zkLineFragments(lines);
+  const start = frags.findIndex((l) => /описание\s*товара|омисяние|sku\s*товара|штрихкод/i.test(l));
+  const body = start >= 0 ? frags.slice(start + 1) : frags;
+  const names = [];
+  body.forEach((line) => {
+    const cleaned = cleanZkProductName(line);
+    if (looksLikeZkProductName(cleaned)) names.push(cleaned);
+  });
+  return uniqueNonEmptyStrings(names).slice(0, 8);
+}
+
+function extractZkQtySum(joined, lines) {
+  let qty = 0;
+  let sum = 0;
+  const qtyLabel = joined.match(/(?:итого|всего|общее)\s*(?:количество|кол-во|шт)?[^\d]{0,20}([\d\s]{1,8})/i);
+  if (qtyLabel) qty = Math.floor(parseLooseNumber(qtyLabel[1]));
+  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|себестоимость\s*всего|всего\s*к\s*оплате)\s*[:\-]?\s*([\d\s]{3,}(?:[.,]\d{1,2})?)/i);
+  if (sumLabel) sum = Math.round(parseLooseNumber(sumLabel[1]));
+  if (!sum) {
+    const uzs = joined.match(/([\d\s]{4,})(?:[.,]\d{1,2})?\s*(?:сум|uzs)\b/i);
+    if (uzs) sum = Math.round(parseLooseNumber(uzs[1]));
+  }
+
+  const money = [];
+  const qtys = [];
+  zkLineFragments(lines).forEach((line) => {
+    if (isZkJunkLine(line)) return;
+    const nums = [...String(line).matchAll(/(\d+(?:[.,]\d{1,2})?)/g)]
+      .map((m) => parseLooseNumber(m[1]))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    nums.forEach((n) => {
+      if (n >= 200000 && n <= 20000000) money.push(Math.round(n));
+      if (Number.isInteger(n) && n >= 1 && n <= 400) qtys.push(n);
+    });
+  });
+  if (!sum && money.length) sum = Math.max(...money);
+  if (!qty && qtys.length) {
+    const plausible = qtys.filter((n) => n < 300);
+    if (plausible.length) qty = plausible[plausible.length - 1];
+  }
+  if (!qty) {
+    const pcs = joined.match(/\b(\d{1,4})\s*(?:шт|pcs)\b/i);
+    if (pcs) qty = Math.floor(parseLooseNumber(pcs[1]));
+  }
+  return { qty: Math.max(0, Math.floor(qty || 0)), sum: Math.max(0, Math.round(sum || 0)) };
 }
 
 function splitUzumInvoiceChunks(text) {
   const raw = String(text || '').replace(/\u00a0/g, ' ');
   const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
-  const headerRe = /(?:поставка|акт|накладная|отправление)\s*№?\s*[:.]?\s*(11\d{9,12}|\d{10,14})/i;
+  const headerRe = /акт\s*при[её]ма-передач|(?:поставка|акт|накладная|отправление)\s*№?\s*[:.]?\s*(11\d{9,12}|\d{7,14})|номер\s*документа/i;
   const headerIdx = [];
   lines.forEach((line, idx) => {
     if (headerRe.test(line)) headerIdx.push(idx);
   });
-  if (headerIdx.length >= 2) {
-    const chunks = [];
-    headerIdx.forEach((start, i) => {
-      const end = i + 1 < headerIdx.length ? headerIdx[i + 1] : lines.length;
-      chunks.push(lines.slice(start, end).join('\n'));
+  const uniq = headerIdx.filter((v, i, arr) => i === 0 || v - arr[i - 1] > 2);
+  if (uniq.length >= 2) {
+    return uniq.map((start, i) => {
+      const end = i + 1 < uniq.length ? uniq[i + 1] : lines.length;
+      return lines.slice(start, end).join('\n');
     });
-    return chunks;
   }
   const idLineIdx = [];
   lines.forEach((line, idx) => {
-    if (/\b11\d{9,10}\b/.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line)) idLineIdx.push(idx);
+    if (/\b11\d{9,12}\b/.test(line) && /акт|поставк|накладн|документ/i.test(line)) idLineIdx.push(idx);
   });
   if (idLineIdx.length >= 2) {
-    return idLineIdx.map((idx) => lines[idx]);
+    return idLineIdx.map((start, i) => {
+      const end = i + 1 < idLineIdx.length ? idLineIdx[i + 1] : Math.min(lines.length, start + 40);
+      return lines.slice(start, end).join('\n');
+    });
   }
   return [raw];
 }
@@ -7943,102 +8132,56 @@ function parseZkInvoiceText(text, fileName) {
   const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const joined = lines.join('\n');
 
-  let actNumber = '';
-  const actLabel = joined.match(/(?:номер\s*(?:акта|накладной|поставки|отправления)|(?:акт|накладная|поставка|отправление|invoice|akt)\s*№?|№\s*(?:акта|накладной|поставки)|id\s*поставки)\s*[:№-]?\s*(\d{6,20})/i);
-  if (actLabel) actNumber = actLabel[1];
-  if (!actNumber) {
-    const fromFile = String(fileName || '').match(/(11\d{9,12}|\d{10,14})/);
-    if (fromFile && !/uzum|business|поставк/i.test(fileName)) actNumber = fromFile[1];
-  }
-  if (!actNumber) {
-    const candidates = [...joined.matchAll(/\b(11[0-9]{9,12})\b/g)].map((m) => m[1]);
-    if (candidates.length) {
-      const counts = new Map();
-      candidates.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
-      actNumber = [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
-    }
-  }
+  const actNumber = pickZkActNumber(joined, fileName);
   if (!actNumber) warnings.push('нет номера акта');
 
-  let invoiceDate = null;
-  const dateLabel = joined.match(/(?:дата\s*(?:отгрузки|накладной|акта|поставки|документа|создания)|отгружен[оа]?)\s*[:\-]?\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})/i);
-  if (dateLabel) invoiceDate = parseRuDateToDate(dateLabel[1]);
-  if (!invoiceDate) {
-    const allDates = [...joined.matchAll(/\b(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b/g)].map((m) => parseRuDateToDate(m[1])).filter(Boolean);
-    if (allDates.length) invoiceDate = allDates[0];
-  }
+  const invoiceDate = pickZkInvoiceDate(joined);
   if (!invoiceDate) warnings.push('нет даты в накладной');
 
-  let qty = 0;
-  const qtyLabel = joined.match(/(?:общее\s*количество(?:\s*единиц)?|количество\s*(?:единиц|товаров|шт)?|всего\s*(?:шт|единиц)|кол-во(?:\s*шт)?|qty)\s*[:\-]?\s*([\d\s]{1,12})/i);
-  if (qtyLabel) qty = Math.floor(parseLooseNumber(qtyLabel[1]));
-
-  let sum = 0;
-  const sumLabel = joined.match(/(?:сумма\s*(?:накладной|акта|документа|всего|итого)|итого(?:\s*сумма)?|всего\s*к\s*оплате|себестоимость\s*всего|sum)\s*[:\-]?\s*([\d\s]+(?:[.,]\d{1,2})?)/i);
-  if (sumLabel) sum = Math.round(parseLooseNumber(sumLabel[1]));
-  if (!sum) {
-    const uzs = joined.match(/([\d\s]{3,})(?:[.,]\d{1,2})?\s*(?:сум|uzs)\b/i);
-    if (uzs) sum = Math.round(parseLooseNumber(uzs[1]));
-  }
-
-  const skipRe = /направлен|штрихкод товара|себестоим|страниц|ссылка на акт|google диск|логистик|инструкц|template|barcode|uzum business|личный кабинет/i;
-  const names = collectCatalogNamesInText(joined);
   const barcodeHits = [];
   lines.forEach((line) => {
     const codes = [...line.matchAll(/\b(\d{8,14})\b/g)].map((m) => m[1]);
     codes.forEach((code) => {
+      if (/^11\d{9,12}$/.test(code)) return;
       const product = findProductByUzumBarcode(code);
-      if (product) {
-        barcodeHits.push({ code, product, line });
-        const nm = productDisplayNameForZk(product);
-        if (nm) names.push(nm);
-      }
+      if (!product) return;
+      const nums = [...line.matchAll(/(\d+(?:[.,]\d+)?)/g)].map((m) => parseLooseNumber(m[1])).filter((n) => n > 0);
+      const qtyN = nums.find((n) => Number.isInteger(n) && n >= 1 && n <= 400 && String(n) !== code) || 0;
+      const sumN = nums.find((n) => n >= 50000) || 0;
+      barcodeHits.push({
+        code,
+        product,
+        qty: qtyN,
+        amount: sumN,
+        name: productDisplayNameForZk(product)
+      });
     });
-    const nums = line.match(/(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)(?:\s+(\d+(?:[.,]\d+)?))?/);
-    if (nums && barcodeHits.length) {
-      const last = barcodeHits[barcodeHits.length - 1];
-      if (last && last.line === line) {
-        const a = parseLooseNumber(nums[1]);
-        const b = parseLooseNumber(nums[2]);
-        const c = nums[3] != null ? parseLooseNumber(nums[3]) : 0;
-        if (a > 0 && a < 100000 && Number.isInteger(a)) {
-          last.qty = a;
-          last.amount = c > 0 ? c : (b > a ? b : 0);
-        }
-      }
-    }
-    if (!skipRe.test(line) && /[A-Za-zА-Яа-яЁё]/.test(line) && line.length >= 12 && line.length <= 220) {
-      const cleaned = line.replace(/\b11\d{9,12}\b/g, '').replace(/\b\d{8,14}\b/g, '').replace(/\s+/g, ' ').trim();
-      if (
-        cleaned.length >= 12
-        && !skipRe.test(cleaned)
-        && !/^(дата|номер|итого|всего|сумма|qty|sum|akt|invoice|data)\b/i.test(cleaned)
-        && !/отгруз/i.test(cleaned)
-      ) {
-        names.push(cleaned);
-      }
-    }
   });
 
-  const lineQty = barcodeHits.reduce((acc, x) => acc + Math.max(0, Math.floor(Number(x.qty || 0))), 0);
-  const lineSum = barcodeHits.reduce((acc, x) => acc + Math.max(0, Number(x.amount || 0)), 0);
-  if (!qty && lineQty) qty = lineQty;
-  if (!sum && lineSum) sum = Math.round(lineSum);
-  if (!qty) {
-    const fallbackQty = joined.match(/\b(\d{1,5})\s*(?:шт|pcs)\b/i);
-    if (fallbackQty) qty = Math.floor(parseLooseNumber(fallbackQty[1]));
-  }
+  let composition = barcodeHits.map((x) => x.name).filter(Boolean);
+  if (!composition.length) composition = extractZkProductNames(lines, joined);
+  composition = uniqueNonEmptyStrings(composition).filter((nm) => looksLikeZkProductName(nm) || collectCatalogNamesInText(nm).length);
+  if (!composition.length) warnings.push('нет состава товара');
+
+  let qty = barcodeHits.reduce((acc, x) => acc + Math.max(0, Math.floor(Number(x.qty || 0))), 0);
+  let sum = barcodeHits.reduce((acc, x) => acc + Math.max(0, Number(x.amount || 0)), 0);
+  const extracted = extractZkQtySum(joined, lines);
+  if (!qty) qty = extracted.qty;
+  if (!sum) sum = extracted.sum;
   if (!qty) warnings.push('нет количества');
   if (!sum) warnings.push('нет суммы');
 
-  const composition = uniqueNonEmptyStrings(names).filter((nm) => nm.length <= 220).slice(0, 12);
-  if (!composition.length) warnings.push('нет состава товара');
+  const skuCount = Math.max(
+    barcodeHits.length,
+    composition.length,
+    Number.isFinite(qty) && composition.length ? composition.length : 0
+  );
 
   return {
     fileName: String(fileName || ''),
     actNumber: String(actNumber || '').trim(),
     composition,
-    skuCount: composition.length,
+    skuCount,
     qty: Math.max(0, Math.floor(Number(qty || 0))),
     sum: Math.max(0, Math.round(Number(sum || 0))),
     invoiceDate,
@@ -8182,7 +8325,7 @@ function renderZkPreview(rows) {
     </tr>`;
   }).join('');
   host.innerHTML = `<table><thead><tr>
-    <th>№</th><th>Файл</th><th>Номер акта</th><th>Состав</th><th>SKU</th><th>Единиц</th><th>Сумма</th><th>Дата накладной</th>
+    <th>№</th><th>Источник</th><th>Номер акта</th><th>Состав</th><th>SKU</th><th>Единиц</th><th>Сумма</th><th>Дата накладной</th>
   </tr></thead><tbody>${body}</tbody></table>`;
   host.classList.remove('hidden');
 }
@@ -8206,7 +8349,7 @@ async function handleZkInvoicesSelected(fileList) {
       setZkStatus('В выборе нет PDF или Excel-накладных.');
       return;
     }
-    const allowOcr = sources.length <= 12;
+    const allowOcr = sources.length <= 24;
     let doneFiles = 0;
     const parsed = [];
     await mapPool(sources, 4, async (source) => {
@@ -8305,15 +8448,16 @@ async function generateZkExcelFromParsed() {
       alert(`Выбрано файлов: ${picked}, но разбор ещё не закончен или не дал строк. Дождись «Готово».`);
       return;
     }
-    alert('Сначала загрузи PDF (или ZIP) накладных. Можно сразу много файлов, хоть 70 штук.');
+    alert('Нет строк ЗК. Нажми «Подтянуть из API Uzum» или загрузи PDF/ZIP накладных.');
     return;
   }
-  const filled = zkParsedInvoices.filter((row) =>
-    String(row.actNumber || '').trim()
-    || (row.composition || []).length
-    || Number(row.qty || 0) > 0
-    || Number(row.sum || 0) > 0
-  );
+  const filled = zkParsedInvoices.filter((row) => {
+    const act = String(row.actNumber || '').trim();
+    const names = (row.composition || []).filter((nm) => looksLikeZkProductName(nm));
+    const qty = Number(row.qty || 0) > 0;
+    const sum = Number(row.sum || 0) > 0;
+    return act || (names.length && (qty || sum));
+  });
   if (!filled.length) {
     alert('Накладные не распознались — пустой ЗК не сохраняю. Подожди, пока статус станет «Готово», или сохрани PDF из Uzum через Печать → «Сохранить как PDF».');
     return;
@@ -8355,9 +8499,362 @@ function initZkGreenCorridorUi() {
   document.getElementById('wmsZkInvoicesInput')?.addEventListener('change', (e) => {
     void handleZkInvoicesSelected(e.target.files);
   });
+  document.getElementById('wmsZkFromApiBtn')?.addEventListener('click', () => {
+    void loadZkFromUzumApi();
+  });
   document.getElementById('wmsZkGenerateBtn')?.addEventListener('click', () => {
     void generateZkExcelFromParsed();
   });
+}
+
+function yoScaleUpApi() {
+  return (typeof window !== 'undefined' && window.ScaleUpYO) || null;
+}
+
+function zkSleep(ms) {
+  const api = yoScaleUpApi();
+  if (typeof api?.sleep === 'function') return api.sleep(ms);
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function zkUnwrapList(data, keys) {
+  const api = yoScaleUpApi();
+  if (typeof api?.unwrapList === 'function') {
+    const list = api.unwrapList(data, keys);
+    if (Array.isArray(list) && list.length) return list;
+  }
+  if (Array.isArray(data)) return data;
+  const extra = keys || [];
+  for (const k of extra) {
+    if (Array.isArray(data?.[k])) return data[k];
+  }
+  if (Array.isArray(data?.payload?.payments)) return data.payload.payments;
+  if (Array.isArray(data?.payload?.productList)) return data.payload.productList;
+  if (Array.isArray(data?.payload)) return data.payload;
+  if (Array.isArray(data?.content)) return data.content;
+  if (data && typeof data === 'object') {
+    for (const v of Object.values(data)) {
+      if (Array.isArray(v) && v.length && typeof v[0] === 'object') return v;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const nested = zkUnwrapList(v, extra);
+        if (nested.length) return nested;
+      }
+    }
+  }
+  return [];
+}
+
+function zkPick(obj, keys) {
+  if (!obj || typeof obj !== 'object') return '';
+  for (const k of keys) {
+    const v = obj[k];
+    if (v != null && String(v).trim() !== '' && v !== false) return v;
+  }
+  return '';
+}
+
+function zkToDate(raw) {
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const s = String(raw).trim();
+  const ru = parseRuDateToDate(s);
+  if (ru) return ru;
+  const t = Date.parse(s);
+  if (Number.isFinite(t)) return new Date(t);
+  return null;
+}
+
+function zkYoUnitCost(product) {
+  if (!product) return 0;
+  return Number(
+    product.costPriceUzs
+    || product.costGross
+    || product.unitCost
+    || product.cost
+    || product.cogs
+    || 0
+  ) || 0;
+}
+
+function zkNameFromCatalogOrApi(item) {
+  const barcode = normalizeUzumBarcode(
+    zkPick(item, ['barcode', 'skuBarcode', 'uzumBarcode', 'ean', 'gtin'])
+  );
+  const product = barcode ? findProductByUzumBarcode(barcode) : null;
+  const fromYo = productDisplayNameForZk(product);
+  if (fromYo) return { name: fromYo, product, barcode };
+  const name = String(
+    zkPick(item, ['productTitle', 'title', 'skuTitle', 'skuFullTitle', 'name', 'sku', 'article'])
+    || barcode
+    || ''
+  ).replace(/\s+/g, ' ').trim();
+  return { name, product, barcode };
+}
+
+function zkExtractSupplyItems(supply) {
+  if (!supply || typeof supply !== 'object') return [];
+  const keys = [
+    'items', 'itemList', 'skus', 'skuList', 'products', 'productList',
+    'contents', 'cargoItems', 'positions', 'lines', 'details', 'goods'
+  ];
+  let items = zkUnwrapList(supply, keys);
+  if (!items.length && supply.payload && typeof supply.payload === 'object') {
+    items = zkUnwrapList(supply.payload, keys);
+  }
+  return items.filter((it) => it && typeof it === 'object');
+}
+
+function mapUzumSupplyToZkRow(supply, extraItems, sourceLabel) {
+  const warnings = [];
+  const obj = supply && typeof supply === 'object' ? supply : {};
+  const items = (extraItems && extraItems.length) ? extraItems : zkExtractSupplyItems(obj);
+  const actRaw = zkPick(obj, [
+    'actNumber', 'actId', 'invoiceNumber', 'invoiceId', 'number', 'supplyNumber',
+    'cargoNumber', 'barcode', 'id', 'supplyId', 'cargoId', 'shipmentId', 'externalId'
+  ]);
+  let actNumber = String(actRaw || '').trim();
+  const actMatch = actNumber.match(/(11\d{9,12}|\d{10,14})/);
+  if (actMatch) actNumber = actMatch[1];
+  if (!actNumber) warnings.push('нет номера акта');
+
+  const invoiceDate = zkToDate(zkPick(obj, [
+    'dateShipped', 'shippedDate', 'shipmentDate', 'createdAt', 'dateCreated',
+    'date', 'created', 'acceptedAt', 'inboundDate', 'supplyDate'
+  ])) || null;
+  if (!invoiceDate) warnings.push('нет даты в накладной');
+
+  const names = [];
+  let qty = 0;
+  let sum = 0;
+  items.forEach((it) => {
+    const hit = zkNameFromCatalogOrApi(it);
+    const q = Math.max(0, Math.floor(Number(
+      zkPick(it, ['quantity', 'qty', 'amount', 'count', 'units', 'skuQuantity']) || 0
+    )));
+    const lineSumRaw = Number(zkPick(it, ['sum', 'total', 'amountSum', 'purchaseSum', 'costSum']) || 0);
+    const unit = Number(zkPick(it, ['purchasePrice', 'cost', 'price', 'unitCost', 'sellerPrice']) || 0) || zkYoUnitCost(hit.product);
+    if (hit.name) names.push(hit.name);
+    if (q) qty += q;
+    if (lineSumRaw > 0) sum += lineSumRaw;
+    else if (q && unit) sum += q * unit;
+  });
+
+  if (!qty) {
+    qty = Math.max(0, Math.floor(Number(zkPick(obj, ['quantity', 'qty', 'totalQuantity', 'skuQuantity', 'unitsCount']) || 0)));
+  }
+  if (!sum) {
+    sum = Math.round(Number(zkPick(obj, ['sum', 'total', 'totalCost', 'purchaseSum', 'amount']) || 0));
+  }
+  if (!qty) warnings.push('нет количества');
+  if (!sum) warnings.push('нет суммы');
+
+  const composition = uniqueNonEmptyStrings(names).filter((nm) => nm.length <= 220).slice(0, 12);
+  if (!composition.length) warnings.push('нет состава товара');
+
+  return {
+    fileName: String(sourceLabel || 'OpenAPI Uzum'),
+    actNumber: String(actNumber || '').trim(),
+    composition,
+    skuCount: composition.length || Math.max(0, Number(zkPick(obj, ['skuCount', 'skuQuantity', 'uniqueSkuCount']) || 0)),
+    qty: Math.max(0, Math.floor(Number(qty || 0))),
+    sum: Math.max(0, Math.round(Number(sum || 0))),
+    invoiceDate,
+    warnings
+  };
+}
+
+function zkSupplyListCandidatePaths(shopId) {
+  const sid = encodeURIComponent(String(shopId || ''));
+  const withShop = [
+    'v1/fbo/supplies',
+    'v2/fbo/supplies',
+    'v1/supplies',
+    'v1/fbo/cargo',
+    'v1/cargo',
+    'v1/fbo/inbound',
+    'v1/fbo/invoices',
+    'v1/invoices',
+    'v1/fbo/acts',
+    'v1/stock/supplies',
+    'v2/fbs/supplies'
+  ];
+  return [
+    ...withShop.map((base) => `${base}?page=0&size=50&shopIds=${sid}`),
+    ...withShop.slice(0, 4).map((base) => `${base}?page=0&size=50`)
+  ];
+}
+
+function zkPathResource(path) {
+  return String(path || '').split('?')[0].replace(/\/+$/, '');
+}
+
+async function zkUzumJson(path) {
+  const api = yoScaleUpApi();
+  if (!api || typeof api.uzumJson !== 'function') {
+    throw new Error('Модуль аналитики ScaleUpYO ещё не загрузился. Обнови страницу.');
+  }
+  return api.uzumJson(path);
+}
+
+async function probeUzumZkSupplyEndpoint(shopId, onStatus) {
+  const paths = zkSupplyListCandidatePaths(shopId);
+  const tried = [];
+  for (let i = 0; i < paths.length; i += 1) {
+    const path = paths[i];
+    if (typeof onStatus === 'function') {
+      onStatus(`OpenAPI: проверяю ${zkPathResource(path)} (${i + 1}/${paths.length})`);
+    }
+    try {
+      const data = await zkUzumJson(path);
+      const list = zkUnwrapList(data, [
+        'supplies', 'supplyList', 'cargoList', 'invoices', 'acts', 'shipments',
+        'orders', 'items', 'payload', 'content', 'data', 'result'
+      ]);
+      return { path, data, list, tried };
+    } catch (e) {
+      const status = Number(e?.status || 0);
+      tried.push(`${zkPathResource(path)} → ${status || e?.message || 'err'}`);
+      if (status === 401) throw e;
+      if (status === 429) await zkSleep(2500);
+      else if (i < paths.length - 1) await zkSleep(220);
+    }
+  }
+  return { path: '', data: null, list: [], tried };
+}
+
+async function fetchUzumSupplyPages(foundPath, onStatus) {
+  const resource = zkPathResource(foundPath);
+  const out = [];
+  const size = 50;
+  for (let page = 0; page < 30; page += 1) {
+    if (page > 0) await zkSleep(700);
+    const next = foundPath.replace(/page=\d+/, `page=${page}`);
+    if (typeof onStatus === 'function') onStatus(`OpenAPI: страница поставок ${page + 1}`);
+    const data = await zkUzumJson(next);
+    const chunk = zkUnwrapList(data, [
+      'supplies', 'supplyList', 'cargoList', 'invoices', 'acts', 'shipments',
+      'orders', 'items', 'payload', 'content', 'data', 'result'
+    ]);
+    if (!chunk.length) break;
+    out.push(...chunk);
+    if (chunk.length < size) break;
+  }
+  return { resource, items: out };
+}
+
+async function fetchUzumSupplyDetails(resource, supply, onStatus) {
+  const id = zkPick(supply, ['id', 'supplyId', 'cargoId', 'invoiceId', 'actId', 'shipmentId']);
+  if (!id) return zkExtractSupplyItems(supply);
+  const local = zkExtractSupplyItems(supply);
+  if (local.length) return local;
+  const detailPaths = [
+    `${resource}/${encodeURIComponent(id)}`,
+    `${resource}/${encodeURIComponent(id)}/items`,
+    `${resource}/${encodeURIComponent(id)}/skus`
+  ];
+  for (const p of detailPaths) {
+    try {
+      if (typeof onStatus === 'function') onStatus(`OpenAPI: состав ${id}`);
+      const data = await zkUzumJson(p);
+      const items = zkExtractSupplyItems(data).length ? zkExtractSupplyItems(data) : zkUnwrapList(data, ['items', 'skuList', 'productList']);
+      if (items.length) return items;
+      if (data && typeof data === 'object' && (data.id || data.supplyId)) {
+        const nested = zkExtractSupplyItems(data);
+        if (nested.length) return nested;
+      }
+    } catch (e) {
+      if (Number(e?.status) === 401) throw e;
+      await zkSleep(180);
+    }
+  }
+  return local;
+}
+
+async function loadZkFromUzumApi() {
+  const jobId = ++zkJobId;
+  const api = yoScaleUpApi();
+  const token = String(api?.getToken?.() || localStorage.getItem('yo_uzum_bearer_token') || '').trim();
+  if (!token) {
+    alert('Сначала вставь API-ключ Uzum в Настройки → API ключи (тот же, что для Аналитики).');
+    return;
+  }
+  zkParsedInvoices = [];
+  renderZkPreview([]);
+  setZkBusy(true, 'Читаю OpenAPI Uzum…');
+  setZkStatus('Подключаюсь к Seller OpenAPI через тот же прокси, что аналитика…');
+  try {
+    const shopsRaw = await zkUzumJson('v1/shops');
+    if (jobId !== zkJobId) return;
+    const shops = zkUnwrapList(shopsRaw, ['shops', 'organizations']);
+    const shop = shops[0] || null;
+    const shopId = shop?.id || shop?.shopId || api?.getSyncMeta?.()?.shopId;
+    if (!shopId) throw new Error('Магазины не найдены по API-ключу. Проверь ключ в Аналитике.');
+
+    setZkStatus(`Магазин #${shopId}. Ищу эндпоинт поставок/актов в OpenAPI…`);
+    const probed = await probeUzumZkSupplyEndpoint(shopId, (msg) => {
+      if (jobId === zkJobId) setZkStatus(msg);
+    });
+    if (jobId !== zkJobId) return;
+
+    if (!probed.path) {
+      const sample = (probed.tried || []).slice(0, 8).join('; ');
+      setZkStatus(
+        'OpenAPI аналитики отвечает (магазины есть), но эндпоинта FBO-поставок/актов нет: проверены v1/v2 fbo/supplies, cargo, inbound, invoices, acts. ' +
+        'Заказы finance и FBS — это продажи, не накладные 11… на склад. Загрузи PDF из кабинета Uzum → Поставки. ' +
+        (sample ? `Коды: ${sample}` : '')
+      );
+      return;
+    }
+
+    const pages = await fetchUzumSupplyPages(probed.path, (msg) => {
+      if (jobId === zkJobId) setZkStatus(msg);
+    });
+    if (jobId !== zkJobId) return;
+    const supplies = pages.items.length ? pages.items : probed.list;
+    if (!supplies.length) {
+      setZkStatus(`Эндпоинт найден (${zkPathResource(probed.path)}), но список поставок пустой. Попробуй PDF или сначала создай поставку в кабинете Uzum.`);
+      return;
+    }
+
+    const parsed = [];
+    for (let i = 0; i < supplies.length; i += 1) {
+      if (jobId !== zkJobId) return;
+      const supply = supplies[i];
+      setZkBusy(true, `OpenAPI ${i + 1} / ${supplies.length}…`);
+      setZkStatus(`Читаю состав поставки ${i + 1} из ${supplies.length}…`);
+      let items = [];
+      try {
+        items = await fetchUzumSupplyDetails(pages.resource, supply, (msg) => {
+          if (jobId === zkJobId) setZkStatus(msg);
+        });
+      } catch (e) {
+        items = zkExtractSupplyItems(supply);
+      }
+      parsed.push(mapUzumSupplyToZkRow(supply, items, `OpenAPI · ${zkPathResource(probed.path)}`));
+      zkParsedInvoices = parsed.slice();
+      renderZkPreview(zkParsedInvoices);
+      if (i < supplies.length - 1) await zkSleep(250);
+    }
+    if (jobId !== zkJobId) return;
+    parsed.sort((a, b) => String(a.actNumber || a.fileName).localeCompare(String(b.actNumber || b.fileName), 'ru', { numeric: true }));
+    zkParsedInvoices = parsed;
+    const filled = parsed.filter((r) => r.actNumber || (r.composition || []).length || r.qty || r.sum).length;
+    const warnCount = parsed.filter((r) => (r.warnings || []).length).length;
+    setZkStatus(`Готово из API: ${parsed.length} поставок (${zkPathResource(probed.path)}), с данными: ${filled}${warnCount ? `, с пометками: ${warnCount}` : ''}. Можно скачивать ЗК.`);
+    renderZkPreview(parsed);
+  } catch (e) {
+    if (jobId !== zkJobId) return;
+    console.error('loadZkFromUzumApi:', e);
+    const apiHelp = yoScaleUpApi()?.explainUzumHttpError?.(e?.status, e?.body || e?.message);
+    setZkStatus(apiHelp || e?.message || 'Не удалось прочитать OpenAPI.');
+  } finally {
+    if (jobId === zkJobId) setZkBusy(false);
+  }
 }
 
 function collectShipmentBoxesForExport(sh) {
