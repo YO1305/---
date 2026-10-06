@@ -273,6 +273,15 @@ const DEFAULT_CODE_BASE_1C_PRODUCT_TYPE = {
   "Простыня на резинке": "12"
 };
 
+const codeBase1C = {
+  productType: { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE },
+  size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
+  fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
+  finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
+  density: {"100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08", "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16", "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24", "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32", "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"},
+  width: {"100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"}
+};
+
 const DEFAULT_PRODUCT_CATEGORIES = [
   '1-Постельное белье 1,5',
   '2-постельное белье 1 сп',
@@ -287,6 +296,7 @@ const DEFAULT_PRODUCT_CATEGORIES = [
   '11 - Фартук'
 ];
 const CATEGORY_CATALOG_STORAGE_KEY = 'yo_product_categories_v1';
+const GENERATOR_CATEGORY_CODES_KEY = 'yo_generator_category_codes_v1';
 const CATEGORY_ADD_SENTINEL = '__add_category__';
 let lastCategoryFilterValue = '';
 const CATEGORY_CATALOG_DOC = { collection: 'system', id: 'product_categories' };
@@ -388,8 +398,38 @@ function isBuiltInProductCategoryName(raw) {
   ));
 }
 
-function listCustomCatalogCategories() {
-  return readCategoryCatalogSafe().filter((name) => !isBuiltInProductCategoryName(name));
+function isBuiltInGeneratorProductTypeTitle(title) {
+  const key = String(title || '').toLocaleLowerCase('ru');
+  return Object.keys(DEFAULT_CODE_BASE_1C_PRODUCT_TYPE).some((label) => label.toLocaleLowerCase('ru') === key);
+}
+
+function readSavedGeneratorCategoryCodes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(GENERATOR_CATEGORY_CODES_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeSavedGeneratorCategoryCodes(map) {
+  try {
+    localStorage.setItem(GENERATOR_CATEGORY_CODES_KEY, JSON.stringify(map || {}));
+  } catch (_) { /* ignore */ }
+}
+
+function listCustomCategoriesForGenerator() {
+  const byTitle = new Map();
+  getAllProductCategoryNames().forEach((name) => {
+    if (isBuiltInProductCategoryName(name)) return;
+    const parsed = parseCategoryNumberAndTitle(name);
+    const title = parsed.title;
+    if (!title || isBuiltInGeneratorProductTypeTitle(title)) return;
+    const key = title.toLocaleLowerCase('ru');
+    const prev = byTitle.get(key);
+    if (!prev || (parsed.num && !prev.num)) byTitle.set(key, { name, title, num: parsed.num || null });
+  });
+  return Array.from(byTitle.values()).sort((a, b) => a.title.localeCompare(b.title, 'ru', { numeric: true, sensitivity: 'base' }));
 }
 
 function refreshGenProductTypeSelect() {
@@ -401,29 +441,31 @@ function refreshGenProductTypeSelect() {
 }
 
 function syncGeneratorProductTypes() {
-  if (typeof codeBase1C === 'undefined' || !codeBase1C) return;
-  const base = (typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE)
-    ? { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE }
-    : { ...(codeBase1C.productType || {}) };
-  const used = new Set(Object.values(base).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  if (!codeBase1C) return;
+  const base = { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE };
+  const reserved = new Set(Object.values(base).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  const saved = readSavedGeneratorCategoryCodes();
+  const nextSaved = { ...saved };
   const existingLabels = new Set(Object.keys(base).map((k) => k.toLocaleLowerCase('ru')));
-  listCustomCatalogCategories().forEach((name) => {
-    const parsed = parseCategoryNumberAndTitle(name);
-    const title = parsed.title;
-    if (!title) return;
-    const titleKey = title.toLocaleLowerCase('ru');
-    if (existingLabels.has(titleKey)) return;
-    let num = parsed.num;
-    if (!num || used.has(num)) num = nextFreeCategoryNumber(used);
+  listCustomCategoriesForGenerator().forEach((item) => {
+    const titleKey = item.title.toLocaleLowerCase('ru');
+    const label = item.name;
+    const labelKey = label.toLocaleLowerCase('ru');
+    if (existingLabels.has(labelKey) || existingLabels.has(titleKey)) return;
+    const savedNum = parseInt(saved[titleKey], 10);
+    let num = null;
+    if (item.num && !reserved.has(item.num)) num = item.num;
+    else if (Number.isFinite(savedNum) && savedNum >= 1 && savedNum <= 99 && !reserved.has(savedNum)) num = savedNum;
+    else num = nextFreeCategoryNumber(reserved);
     if (!num) return;
-    used.add(num);
-    const label = formatNumberedCategoryName(num, title);
-    if (existingLabels.has(label.toLocaleLowerCase('ru'))) return;
+    reserved.add(num);
     base[label] = String(num).padStart(2, '0');
-    existingLabels.add(label.toLocaleLowerCase('ru'));
+    existingLabels.add(labelKey);
     existingLabels.add(titleKey);
+    nextSaved[titleKey] = num;
   });
   codeBase1C.productType = base;
+  writeSavedGeneratorCategoryCodes(nextSaved);
   refreshGenProductTypeSelect();
 }
 
@@ -499,7 +541,11 @@ function addProductCategoryByName(rawName) {
 
 let _categoryCatalogUnsub = null;
 function startCategoryCatalogRealtimeSync() {
-  setCategoryCatalog(readCachedCategoryCatalog(), false);
+  try {
+    setCategoryCatalog(readCachedCategoryCatalog(), false);
+  } catch (e) {
+    console.error('startCategoryCatalogRealtimeSync(local): ', e);
+  }
   try {
     if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return;
     if (typeof _categoryCatalogUnsub === 'function') return;
@@ -508,7 +554,11 @@ function startCategoryCatalogRealtimeSync() {
         if (!snap.exists) return;
         const data = snap.data() || {};
         const names = Array.isArray(data.names) ? data.names : [];
-        setCategoryCatalog(names);
+        if (!names.length) {
+          syncGeneratorProductTypes();
+          return;
+        }
+        setCategoryCatalog(uniqueCategoryNames([...readCategoryCatalogSafe(), ...names]));
       }, (error) => {
         logFirestoreError('onSnapshot(product_categories)', error);
       });
@@ -2732,6 +2782,7 @@ function openPage(pageId) {
       window.ScaleUpYO.renderSettingsPage();
     }
   }
+  if (pageId === 'generator-section') syncGeneratorProductTypes();
   renderEverything();
 }
 
@@ -2742,15 +2793,6 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 document.querySelectorAll('[data-open-page]').forEach(card => {
   card.addEventListener('click', () => openPage(card.dataset.openPage));
 });
-
-const codeBase1C = {
-  productType: { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE },
-  size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
-  fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
-  finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
-  density: {"100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08", "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16", "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24", "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32", "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"},
-  width: {"100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"}
-};
 
 const GENERATOR_1C_LABELS = ['Вид продукта', 'Размер', 'Вид ткани', 'Вид отделки', 'Плотность', 'Ширина'];
 const GENERATOR_1C_KEYS = ['productType', 'size', 'fabricType', 'finishType', 'density', 'width'];
@@ -5177,6 +5219,7 @@ function refreshProductCategorySelectors(products) {
     productCatEl.innerHTML = `<option value="">— выберите категорию —</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
     if (cur && values.includes(cur)) productCatEl.value = cur;
   }
+  syncGeneratorProductTypes();
 }
 
 function renderProducts(filteredArray) {
