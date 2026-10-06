@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-10-06-cats2" />
+  <link rel="stylesheet" href="style.css?v=2026-10-06-genopt1" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -1439,23 +1439,49 @@
             <div class="field">
               <label for="genSize">Размер</label>
               <select id="genSize" class="select"></select>
+              <div id="genSizeAddPanel" class="category-add-panel generator-add-panel hidden">
+                <input id="genSizeNewName" class="input" type="text" placeholder="Новый размер, напр. 160*220" maxlength="40" autocomplete="off" />
+                <button type="button" id="genSizeSaveBtn" class="btn-primary">Сохранить</button>
+                <button type="button" id="genSizeCancelBtn" class="btn-secondary">Отмена</button>
+              </div>
             </div>
             <div class="field">
               <label for="genFabricType">Вид ткани</label>
               <select id="genFabricType" class="select"></select>
+              <div id="genFabricTypeAddPanel" class="category-add-panel generator-add-panel hidden">
+                <input id="genFabricTypeNewName" class="input" type="text" placeholder="Новая ткань, напр. Лён" maxlength="40" autocomplete="off" />
+                <button type="button" id="genFabricTypeSaveBtn" class="btn-primary">Сохранить</button>
+                <button type="button" id="genFabricTypeCancelBtn" class="btn-secondary">Отмена</button>
+              </div>
             </div>
             <div class="field">
               <label for="genFinishType">Вид отделки</label>
               <select id="genFinishType" class="select"></select>
+              <div id="genFinishTypeAddPanel" class="category-add-panel generator-add-panel hidden">
+                <input id="genFinishTypeNewName" class="input" type="text" placeholder="Новая отделка, напр. Вышивка" maxlength="40" autocomplete="off" />
+                <button type="button" id="genFinishTypeSaveBtn" class="btn-primary">Сохранить</button>
+                <button type="button" id="genFinishTypeCancelBtn" class="btn-secondary">Отмена</button>
+              </div>
             </div>
             <div class="field">
               <label for="genDensity">Плотность</label>
               <select id="genDensity" class="select"></select>
+              <div id="genDensityAddPanel" class="category-add-panel generator-add-panel hidden">
+                <input id="genDensityNewName" class="input" type="text" placeholder="Новая плотность, напр. 320" maxlength="40" autocomplete="off" />
+                <button type="button" id="genDensitySaveBtn" class="btn-primary">Сохранить</button>
+                <button type="button" id="genDensityCancelBtn" class="btn-secondary">Отмена</button>
+              </div>
             </div>
             <div class="field">
               <label for="genWidth">Ширина</label>
               <select id="genWidth" class="select"></select>
+              <div id="genWidthAddPanel" class="category-add-panel generator-add-panel hidden">
+                <input id="genWidthNewName" class="input" type="text" placeholder="Новая ширина, напр. 270" maxlength="40" autocomplete="off" />
+                <button type="button" id="genWidthSaveBtn" class="btn-primary">Сохранить</button>
+                <button type="button" id="genWidthCancelBtn" class="btn-secondary">Отмена</button>
+              </div>
             </div>
+            <p class="hint hidden generator-add-status" id="generatorAddStatus"></p>
             <div class="field generator-field--full">
               <label for="genColor">Цвет</label>
               <input type="text" id="genColor" class="input" placeholder="Цвет (напр. крем)" autocomplete="off" />
@@ -2228,7 +2254,7 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-10-06-cats5"></script>
+  <script src="script.js?v=2026-10-06-genopt1"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
 </body>

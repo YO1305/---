@@ -24,6 +24,7 @@ Object.assign(window.appState, {
   loadingMap: { products: true, shipments: true, components: true, activityLog: true },
   categoryCatalog: [],
   selectedMarketplace: 'uzum',
+  generatorExtras: { size: {}, fabricType: {}, finishType: {}, density: {}, width: {} },
   themeDark: false,
   uiMemory: Object.create(null),
   // Uzum payout теперь вводится вручную (без API/кеша).
@@ -273,14 +274,355 @@ const DEFAULT_CODE_BASE_1C_PRODUCT_TYPE = {
   "Простыня на резинке": "12"
 };
 
+const DEFAULT_CODE_BASE_1C_SIZE = {
+  "1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05",
+  "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13",
+  "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19",
+  "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"
+};
+const DEFAULT_CODE_BASE_1C_FABRIC = {
+  "Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05",
+  "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"
+};
+const DEFAULT_CODE_BASE_1C_FINISH = {
+  "Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"
+};
+const DEFAULT_CODE_BASE_1C_DENSITY = {
+  "100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08",
+  "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16",
+  "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24",
+  "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32",
+  "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"
+};
+const DEFAULT_CODE_BASE_1C_WIDTH = {
+  "100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"
+};
+
 const codeBase1C = {
   productType: { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE },
-  size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
-  fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
-  finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
-  density: {"100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08", "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16", "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24", "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32", "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"},
-  width: {"100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"}
+  size: { ...DEFAULT_CODE_BASE_1C_SIZE },
+  fabricType: { ...DEFAULT_CODE_BASE_1C_FABRIC },
+  finishType: { ...DEFAULT_CODE_BASE_1C_FINISH },
+  density: { ...DEFAULT_CODE_BASE_1C_DENSITY },
+  width: { ...DEFAULT_CODE_BASE_1C_WIDTH }
 };
+
+const DEFAULT_CODE_BASE_1C_BY_KEY = {
+  productType: DEFAULT_CODE_BASE_1C_PRODUCT_TYPE,
+  size: DEFAULT_CODE_BASE_1C_SIZE,
+  fabricType: DEFAULT_CODE_BASE_1C_FABRIC,
+  finishType: DEFAULT_CODE_BASE_1C_FINISH,
+  density: DEFAULT_CODE_BASE_1C_DENSITY,
+  width: DEFAULT_CODE_BASE_1C_WIDTH
+};
+const GENERATOR_EXTENSIBLE_KEYS = ['size', 'fabricType', 'finishType', 'density', 'width'];
+const GENERATOR_EXTENSIBLE_SELECT_IDS = {
+  size: 'genSize',
+  fabricType: 'genFabricType',
+  finishType: 'genFinishType',
+  density: 'genDensity',
+  width: 'genWidth'
+};
+const GENERATOR_EXTENSIBLE_TITLES = {
+  size: 'Размер',
+  fabricType: 'Вид ткани',
+  finishType: 'Вид отделки',
+  density: 'Плотность',
+  width: 'Ширина'
+};
+const GENERATOR_ADD_SENTINEL = '__add_generator_option__';
+const GENERATOR_EXTRAS_STORAGE_KEY = 'yo_generator_extras_v1';
+const GENERATOR_EXTRAS_DOC = { collection: 'system', id: 'generator_extras' };
+const lastGeneratorSelectValue = {};
+
+function emptyGeneratorExtras() {
+  return { size: {}, fabricType: {}, finishType: {}, density: {}, width: {} };
+}
+
+function normalizeGeneratorOptionLabel(raw, key) {
+  let s = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (key === 'size') {
+    s = s.replace(/[хx×X]/g, '*').replace(/\s*\*\s*/g, '*');
+  }
+  if (key === 'density' || key === 'width') {
+    const n = Number(String(s).replace(',', '.').replace(/[^\d.]/g, ''));
+    if (Number.isFinite(n) && n > 0) s = Number.isInteger(n) ? String(n) : String(n);
+  }
+  return s;
+}
+
+function generatorOptionKey(label, key) {
+  return normalizeGeneratorOptionLabel(label, key).toLocaleLowerCase('ru');
+}
+
+function coerceGeneratorExtrasMap(raw) {
+  const out = emptyGeneratorExtras();
+  const src = raw && typeof raw === 'object' ? raw : {};
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const chunk = src[key];
+    const map = {};
+    if (Array.isArray(chunk)) {
+      chunk.forEach((row) => {
+        const label = normalizeGeneratorOptionLabel(row?.label ?? row?.name ?? row, key);
+        const code = String(row?.code ?? row?.value ?? '').replace(/\D/g, '').padStart(2, '0').slice(-2);
+        if (label && code) map[label] = code;
+      });
+    } else if (chunk && typeof chunk === 'object') {
+      Object.entries(chunk).forEach(([labelRaw, codeRaw]) => {
+        const label = normalizeGeneratorOptionLabel(labelRaw, key);
+        const code = String(codeRaw || '').replace(/\D/g, '').padStart(2, '0').slice(-2);
+        if (label && code) map[label] = code;
+      });
+    }
+    out[key] = map;
+  });
+  return out;
+}
+
+function readCachedGeneratorExtras() {
+  try {
+    return coerceGeneratorExtrasMap(JSON.parse(localStorage.getItem(GENERATOR_EXTRAS_STORAGE_KEY) || '{}'));
+  } catch (_) {
+    return emptyGeneratorExtras();
+  }
+}
+
+function writeCachedGeneratorExtras(extras) {
+  try {
+    localStorage.setItem(GENERATOR_EXTRAS_STORAGE_KEY, JSON.stringify(coerceGeneratorExtrasMap(extras)));
+  } catch (_) { /* ignore */ }
+}
+
+function readGeneratorExtrasSafe() {
+  return coerceGeneratorExtrasMap(realtimeState.generatorExtras);
+}
+
+function extrasMapsEqual(a, b) {
+  return JSON.stringify(coerceGeneratorExtrasMap(a)) === JSON.stringify(coerceGeneratorExtrasMap(b));
+}
+
+function mergeGeneratorExtras(a, b) {
+  const left = coerceGeneratorExtrasMap(a);
+  const right = coerceGeneratorExtrasMap(b);
+  const out = emptyGeneratorExtras();
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    out[key] = { ...left[key], ...right[key] };
+  });
+  return out;
+}
+
+function fillGeneratorExtensibleSelect(selectId, categoryKey) {
+  const sel = document.getElementById(selectId);
+  if (!sel || !codeBase1C[categoryKey]) return;
+  const prev = String(sel.value || '');
+  const defaults = DEFAULT_CODE_BASE_1C_BY_KEY[categoryKey] || {};
+  const map = codeBase1C[categoryKey] || {};
+  const frag = document.createDocumentFragment();
+  Object.keys(defaults).forEach((label) => {
+    const o = document.createElement('option');
+    o.value = label;
+    o.textContent = label;
+    frag.appendChild(o);
+  });
+  const extraLabels = Object.keys(map).filter((label) => !Object.prototype.hasOwnProperty.call(defaults, label));
+  if (extraLabels.length) {
+    const g = document.createElement('optgroup');
+    g.label = 'Добавленные';
+    extraLabels.forEach((label) => {
+      const o = document.createElement('option');
+      o.value = label;
+      o.textContent = `${map[label]} — ${label}`;
+      g.appendChild(o);
+    });
+    frag.appendChild(g);
+  }
+  const addOpt = document.createElement('option');
+  addOpt.value = GENERATOR_ADD_SENTINEL;
+  addOpt.textContent = '+ Добавить вариант';
+  frag.appendChild(addOpt);
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+  if (prev && prev !== GENERATOR_ADD_SENTINEL && Array.from(sel.options).some((o) => o.value === prev)) {
+    sel.value = prev;
+  } else if (lastGeneratorSelectValue[categoryKey] && Array.from(sel.options).some((o) => o.value === lastGeneratorSelectValue[categoryKey])) {
+    sel.value = lastGeneratorSelectValue[categoryKey];
+  }
+}
+
+function applyGeneratorExtras() {
+  const extras = readGeneratorExtrasSafe();
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const base = { ...(DEFAULT_CODE_BASE_1C_BY_KEY[key] || {}) };
+    Object.entries(extras[key] || {}).forEach(([label, code]) => {
+      if (!Object.prototype.hasOwnProperty.call(base, label)) base[label] = code;
+    });
+    codeBase1C[key] = base;
+    fillGeneratorExtensibleSelect(GENERATOR_EXTENSIBLE_SELECT_IDS[key], key);
+  });
+}
+
+function setGeneratorExtras(extras, persistLocal) {
+  const next = coerceGeneratorExtrasMap(extras);
+  realtimeState.generatorExtras = next;
+  if (persistLocal !== false) writeCachedGeneratorExtras(next);
+  applyGeneratorExtras();
+}
+
+function persistGeneratorExtrasToFirestore(extras) {
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return Promise.resolve(false);
+    return db.collection(GENERATOR_EXTRAS_DOC.collection).doc(GENERATOR_EXTRAS_DOC.id).set({
+      extras: coerceGeneratorExtrasMap(extras),
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+      .then(() => true)
+      .catch((error) => {
+        console.error('Ошибка записи вариантов генератора в Firestore: ', error);
+        return false;
+      });
+  } catch (e) {
+    console.error('persistGeneratorExtrasToFirestore: ', e);
+    return Promise.resolve(false);
+  }
+}
+
+function findDuplicateGeneratorOption(key, label) {
+  const needle = generatorOptionKey(label, key);
+  if (!needle) return null;
+  const map = codeBase1C[key] || {};
+  return Object.keys(map).find((existing) => generatorOptionKey(existing, key) === needle) || null;
+}
+
+function addGeneratorDimensionOption(key, rawName) {
+  const title = GENERATOR_EXTENSIBLE_TITLES[key] || key;
+  const label = normalizeGeneratorOptionLabel(rawName, key);
+  if (!label) {
+    alert(`Напиши новый вариант: ${title.toLowerCase()}.`);
+    return null;
+  }
+  if (label.length > 40) {
+    alert('Название варианта слишком длинное.');
+    return null;
+  }
+  if ((key === 'density' || key === 'width') && !/^\d+(\.\d+)?$/.test(label)) {
+    alert(`${title}: укажи число, например 270.`);
+    return null;
+  }
+  applyGeneratorExtras();
+  const dup = findDuplicateGeneratorOption(key, label);
+  if (dup) {
+    alert(`Такой вариант уже есть в «${title}»: «${dup}».`);
+    const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+    if (sel) sel.value = dup;
+    lastGeneratorSelectValue[key] = dup;
+    return dup;
+  }
+  const used = new Set(Object.values(codeBase1C[key] || {}).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  const num = nextFreeCategoryNumber(used);
+  if (!num) {
+    alert(`Нет свободного номера для «${title}» (01–99).`);
+    return null;
+  }
+  const extras = readGeneratorExtrasSafe();
+  extras[key] = { ...(extras[key] || {}), [label]: String(num).padStart(2, '0') };
+  setGeneratorExtras(extras);
+  persistGeneratorExtrasToFirestore(extras);
+  lastGeneratorSelectValue[key] = label;
+  const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+  if (sel) sel.value = label;
+  const status = document.getElementById('generatorAddStatus');
+  if (status) {
+    status.textContent = `Добавлено в «${title}»: ${String(num).padStart(2, '0')} — ${label}`;
+    status.classList.remove('hidden');
+  }
+  return label;
+}
+
+function openGeneratorAddPanel(key) {
+  GENERATOR_EXTENSIBLE_KEYS.forEach((k) => {
+    const panel = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[k]}AddPanel`);
+    if (panel) panel.classList.toggle('hidden', k !== key);
+  });
+  const input = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`);
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+}
+
+function closeGeneratorAddPanels() {
+  GENERATOR_EXTENSIBLE_KEYS.forEach((k) => {
+    document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[k]}AddPanel`)?.classList.add('hidden');
+  });
+}
+
+function wireGeneratorExtensibleSelects() {
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+    if (!sel || sel.dataset.extrasWired === '1') return;
+    sel.dataset.extrasWired = '1';
+    sel.addEventListener('change', () => {
+      if (sel.value === GENERATOR_ADD_SENTINEL) {
+        const fallback = lastGeneratorSelectValue[key] || Object.keys(DEFAULT_CODE_BASE_1C_BY_KEY[key] || {})[0] || '';
+        if (fallback) sel.value = fallback;
+        openGeneratorAddPanel(key);
+        return;
+      }
+      lastGeneratorSelectValue[key] = sel.value;
+      closeGeneratorAddPanels();
+    });
+    document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}SaveBtn`)?.addEventListener('click', () => {
+      const input = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`);
+      const added = addGeneratorDimensionOption(key, input?.value);
+      if (added) {
+        if (input) input.value = '';
+        closeGeneratorAddPanels();
+      }
+    });
+    document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}CancelBtn`)?.addEventListener('click', () => {
+      closeGeneratorAddPanels();
+    });
+    document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}SaveBtn`)?.click();
+      }
+      if (e.key === 'Escape') closeGeneratorAddPanels();
+    });
+  });
+}
+
+let _generatorExtrasUnsub = null;
+function startGeneratorExtrasRealtimeSync() {
+  try {
+    setGeneratorExtras(readCachedGeneratorExtras(), false);
+  } catch (e) {
+    console.error('startGeneratorExtrasRealtimeSync(local): ', e);
+  }
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return;
+    if (typeof _generatorExtrasUnsub === 'function') return;
+    _generatorExtrasUnsub = db.collection(GENERATOR_EXTRAS_DOC.collection).doc(GENERATOR_EXTRAS_DOC.id)
+      .onSnapshot((snap) => {
+        if (!snap.exists) return;
+        const data = snap.data() || {};
+        const incoming = coerceGeneratorExtrasMap(data.extras || data);
+        const hasAny = GENERATOR_EXTENSIBLE_KEYS.some((k) => Object.keys(incoming[k] || {}).length);
+        if (!hasAny) {
+          applyGeneratorExtras();
+          return;
+        }
+        const merged = mergeGeneratorExtras(readGeneratorExtrasSafe(), incoming);
+        if (!extrasMapsEqual(merged, readGeneratorExtrasSafe())) setGeneratorExtras(merged);
+        else applyGeneratorExtras();
+      }, (error) => {
+        logFirestoreError('onSnapshot(generator_extras)', error);
+      });
+  } catch (e) {
+    console.error('startGeneratorExtrasRealtimeSync: ', e);
+  }
+}
 
 const DEFAULT_PRODUCT_CATEGORIES = [
   '1-Постельное белье 1,5',
@@ -750,7 +1092,7 @@ function renderEverything() {
 }
 
 function startUnifiedRealtimeListeners() {
-  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync, startCategoryCatalogRealtimeSync];
+  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync, startCategoryCatalogRealtimeSync, startGeneratorExtrasRealtimeSync];
   tasks.forEach((fn) => { try { fn(); } catch (e) { console.error('bootstrapRealtimeData: ', e); } });
 }
 setBootLoading(true);
@@ -2814,7 +3156,10 @@ function openPage(pageId) {
       window.ScaleUpYO.renderSettingsPage();
     }
   }
-  if (pageId === 'generator-section') syncGeneratorProductTypes();
+  if (pageId === 'generator-section') {
+    syncGeneratorProductTypes();
+    applyGeneratorExtras();
+  }
   renderEverything();
 }
 
@@ -2855,6 +3200,8 @@ function findLabelByCodeInCategory(categoryKey, code) {
 function initCodeGenerator1C() {
   GENERATOR_SELECT_IDS.forEach((id, i) => fillGeneratorSelectFromCodeBase(id, GENERATOR_1C_KEYS[i]));
   syncGeneratorProductTypes();
+  applyGeneratorExtras();
+  wireGeneratorExtensibleSelects();
 
   document.getElementById('btnGenerate')?.addEventListener('click', () => {
     const vals = GENERATOR_SELECT_IDS.map((id) => document.getElementById(id)?.value);

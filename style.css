@@ -2753,8 +2753,12 @@ body.dark-mode .stock-value--outpace {
   gap: 12px;
   margin-top: 12px;
 }
-.generator-field--full {
+.generator-add-panel{
+  margin-top:8px;
+}
+.generator-add-status{
   grid-column: 1 / -1;
+  margin: 0;
 }
 @media (max-width: 640px) {
   .generator-fields {

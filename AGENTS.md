@@ -10,6 +10,7 @@ A fully client-side static web app: a Russian-language marketplace unit-economic
 - The committed `node_modules/` (only `xlsx` and its deps) is vestigial and not used by the running app or the API function; do not rely on it.
 - Firestore is accessed directly from the browser using a hardcoded public web config in `script.js` (project `yoa123`). This connects to the **live/shared cloud Firestore**, so avoid writing throwaway/test documents to product-facing collections. `firestore.rules` currently allows anonymous read/write on the whitelisted collections.
 - Categories created in База товаров also appear in the 1C generator «Вид продукта», as do custom categories already used on products (for example Пододеяльник). Built-in type codes 01–12 stay; each extra category gets the next free two-digit code (13, 14, …) and is used in generate/decode. Do not leave test category names in `system/product_categories`.
+- In Генератор 1С, size / fabric / finish / density / width also accept new variants via «+ Добавить вариант» (duplicate names are rejected). Custom variants persist in `system/generator_extras`; do not leave test values there.
 
 ### Running in development
 - Serve the repo root as static files, e.g. `python3 -m http.server 8000` (Python 3 is preinstalled), then open `http://localhost:8000/`. This is the dev environment — the app loads all libraries from CDNs and talks directly to live Firestore. Core features (the unit-economics calculator, cost/product management) work with just the static server.
