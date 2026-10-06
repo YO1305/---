@@ -22,6 +22,7 @@ Object.assign(window.appState, {
   activityLog: [],
   loading: true,
   loadingMap: { products: true, shipments: true, components: true, activityLog: true },
+  categoryCatalog: [],
   selectedMarketplace: 'uzum',
   themeDark: false,
   uiMemory: Object.create(null),
@@ -257,6 +258,134 @@ function deleteComponentFromFirestore(id) {
     .catch((error) => console.error('Ошибка удаления компонента в Firestore: ', error));
 }
 
+const DEFAULT_PRODUCT_CATEGORIES = [
+  '1-Постельное белье 1,5',
+  '2-постельное белье 1 сп',
+  '3-постельное белье 2сп',
+  '4-постельное белье Евро',
+  '5-Наволочки',
+  '6-Простыни',
+  '7-Салфетки',
+  '8-Рукавицы',
+  '9-Кухонные наборы',
+  '10-Скатерть',
+  '11 - Фартук'
+];
+const CATEGORY_CATALOG_STORAGE_KEY = 'yo_product_categories_v1';
+const CATEGORY_CATALOG_DOC = { collection: 'system', id: 'product_categories' };
+
+function normalizeProductCategoryName(raw) {
+  return String(raw || '').replace(/\s+/g, ' ').trim();
+}
+
+function readCachedCategoryCatalog() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CATEGORY_CATALOG_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.map(normalizeProductCategoryName).filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeCachedCategoryCatalog(names) {
+  try {
+    localStorage.setItem(CATEGORY_CATALOG_STORAGE_KEY, JSON.stringify(names));
+  } catch (_) { /* ignore */ }
+}
+
+function readCategoryCatalogSafe() {
+  const arr = Array.isArray(realtimeState.categoryCatalog) ? realtimeState.categoryCatalog : [];
+  return arr.map(normalizeProductCategoryName).filter(Boolean);
+}
+
+function setCategoryCatalog(names, persistLocal) {
+  const next = uniqueCategoryNames(names);
+  realtimeState.categoryCatalog = next;
+  if (persistLocal !== false) writeCachedCategoryCatalog(next);
+  refreshProductCategorySelectors(readProductsSafe());
+}
+
+function uniqueCategoryNames(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((raw) => {
+    const name = normalizeProductCategoryName(raw);
+    if (!name) return;
+    const key = name.toLocaleLowerCase('ru');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  });
+  return out.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }));
+}
+
+function getAllProductCategoryNames(products) {
+  const fromProducts = (Array.isArray(products) ? products : readProductsSafe())
+    .map((p) => normalizeProductCategoryName(extractProductCategory(p)))
+    .filter(Boolean);
+  return uniqueCategoryNames([...DEFAULT_PRODUCT_CATEGORIES, ...readCategoryCatalogSafe(), ...fromProducts]);
+}
+
+function persistCategoryCatalogToFirestore(names) {
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return Promise.resolve(false);
+    return db.collection(CATEGORY_CATALOG_DOC.collection).doc(CATEGORY_CATALOG_DOC.id).set({
+      names: uniqueCategoryNames(names),
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+      .then(() => true)
+      .catch((error) => {
+        console.error('Ошибка записи категорий в Firestore: ', error);
+        return false;
+      });
+  } catch (e) {
+    console.error('persistCategoryCatalogToFirestore: ', e);
+    return Promise.resolve(false);
+  }
+}
+
+function addProductCategoryByName(rawName) {
+  const name = normalizeProductCategoryName(rawName);
+  if (!name) {
+    alert('Напиши название категории.');
+    return null;
+  }
+  if (name.length > 80) {
+    alert('Название категории слишком длинное.');
+    return null;
+  }
+  const existing = getAllProductCategoryNames();
+  const dup = existing.find((x) => x.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'));
+  if (dup) {
+    alert(`Категория «${dup}» уже есть в списке.`);
+    return dup;
+  }
+  const next = uniqueCategoryNames([...readCategoryCatalogSafe(), name]);
+  setCategoryCatalog(next);
+  persistCategoryCatalogToFirestore(next);
+  return name;
+}
+
+let _categoryCatalogUnsub = null;
+function startCategoryCatalogRealtimeSync() {
+  setCategoryCatalog(readCachedCategoryCatalog(), false);
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return;
+    if (typeof _categoryCatalogUnsub === 'function') return;
+    _categoryCatalogUnsub = db.collection(CATEGORY_CATALOG_DOC.collection).doc(CATEGORY_CATALOG_DOC.id)
+      .onSnapshot((snap) => {
+        if (!snap.exists) return;
+        const data = snap.data() || {};
+        const names = Array.isArray(data.names) ? data.names : [];
+        setCategoryCatalog(names);
+      }, (error) => {
+        logFirestoreError('onSnapshot(product_categories)', error);
+      });
+  } catch (e) {
+    console.error('startCategoryCatalogRealtimeSync: ', e);
+  }
+}
+
 let _componentsRealtimeUnsub = null;
 function startComponentsRealtimeSync() {
   const col = getComponentsCollectionRef();
@@ -408,7 +537,7 @@ function renderEverything() {
 }
 
 function startUnifiedRealtimeListeners() {
-  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync];
+  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync, startCategoryCatalogRealtimeSync];
   tasks.forEach((fn) => { try { fn(); } catch (e) { console.error('bootstrapRealtimeData: ', e); } });
 }
 setBootLoading(true);
@@ -4900,10 +5029,7 @@ function filterProducts() {
 }
 
 function refreshProductCategorySelectors(products) {
-  const values = Array.from(new Set((Array.isArray(products) ? products : [])
-    .map((p) => String(extractProductCategory(p) || '').trim())
-    .filter(Boolean)))
-    .sort((a, b) => a.localeCompare(b, 'ru'));
+  const values = getAllProductCategoryNames(products);
   const filterEl = document.getElementById('categoryFilter');
   if (filterEl) {
     const cur = String(filterEl.value || '').trim();
@@ -4913,10 +5039,8 @@ function refreshProductCategorySelectors(products) {
   const productCatEl = document.getElementById('productCategory');
   if (productCatEl) {
     const cur = String(productCatEl.value || '').trim();
-    const staticOpts = Array.from(productCatEl.querySelectorAll('option')).map((o) => String(o.value || '').trim()).filter(Boolean);
-    const merged = Array.from(new Set([...staticOpts, ...values])).sort((a, b) => a.localeCompare(b, 'ru'));
-    productCatEl.innerHTML = `<option value="">— выберите категорию —</option>${merged.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
-    if (cur && merged.includes(cur)) productCatEl.value = cur;
+    productCatEl.innerHTML = `<option value="">— выберите категорию —</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
+    if (cur && values.includes(cur)) productCatEl.value = cur;
   }
 }
 
@@ -9059,6 +9183,39 @@ document.getElementById('productArticle1c')?.addEventListener('input', () => {
 });
 document.getElementById('productArticle1c')?.addEventListener('change', () => {
   applySuggestedCategoryIfEmpty();
+});
+
+function handleProductCategoryAddFromInput(inputId, statusId) {
+  const input = document.getElementById(inputId);
+  const added = addProductCategoryByName(input?.value);
+  if (!added) return;
+  if (input) input.value = '';
+  const select = document.getElementById('productCategory');
+  if (select) select.value = added;
+  const filter = document.getElementById('categoryFilter');
+  if (filter) filter.value = added;
+  const status = statusId ? document.getElementById(statusId) : null;
+  if (status) status.textContent = `Категория «${added}» добавлена в базу.`;
+  filterProducts();
+}
+
+document.getElementById('productCategoryAddBtn')?.addEventListener('click', () => {
+  handleProductCategoryAddFromInput('productCategoryNewName', 'productCategoryAddStatus');
+});
+document.getElementById('productCategoryNewName')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleProductCategoryAddFromInput('productCategoryNewName', 'productCategoryAddStatus');
+  }
+});
+document.getElementById('productsDbCategoryAddBtn')?.addEventListener('click', () => {
+  handleProductCategoryAddFromInput('productsDbCategoryNewName');
+});
+document.getElementById('productsDbCategoryNewName')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleProductCategoryAddFromInput('productsDbCategoryNewName');
+  }
 });
 
 document.getElementById('componentName')?.addEventListener('input', () => {

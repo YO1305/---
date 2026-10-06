@@ -1539,6 +1539,21 @@ body.dark-mode .wms-ship-delete-btn:hover {
 .field--compact{
   max-width:180px;
 }
+.category-add-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  margin-top:8px;
+}
+.category-add-row .input{
+  flex:1 1 180px;
+  min-width:0;
+}
+.category-add-row .btn-secondary{
+  margin:0;
+  white-space:nowrap;
+}
 .input--compact{
   max-width:160px;
 }
