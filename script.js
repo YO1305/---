@@ -434,10 +434,41 @@ function listCustomCategoriesForGenerator() {
 
 function refreshGenProductTypeSelect() {
   const sel = document.getElementById('genProductType');
-  if (!sel) return;
+  if (!sel || !codeBase1C?.productType) return;
   const prev = String(sel.value || '');
-  fillGeneratorSelectFromCodeBase('genProductType', 'productType');
+  const builtinKeys = new Set(Object.keys(DEFAULT_CODE_BASE_1C_PRODUCT_TYPE));
+  const extras = [];
+  const builtin = [];
+  Object.entries(codeBase1C.productType).forEach(([label, code]) => {
+    if (builtinKeys.has(label)) builtin.push([label, code]);
+    else extras.push([label, code]);
+  });
+  extras.sort((a, b) => a[0].localeCompare(b[0], 'ru', { numeric: true, sensitivity: 'base' }));
+  const frag = document.createDocumentFragment();
+  if (extras.length) {
+    const g = document.createElement('optgroup');
+    g.label = 'Из базы товаров';
+    extras.forEach(([label, code]) => {
+      const o = document.createElement('option');
+      o.value = label;
+      o.textContent = `${code} — ${label}`;
+      g.appendChild(o);
+    });
+    frag.appendChild(g);
+  }
+  const g2 = document.createElement('optgroup');
+  g2.label = 'Справочник 1С';
+  builtin.forEach(([label, code]) => {
+    const o = document.createElement('option');
+    o.value = label;
+    o.textContent = label;
+    g2.appendChild(o);
+  });
+  frag.appendChild(g2);
+  sel.innerHTML = '';
+  sel.appendChild(frag);
   if (prev && Array.from(sel.options).some((o) => o.value === prev)) sel.value = prev;
+  else if (builtin[0]) sel.value = builtin[0][0];
 }
 
 function syncGeneratorProductTypes() {
@@ -612,6 +643,7 @@ function startProductsRealtimeSync() {
     if (!next.length && hadRows) console.warn('products snapshot пустой после непустого состояния.');
     writeStore(STORAGE_KEYS.products, next);
     realtimeState.categories = Array.from(new Set(next.map((p) => String(extractProductCategory(p) || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
+    syncGeneratorProductTypes();
     if (changes.some((x) => x.type !== 'added') && wmsState.assemblingOpen) renderWmsDraftSummary();
     renderEverything();
   }, (error) => {
@@ -5118,7 +5150,7 @@ function extractProductName(p) {
 }
 
 function extractProductCategory(p) {
-  const cat = p?.category ?? p?.cat ?? p?.productCategory;
+  const cat = p?.category ?? p?.cat ?? p?.productCategory ?? p?.calc?.productCategory ?? p?.calc?.category;
   return String(cat ?? '').trim();
 }
 
