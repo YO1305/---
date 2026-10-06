@@ -258,6 +258,21 @@ function deleteComponentFromFirestore(id) {
     .catch((error) => console.error('Ошибка удаления компонента в Firestore: ', error));
 }
 
+const DEFAULT_CODE_BASE_1C_PRODUCT_TYPE = {
+  "КПБ": "01",
+  "КПБ на резинке": "02",
+  "Неполный комплект": "03",
+  "Салфетки": "04",
+  "Скатерть": "05",
+  "Декоративная подушка": "06",
+  "Наволочки": "07",
+  "Стеганное одеяло": "08",
+  "Прихватка": "09",
+  "Рукавица": "10",
+  "Комплект Прихватка+Рукавица": "11",
+  "Простыня на резинке": "12"
+};
+
 const DEFAULT_PRODUCT_CATEGORIES = [
   '1-Постельное белье 1,5',
   '2-постельное белье 1 сп',
@@ -305,6 +320,7 @@ function setCategoryCatalog(names, persistLocal) {
   realtimeState.categoryCatalog = next;
   if (persistLocal !== false) writeCachedCategoryCatalog(next);
   refreshProductCategorySelectors(readProductsSafe());
+  syncGeneratorProductTypes();
 }
 
 function uniqueCategoryNames(list) {
@@ -319,6 +335,96 @@ function uniqueCategoryNames(list) {
     out.push(name);
   });
   return out.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }));
+}
+
+function parseCategoryNumberAndTitle(raw) {
+  const name = normalizeProductCategoryName(raw);
+  const m = name.match(/^(\d{1,2})\s*[-–—.:)]\s*(.+)$/);
+  if (m) {
+    const num = parseInt(m[1], 10);
+    const title = normalizeProductCategoryName(m[2]);
+    if (Number.isFinite(num) && num >= 1 && num <= 99 && title) return { num, title };
+  }
+  return { num: null, title: name };
+}
+
+function categoryTitleKey(raw) {
+  return parseCategoryNumberAndTitle(raw).title.toLocaleLowerCase('ru');
+}
+
+function formatNumberedCategoryName(num, title) {
+  return `${num}-${normalizeProductCategoryName(title)}`;
+}
+
+function collectUsedCategoryNumbers() {
+  const used = new Set();
+  const addNum = (n) => {
+    if (Number.isFinite(n) && n >= 1 && n <= 99) used.add(n);
+  };
+  const addFromName = (raw) => addNum(parseCategoryNumberAndTitle(raw).num);
+  DEFAULT_PRODUCT_CATEGORIES.forEach(addFromName);
+  readCategoryCatalogSafe().forEach(addFromName);
+  getAllProductCategoryNames().forEach(addFromName);
+  const genMap = (typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE)
+    ? DEFAULT_CODE_BASE_1C_PRODUCT_TYPE
+    : {};
+  Object.values(genMap).forEach((code) => addNum(parseInt(code, 10)));
+  return used;
+}
+
+function nextFreeCategoryNumber(usedSet) {
+  const used = usedSet || collectUsedCategoryNumbers();
+  for (let n = 1; n <= 99; n += 1) {
+    if (!used.has(n)) return n;
+  }
+  return null;
+}
+
+function isBuiltInProductCategoryName(raw) {
+  const key = categoryTitleKey(raw);
+  const full = normalizeProductCategoryName(raw).toLocaleLowerCase('ru');
+  return DEFAULT_PRODUCT_CATEGORIES.some((d) => (
+    categoryTitleKey(d) === key || normalizeProductCategoryName(d).toLocaleLowerCase('ru') === full
+  ));
+}
+
+function listCustomCatalogCategories() {
+  return readCategoryCatalogSafe().filter((name) => !isBuiltInProductCategoryName(name));
+}
+
+function refreshGenProductTypeSelect() {
+  const sel = document.getElementById('genProductType');
+  if (!sel) return;
+  const prev = String(sel.value || '');
+  fillGeneratorSelectFromCodeBase('genProductType', 'productType');
+  if (prev && Array.from(sel.options).some((o) => o.value === prev)) sel.value = prev;
+}
+
+function syncGeneratorProductTypes() {
+  if (typeof codeBase1C === 'undefined' || !codeBase1C) return;
+  const base = (typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE)
+    ? { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE }
+    : { ...(codeBase1C.productType || {}) };
+  const used = new Set(Object.values(base).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  const existingLabels = new Set(Object.keys(base).map((k) => k.toLocaleLowerCase('ru')));
+  listCustomCatalogCategories().forEach((name) => {
+    const parsed = parseCategoryNumberAndTitle(name);
+    const title = parsed.title;
+    if (!title) return;
+    const titleKey = title.toLocaleLowerCase('ru');
+    if (existingLabels.has(titleKey)) return;
+    let num = parsed.num;
+    if (!num || used.has(num)) num = nextFreeCategoryNumber(used);
+    if (!num) return;
+    used.add(num);
+    const label = formatNumberedCategoryName(num, title);
+    if (existingLabels.has(label.toLocaleLowerCase('ru'))) return;
+    base[label] = String(num).padStart(2, '0');
+    existingLabels.add(label.toLocaleLowerCase('ru'));
+    existingLabels.add(titleKey);
+  });
+  codeBase1C.productType = base;
+  refreshGenProductTypeSelect();
 }
 
 function getAllProductCategoryNames(products) {
@@ -356,16 +462,39 @@ function addProductCategoryByName(rawName) {
     alert('Название категории слишком длинное.');
     return null;
   }
+  const parsed = parseCategoryNumberAndTitle(name);
+  const title = parsed.title;
+  if (!title) {
+    alert('Напиши название категории.');
+    return null;
+  }
+  const titleKey = title.toLocaleLowerCase('ru');
   const existing = getAllProductCategoryNames();
-  const dup = existing.find((x) => x.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'));
+  const dup = existing.find((x) => (
+    x.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru') || categoryTitleKey(x) === titleKey
+  ));
   if (dup) {
     alert(`Категория «${dup}» уже есть в списке.`);
     return dup;
   }
-  const next = uniqueCategoryNames([...readCategoryCatalogSafe(), name]);
+  const genDup = Object.keys((typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE) || {})
+    .find((label) => label.toLocaleLowerCase('ru') === titleKey);
+  if (genDup) {
+    alert(`Категория «${genDup}» уже есть в генераторе кодов.`);
+    return genDup;
+  }
+  const used = collectUsedCategoryNumbers();
+  let num = parsed.num;
+  if (!num || used.has(num)) num = nextFreeCategoryNumber(used);
+  if (!num) {
+    alert('Нет свободного номера категории (1–99).');
+    return null;
+  }
+  const stored = formatNumberedCategoryName(num, title);
+  const next = uniqueCategoryNames([...readCategoryCatalogSafe(), stored]);
   setCategoryCatalog(next);
   persistCategoryCatalogToFirestore(next);
-  return name;
+  return stored;
 }
 
 let _categoryCatalogUnsub = null;
@@ -2615,7 +2744,7 @@ document.querySelectorAll('[data-open-page]').forEach(card => {
 });
 
 const codeBase1C = {
-  productType: {"КПБ": "01", "КПБ на резинке": "02", "Неполный комплект": "03", "Салфетки": "04", "Скатерть": "05", "Декоративная подушка": "06", "Наволочки": "07", "Стеганное одеяло": "08", "Прихватка": "09", "Рукавица": "10", "Комплект Прихватка+Рукавица": "11", "Простыня на резинке": "12"},
+  productType: { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE },
   size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
   fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
   finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
@@ -2651,6 +2780,7 @@ function findLabelByCodeInCategory(categoryKey, code) {
 
 function initCodeGenerator1C() {
   GENERATOR_SELECT_IDS.forEach((id, i) => fillGeneratorSelectFromCodeBase(id, GENERATOR_1C_KEYS[i]));
+  syncGeneratorProductTypes();
 
   document.getElementById('btnGenerate')?.addEventListener('click', () => {
     const vals = GENERATOR_SELECT_IDS.map((id) => document.getElementById(id)?.value);
@@ -9107,6 +9237,8 @@ document.getElementById('productsFiltersResetBtn')?.addEventListener('click', ()
   const cat = document.getElementById('categoryFilter');
   const lt = document.getElementById('productsStockLtInput');
   if (cat) cat.value = '';
+  lastCategoryFilterValue = '';
+  closeProductsDbCategoryAddPanel();
   if (lt) lt.value = '';
   if (state?.productsDbFilters) state.productsDbFilters.stockMode = 'all';
   const q = document.getElementById('productsLiveSearch');
