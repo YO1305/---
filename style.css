@@ -1554,6 +1554,44 @@ body.dark-mode .wms-ship-delete-btn:hover {
   margin:0;
   white-space:nowrap;
 }
+.products-category-bar{
+  margin-top:12px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  background: var(--kpi-bg-1, rgba(255,255,255,.4));
+}
+.category-filter-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+.category-filter-row .select{
+  flex:1 1 240px;
+  min-width:0;
+}
+.category-filter-row .btn-primary{
+  margin:0;
+  white-space:nowrap;
+}
+.category-add-panel{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  margin-top:10px;
+}
+.category-add-panel.hidden{ display:none; }
+.category-add-panel .input{
+  flex:1 1 220px;
+  min-width:0;
+}
+.category-add-panel .btn-primary,
+.category-add-panel .btn-secondary{
+  margin:0;
+  white-space:nowrap;
+}
 .input--compact{
   max-width:160px;
 }

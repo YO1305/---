@@ -272,6 +272,8 @@ const DEFAULT_PRODUCT_CATEGORIES = [
   '11 - Фартук'
 ];
 const CATEGORY_CATALOG_STORAGE_KEY = 'yo_product_categories_v1';
+const CATEGORY_ADD_SENTINEL = '__add_category__';
+let lastCategoryFilterValue = '';
 const CATEGORY_CATALOG_DOC = { collection: 'system', id: 'product_categories' };
 
 function normalizeProductCategoryName(raw) {
@@ -4962,7 +4964,8 @@ if (typeof state === 'object' && state) {
 
 function getProductsDbFiltersFromUi() {
   const q = (document.getElementById('productsLiveSearch')?.value || '').trim().toLowerCase();
-  const category = (document.getElementById('categoryFilter')?.value || '').trim();
+  const categoryRaw = (document.getElementById('categoryFilter')?.value || '').trim();
+  const category = categoryRaw === CATEGORY_ADD_SENTINEL ? '' : categoryRaw;
   const ltRaw = (document.getElementById('productsStockLtInput')?.value || '').trim();
   const ltVal = ltRaw === '' ? null : Math.max(0, Math.floor(Number(ltRaw)));
   const stockMode = (state?.productsDbFilters?.stockMode || 'all');
@@ -5033,8 +5036,10 @@ function refreshProductCategorySelectors(products) {
   const filterEl = document.getElementById('categoryFilter');
   if (filterEl) {
     const cur = String(filterEl.value || '').trim();
-    filterEl.innerHTML = `<option value="" selected>Все категории</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
-    if (cur && values.includes(cur)) filterEl.value = cur;
+    filterEl.innerHTML = `<option value="" selected>Все категории</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}<option value="${CATEGORY_ADD_SENTINEL}">+ Добавить категорию</option>`;
+    if (cur && cur !== CATEGORY_ADD_SENTINEL && values.includes(cur)) filterEl.value = cur;
+    else if (lastCategoryFilterValue && values.includes(lastCategoryFilterValue)) filterEl.value = lastCategoryFilterValue;
+    else filterEl.value = '';
   }
   const productCatEl = document.getElementById('productCategory');
   if (productCatEl) {
@@ -9070,7 +9075,17 @@ if (document.getElementById('productsLiveSearch')) {
 }
 {
   const el = document.getElementById('categoryFilter');
-  if (el) el.addEventListener('change', filterProducts);
+  if (el) {
+    el.addEventListener('change', () => {
+      if (el.value === CATEGORY_ADD_SENTINEL) {
+        el.value = lastCategoryFilterValue || '';
+        openProductsDbCategoryAddPanel();
+        return;
+      }
+      lastCategoryFilterValue = el.value;
+      filterProducts();
+    });
+  }
 }
 document.getElementById('productsStockLtInput')?.addEventListener('input', () => {
   // Ввод порога автоматически включает режим "меньше N"
@@ -9192,11 +9207,30 @@ function handleProductCategoryAddFromInput(inputId, statusId) {
   if (input) input.value = '';
   const select = document.getElementById('productCategory');
   if (select) select.value = added;
-  const filter = document.getElementById('categoryFilter');
-  if (filter) filter.value = added;
   const status = statusId ? document.getElementById(statusId) : null;
-  if (status) status.textContent = `Категория «${added}» добавлена в базу.`;
+  if (status) {
+    status.textContent = `Категория «${added}» добавлена в базу.`;
+    status.classList.remove('hidden');
+  }
+  closeProductsDbCategoryAddPanel();
   filterProducts();
+}
+
+function openProductsDbCategoryAddPanel() {
+  const panel = document.getElementById('productsDbCategoryAddPanel');
+  const input = document.getElementById('productsDbCategoryNewName');
+  if (panel) panel.classList.remove('hidden');
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function closeProductsDbCategoryAddPanel() {
+  const panel = document.getElementById('productsDbCategoryAddPanel');
+  const input = document.getElementById('productsDbCategoryNewName');
+  if (panel) panel.classList.add('hidden');
+  if (input) input.value = '';
 }
 
 document.getElementById('productCategoryAddBtn')?.addEventListener('click', () => {
@@ -9209,12 +9243,22 @@ document.getElementById('productCategoryNewName')?.addEventListener('keydown', (
   }
 });
 document.getElementById('productsDbCategoryAddBtn')?.addEventListener('click', () => {
-  handleProductCategoryAddFromInput('productsDbCategoryNewName');
+  openProductsDbCategoryAddPanel();
+});
+document.getElementById('productsDbCategorySaveBtn')?.addEventListener('click', () => {
+  handleProductCategoryAddFromInput('productsDbCategoryNewName', 'productsDbCategoryAddStatus');
+});
+document.getElementById('productsDbCategoryCancelBtn')?.addEventListener('click', () => {
+  closeProductsDbCategoryAddPanel();
 });
 document.getElementById('productsDbCategoryNewName')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    handleProductCategoryAddFromInput('productsDbCategoryNewName');
+    handleProductCategoryAddFromInput('productsDbCategoryNewName', 'productsDbCategoryAddStatus');
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeProductsDbCategoryAddPanel();
   }
 });
 

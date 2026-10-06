@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-10-06-cats1" />
+  <link rel="stylesheet" href="style.css?v=2026-10-06-cats2" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -957,17 +957,25 @@
                 <span class="chip" id="productsFilteredCountChip">0 найдено</span>
               </div>
             </div>
-            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
-              <div class="field" style="min-width:0; margin:0; flex:1;">
-                <label for="categoryFilter" style="margin-bottom:6px; display:block;">Фильтр: категория</label>
-                <select id="categoryFilter" class="select">
-                  <option value="" selected>Все категории</option>
-                </select>
-                <div class="category-add-row">
-                  <input id="productsDbCategoryNewName" class="input" type="text" placeholder="Новая категория" maxlength="80" autocomplete="off" />
-                  <button type="button" id="productsDbCategoryAddBtn" class="btn-secondary">Добавить</button>
+            <div class="products-category-bar">
+              <div class="field" style="margin:0; min-width:0; flex:1;">
+                <label for="categoryFilter">Категория</label>
+                <div class="category-filter-row">
+                  <select id="categoryFilter" class="select">
+                    <option value="" selected>Все категории</option>
+                    <option value="__add_category__">+ Добавить категорию</option>
+                  </select>
+                  <button type="button" id="productsDbCategoryAddBtn" class="btn-primary">Добавить</button>
                 </div>
+                <div id="productsDbCategoryAddPanel" class="category-add-panel hidden">
+                  <input id="productsDbCategoryNewName" class="input" type="text" placeholder="Напиши название и сохрани" maxlength="80" autocomplete="off" />
+                  <button type="button" id="productsDbCategorySaveBtn" class="btn-primary">Сохранить</button>
+                  <button type="button" id="productsDbCategoryCancelBtn" class="btn-secondary">Отмена</button>
+                </div>
+                <p class="hint hidden" id="productsDbCategoryAddStatus" style="margin-top:6px;"></p>
               </div>
+            </div>
+            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
               <button type="button" id="productsStockFilterZeroBtn" class="btn-secondary">Закончились</button>
               <button type="button" id="productsStockFilterLowBtn" class="btn-secondary">Мало (&lt; 10)</button>
               <button type="button" id="productsStockFilterInBtn" class="btn-secondary">В наличии (&gt; 10)</button>
@@ -2220,7 +2228,7 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-10-06-cats1"></script>
+  <script src="script.js?v=2026-10-06-cats2"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
 </body>
