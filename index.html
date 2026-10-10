@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-10-fin-period" />
+  <link rel="stylesheet" href="style.css?v=2026-10-06-genopt2" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -563,6 +563,11 @@
                   <option value="10-Скатерть">10-Скатерть</option>
                   <option value="11 - Фартук">11 - Фартук</option>
                 </select>
+                <div class="category-add-row">
+                  <input id="productCategoryNewName" class="input" type="text" placeholder="Новая категория — напиши название" maxlength="80" autocomplete="off" />
+                  <button type="button" id="productCategoryAddBtn" class="btn-secondary">Добавить</button>
+                </div>
+                <p class="hint" id="productCategoryAddStatus" style="margin-top:6px;">Категория появится в списке и сохранится в базе.</p>
               </div>
               <div class="field field--compact">
                 <label for="productDesign">Дизайн</label>
@@ -952,24 +957,25 @@
                 <span class="chip" id="productsFilteredCountChip">0 найдено</span>
               </div>
             </div>
-            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
-              <div class="field" style="min-width:0; margin:0;">
-                <label for="categoryFilter" style="margin-bottom:6px; display:block;">Фильтр: категория</label>
-                <select id="categoryFilter" class="select">
-                  <option value="" selected>Все категории</option>
-                  <option value="1-Постельное белье 1,5">1-Постельное белье 1,5</option>
-                  <option value="2-постельное белье 1 сп">2-постельное белье 1 сп</option>
-                  <option value="3-постельное белье 2сп">3-постельное белье 2сп</option>
-                  <option value="4-постельное белье Евро">4-постельное белье Евро</option>
-                  <option value="5-Наволочки">5-Наволочки</option>
-                  <option value="6-Простыни">6-Простыни</option>
-                  <option value="7-Салфетки">7-Салфетки</option>
-                  <option value="8-Рукавицы">8-Рукавицы</option>
-                  <option value="9-Кухонные наборы">9-Кухонные наборы</option>
-                  <option value="10-Скатерть">10-Скатерть</option>
-                  <option value="11 - Фартук">11 - Фартук</option>
-                </select>
+            <div class="products-category-bar">
+              <div class="field" style="margin:0; min-width:0; flex:1;">
+                <label for="categoryFilter">Категория</label>
+                <div class="category-filter-row">
+                  <select id="categoryFilter" class="select">
+                    <option value="" selected>Все категории</option>
+                    <option value="__add_category__">+ Добавить категорию</option>
+                  </select>
+                  <button type="button" id="productsDbCategoryAddBtn" class="btn-primary">Добавить</button>
+                </div>
+                <div id="productsDbCategoryAddPanel" class="category-add-panel hidden">
+                  <input id="productsDbCategoryNewName" class="input" type="text" placeholder="Напиши название и сохрани" maxlength="80" autocomplete="off" />
+                  <button type="button" id="productsDbCategorySaveBtn" class="btn-primary">Сохранить</button>
+                  <button type="button" id="productsDbCategoryCancelBtn" class="btn-secondary">Отмена</button>
+                </div>
+                <p class="hint hidden" id="productsDbCategoryAddStatus" style="margin-top:6px;"></p>
               </div>
+            </div>
+            <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:10px; align-items:center;">
               <button type="button" id="productsStockFilterZeroBtn" class="btn-secondary">Закончились</button>
               <button type="button" id="productsStockFilterLowBtn" class="btn-secondary">Мало (&lt; 10)</button>
               <button type="button" id="productsStockFilterInBtn" class="btn-secondary">В наличии (&gt; 10)</button>
@@ -1429,33 +1435,59 @@
             <div class="field">
               <label for="genProductType">Вид продукта</label>
               <select id="genProductType" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genProductTypeNewName" class="input" type="text" placeholder="Новый вид / категория" maxlength="80" autocomplete="off" />
+                <button type="button" id="genProductTypeSaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
             <div class="field">
               <label for="genSize">Размер</label>
               <select id="genSize" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genSizeNewName" class="input" type="text" placeholder="Новый размер, напр. 160*220" maxlength="40" autocomplete="off" />
+                <button type="button" id="genSizeSaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
             <div class="field">
               <label for="genFabricType">Вид ткани</label>
               <select id="genFabricType" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genFabricTypeNewName" class="input" type="text" placeholder="Новая ткань, напр. Лён" maxlength="40" autocomplete="off" />
+                <button type="button" id="genFabricTypeSaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
             <div class="field">
               <label for="genFinishType">Вид отделки</label>
               <select id="genFinishType" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genFinishTypeNewName" class="input" type="text" placeholder="Новая отделка, напр. Вышивка" maxlength="40" autocomplete="off" />
+                <button type="button" id="genFinishTypeSaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
             <div class="field">
               <label for="genDensity">Плотность</label>
               <select id="genDensity" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genDensityNewName" class="input" type="text" placeholder="Новая плотность, напр. 320" maxlength="40" autocomplete="off" />
+                <button type="button" id="genDensitySaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
             <div class="field">
               <label for="genWidth">Ширина</label>
               <select id="genWidth" class="select"></select>
+              <div class="generator-add-row">
+                <input id="genWidthNewName" class="input" type="text" placeholder="Новая ширина, напр. 270" maxlength="40" autocomplete="off" />
+                <button type="button" id="genWidthSaveBtn" class="btn-secondary">+</button>
+              </div>
             </div>
+            <p class="hint hidden generator-add-status" id="generatorAddStatus"></p>
             <div class="field generator-field--full">
               <label for="genColor">Цвет</label>
               <input type="text" id="genColor" class="input" placeholder="Цвет (напр. крем)" autocomplete="off" />
             </div>
           </div>
           <div class="generator-actions">
+            <button type="button" id="btnSaveAllGeneratorOptions" class="btn-secondary">Сохранить все новые варианты</button>
             <button type="button" id="btnGenerate" class="btn-primary">Сгенерировать</button>
           </div>
           <div class="field generator-result-wrap">
@@ -2222,7 +2254,7 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-09-15-wms-zk-pdf3"></script>
+  <script src="script.js?v=2026-10-06-genopt2"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-08-10-orders-cost-v2"></script>
 </body>

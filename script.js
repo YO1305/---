@@ -22,7 +22,9 @@ Object.assign(window.appState, {
   activityLog: [],
   loading: true,
   loadingMap: { products: true, shipments: true, components: true, activityLog: true },
+  categoryCatalog: [],
   selectedMarketplace: 'uzum',
+  generatorExtras: { size: {}, fabricType: {}, finishType: {}, density: {}, width: {} },
   themeDark: false,
   uiMemory: Object.create(null),
   // Uzum payout теперь вводится вручную (без API/кеша).
@@ -257,6 +259,755 @@ function deleteComponentFromFirestore(id) {
     .catch((error) => console.error('Ошибка удаления компонента в Firestore: ', error));
 }
 
+const DEFAULT_CODE_BASE_1C_PRODUCT_TYPE = {
+  "КПБ": "01",
+  "КПБ на резинке": "02",
+  "Неполный комплект": "03",
+  "Салфетки": "04",
+  "Скатерть": "05",
+  "Декоративная подушка": "06",
+  "Наволочки": "07",
+  "Стеганное одеяло": "08",
+  "Прихватка": "09",
+  "Рукавица": "10",
+  "Комплект Прихватка+Рукавица": "11",
+  "Простыня на резинке": "12"
+};
+
+const DEFAULT_CODE_BASE_1C_SIZE = {
+  "1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05",
+  "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13",
+  "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19",
+  "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"
+};
+const DEFAULT_CODE_BASE_1C_FABRIC = {
+  "Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05",
+  "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"
+};
+const DEFAULT_CODE_BASE_1C_FINISH = {
+  "Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"
+};
+const DEFAULT_CODE_BASE_1C_DENSITY = {
+  "100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08",
+  "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16",
+  "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24",
+  "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32",
+  "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"
+};
+const DEFAULT_CODE_BASE_1C_WIDTH = {
+  "100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"
+};
+
+const codeBase1C = {
+  productType: { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE },
+  size: { ...DEFAULT_CODE_BASE_1C_SIZE },
+  fabricType: { ...DEFAULT_CODE_BASE_1C_FABRIC },
+  finishType: { ...DEFAULT_CODE_BASE_1C_FINISH },
+  density: { ...DEFAULT_CODE_BASE_1C_DENSITY },
+  width: { ...DEFAULT_CODE_BASE_1C_WIDTH }
+};
+
+const DEFAULT_CODE_BASE_1C_BY_KEY = {
+  productType: DEFAULT_CODE_BASE_1C_PRODUCT_TYPE,
+  size: DEFAULT_CODE_BASE_1C_SIZE,
+  fabricType: DEFAULT_CODE_BASE_1C_FABRIC,
+  finishType: DEFAULT_CODE_BASE_1C_FINISH,
+  density: DEFAULT_CODE_BASE_1C_DENSITY,
+  width: DEFAULT_CODE_BASE_1C_WIDTH
+};
+const GENERATOR_EXTENSIBLE_KEYS = ['size', 'fabricType', 'finishType', 'density', 'width'];
+const GENERATOR_EXTENSIBLE_SELECT_IDS = {
+  size: 'genSize',
+  fabricType: 'genFabricType',
+  finishType: 'genFinishType',
+  density: 'genDensity',
+  width: 'genWidth'
+};
+const GENERATOR_EXTENSIBLE_TITLES = {
+  size: 'Размер',
+  fabricType: 'Вид ткани',
+  finishType: 'Вид отделки',
+  density: 'Плотность',
+  width: 'Ширина'
+};
+const GENERATOR_ADD_SENTINEL = '__add_generator_option__';
+const GENERATOR_EXTRAS_STORAGE_KEY = 'yo_generator_extras_v1';
+const GENERATOR_EXTRAS_DOC = { collection: 'system', id: 'generator_extras' };
+const lastGeneratorSelectValue = {};
+
+function emptyGeneratorExtras() {
+  return { size: {}, fabricType: {}, finishType: {}, density: {}, width: {} };
+}
+
+function normalizeGeneratorOptionLabel(raw, key) {
+  let s = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (key === 'size') {
+    s = s.replace(/[хx×X]/g, '*').replace(/\s*\*\s*/g, '*');
+  }
+  if (key === 'density' || key === 'width') {
+    const n = Number(String(s).replace(',', '.').replace(/[^\d.]/g, ''));
+    if (Number.isFinite(n) && n > 0) s = Number.isInteger(n) ? String(n) : String(n);
+  }
+  return s;
+}
+
+function generatorOptionKey(label, key) {
+  return normalizeGeneratorOptionLabel(label, key).toLocaleLowerCase('ru');
+}
+
+function coerceGeneratorExtrasMap(raw) {
+  const out = emptyGeneratorExtras();
+  const src = raw && typeof raw === 'object' ? raw : {};
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const chunk = src[key];
+    const map = {};
+    if (Array.isArray(chunk)) {
+      chunk.forEach((row) => {
+        const label = normalizeGeneratorOptionLabel(row?.label ?? row?.name ?? row, key);
+        const code = String(row?.code ?? row?.value ?? '').replace(/\D/g, '').padStart(2, '0').slice(-2);
+        if (label && code) map[label] = code;
+      });
+    } else if (chunk && typeof chunk === 'object') {
+      Object.entries(chunk).forEach(([labelRaw, codeRaw]) => {
+        const label = normalizeGeneratorOptionLabel(labelRaw, key);
+        const code = String(codeRaw || '').replace(/\D/g, '').padStart(2, '0').slice(-2);
+        if (label && code) map[label] = code;
+      });
+    }
+    out[key] = map;
+  });
+  return out;
+}
+
+function readCachedGeneratorExtras() {
+  try {
+    return coerceGeneratorExtrasMap(JSON.parse(localStorage.getItem(GENERATOR_EXTRAS_STORAGE_KEY) || '{}'));
+  } catch (_) {
+    return emptyGeneratorExtras();
+  }
+}
+
+function writeCachedGeneratorExtras(extras) {
+  try {
+    localStorage.setItem(GENERATOR_EXTRAS_STORAGE_KEY, JSON.stringify(coerceGeneratorExtrasMap(extras)));
+  } catch (_) { /* ignore */ }
+}
+
+function readGeneratorExtrasSafe() {
+  return coerceGeneratorExtrasMap(realtimeState.generatorExtras);
+}
+
+function extrasMapsEqual(a, b) {
+  return JSON.stringify(coerceGeneratorExtrasMap(a)) === JSON.stringify(coerceGeneratorExtrasMap(b));
+}
+
+function mergeGeneratorExtras(a, b) {
+  const left = coerceGeneratorExtrasMap(a);
+  const right = coerceGeneratorExtrasMap(b);
+  const out = emptyGeneratorExtras();
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    out[key] = { ...left[key], ...right[key] };
+  });
+  return out;
+}
+
+function fillGeneratorExtensibleSelect(selectId, categoryKey) {
+  const sel = document.getElementById(selectId);
+  if (!sel || !codeBase1C[categoryKey]) return;
+  const prev = String(sel.value || '');
+  const defaults = DEFAULT_CODE_BASE_1C_BY_KEY[categoryKey] || {};
+  const map = codeBase1C[categoryKey] || {};
+  const frag = document.createDocumentFragment();
+  Object.keys(defaults).forEach((label) => {
+    const o = document.createElement('option');
+    o.value = label;
+    o.textContent = label;
+    frag.appendChild(o);
+  });
+  const extraLabels = Object.keys(map).filter((label) => !Object.prototype.hasOwnProperty.call(defaults, label));
+  if (extraLabels.length) {
+    const g = document.createElement('optgroup');
+    g.label = 'Добавленные';
+    extraLabels.forEach((label) => {
+      const o = document.createElement('option');
+      o.value = label;
+      o.textContent = `${map[label]} — ${label}`;
+      g.appendChild(o);
+    });
+    frag.appendChild(g);
+  }
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+  if (prev && prev !== GENERATOR_ADD_SENTINEL && Array.from(sel.options).some((o) => o.value === prev)) {
+    sel.value = prev;
+  } else if (lastGeneratorSelectValue[categoryKey] && Array.from(sel.options).some((o) => o.value === lastGeneratorSelectValue[categoryKey])) {
+    sel.value = lastGeneratorSelectValue[categoryKey];
+  }
+}
+
+function applyGeneratorExtras() {
+  const extras = readGeneratorExtrasSafe();
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const base = { ...(DEFAULT_CODE_BASE_1C_BY_KEY[key] || {}) };
+    Object.entries(extras[key] || {}).forEach(([label, code]) => {
+      if (!Object.prototype.hasOwnProperty.call(base, label)) base[label] = code;
+    });
+    codeBase1C[key] = base;
+    fillGeneratorExtensibleSelect(GENERATOR_EXTENSIBLE_SELECT_IDS[key], key);
+  });
+}
+
+function setGeneratorExtras(extras, persistLocal) {
+  const next = coerceGeneratorExtrasMap(extras);
+  realtimeState.generatorExtras = next;
+  if (persistLocal !== false) writeCachedGeneratorExtras(next);
+  applyGeneratorExtras();
+}
+
+function persistGeneratorExtrasToFirestore(extras) {
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return Promise.resolve(false);
+    return db.collection(GENERATOR_EXTRAS_DOC.collection).doc(GENERATOR_EXTRAS_DOC.id).set({
+      extras: coerceGeneratorExtrasMap(extras),
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+      .then(() => true)
+      .catch((error) => {
+        console.error('Ошибка записи вариантов генератора в Firestore: ', error);
+        return false;
+      });
+  } catch (e) {
+    console.error('persistGeneratorExtrasToFirestore: ', e);
+    return Promise.resolve(false);
+  }
+}
+
+function findDuplicateGeneratorOption(key, label) {
+  const needle = generatorOptionKey(label, key);
+  if (!needle) return null;
+  const map = codeBase1C[key] || {};
+  return Object.keys(map).find((existing) => generatorOptionKey(existing, key) === needle) || null;
+}
+
+function setGeneratorAddStatus(text, isError) {
+  const status = document.getElementById('generatorAddStatus');
+  if (!status) return;
+  status.textContent = text || '';
+  status.classList.toggle('hidden', !text);
+  status.style.color = isError ? 'var(--danger, #b91c1c)' : '';
+}
+
+function addGeneratorDimensionOption(key, rawName, opts = {}) {
+  const quiet = !!opts.quiet;
+  const persist = opts.persist !== false;
+  const title = GENERATOR_EXTENSIBLE_TITLES[key] || key;
+  const label = normalizeGeneratorOptionLabel(rawName, key);
+  if (!label) {
+    if (!quiet) alert(`Напиши новый вариант: ${title.toLowerCase()}.`);
+    return { status: 'empty', title };
+  }
+  if (label.length > 40) {
+    if (!quiet) alert('Название варианта слишком длинное.');
+    return { status: 'error', title, message: 'Слишком длинное название.' };
+  }
+  if ((key === 'density' || key === 'width') && !/^\d+(\.\d+)?$/.test(label)) {
+    const message = `${title}: укажи число, например 270.`;
+    if (!quiet) alert(message);
+    return { status: 'error', title, message };
+  }
+  applyGeneratorExtras();
+  const dup = findDuplicateGeneratorOption(key, label);
+  if (dup) {
+    if (!quiet) alert(`Такой вариант уже есть в «${title}»: «${dup}».`);
+    const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+    if (sel) sel.value = dup;
+    lastGeneratorSelectValue[key] = dup;
+    return { status: 'duplicate', title, label: dup };
+  }
+  const used = new Set(Object.values(codeBase1C[key] || {}).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  const num = nextFreeCategoryNumber(used);
+  if (!num) {
+    const message = `Нет свободного номера для «${title}» (01–99).`;
+    if (!quiet) alert(message);
+    return { status: 'error', title, message };
+  }
+  const extras = readGeneratorExtrasSafe();
+  extras[key] = { ...(extras[key] || {}), [label]: String(num).padStart(2, '0') };
+  setGeneratorExtras(extras);
+  if (persist) persistGeneratorExtrasToFirestore(extras);
+  lastGeneratorSelectValue[key] = label;
+  const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+  if (sel) sel.value = label;
+  if (!quiet) setGeneratorAddStatus(`Добавлено в «${title}»: ${String(num).padStart(2, '0')} — ${label}`);
+  return { status: 'added', title, label, code: String(num).padStart(2, '0') };
+}
+
+function addGeneratorProductTypeFromInput(rawName, opts = {}) {
+  const quiet = !!opts.quiet;
+  const before = getAllProductCategoryNames();
+  const added = addProductCategoryByName(rawName, { quiet: true });
+  if (!added) return { status: rawName && String(rawName).trim() ? 'error' : 'empty', title: 'Вид продукта' };
+  const isDup = before.some((x) => x === added || categoryTitleKey(x) === categoryTitleKey(added));
+  syncGeneratorProductTypes();
+  refreshProductCategorySelectors(readProductsSafe());
+  const sel = document.getElementById('genProductType');
+  if (sel) {
+    const match = Array.from(sel.options).find((o) => (
+      o.value === added || categoryTitleKey(o.value) === categoryTitleKey(added)
+    ));
+    if (match) sel.value = match.value;
+  }
+  if (isDup) {
+    if (!quiet) alert(`Категория «${added}» уже есть в списке.`);
+    return { status: 'duplicate', title: 'Вид продукта', label: added };
+  }
+  if (!quiet) setGeneratorAddStatus(`Добавлено в категории и генератор: ${added}`);
+  return { status: 'added', title: 'Вид продукта', label: added };
+}
+
+function saveAllGeneratorNewOptions() {
+  const productRaw = document.getElementById('genProductTypeNewName')?.value;
+  const rows = GENERATOR_EXTENSIBLE_KEYS.map((key) => ({
+    key,
+    raw: document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`)?.value
+  }));
+  const anyFilled = String(productRaw || '').trim() || rows.some((r) => String(r.raw || '').trim());
+  if (!anyFilled) {
+    alert('Напиши новый вариант хотя бы в одном поле.');
+    return;
+  }
+  const lines = [];
+  let extrasChanged = false;
+  if (String(productRaw || '').trim()) {
+    const res = addGeneratorProductTypeFromInput(productRaw, { quiet: true });
+    if (res.status === 'added') {
+      lines.push(`Вид продукта: ${res.label} (категория + код)`);
+      const input = document.getElementById('genProductTypeNewName');
+      if (input) input.value = '';
+    } else if (res.status === 'duplicate') lines.push(`Вид продукта: уже есть «${res.label}»`);
+    else if (res.status === 'error') lines.push(res.message || 'Вид продукта: не удалось добавить');
+  }
+  rows.forEach(({ key, raw }) => {
+    if (!String(raw || '').trim()) return;
+    const res = addGeneratorDimensionOption(key, raw, { quiet: true, persist: false });
+    if (res.status === 'added') {
+      extrasChanged = true;
+      lines.push(`${res.title}: ${res.code} — ${res.label}`);
+      const input = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`);
+      if (input) input.value = '';
+    } else if (res.status === 'duplicate') lines.push(`${res.title}: уже есть «${res.label}»`);
+    else if (res.status === 'error') lines.push(res.message || `${GENERATOR_EXTENSIBLE_TITLES[key]}: ошибка`);
+  });
+  if (extrasChanged) persistGeneratorExtrasToFirestore(readGeneratorExtrasSafe());
+  applyGeneratorExtras();
+  syncGeneratorProductTypes();
+  setGeneratorAddStatus(lines.join(' · ') || 'Ничего не добавлено', !extrasChanged && !lines.some((x) => x.includes('категория')));
+}
+
+function wireGeneratorExtensibleSelects() {
+  GENERATOR_EXTENSIBLE_KEYS.forEach((key) => {
+    const sel = document.getElementById(GENERATOR_EXTENSIBLE_SELECT_IDS[key]);
+    if (sel && sel.dataset.extrasWired !== '1') {
+      sel.dataset.extrasWired = '1';
+      sel.addEventListener('change', () => {
+        lastGeneratorSelectValue[key] = sel.value;
+      });
+    }
+    const saveBtn = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}SaveBtn`);
+    if (saveBtn && saveBtn.dataset.extrasWired !== '1') {
+      saveBtn.dataset.extrasWired = '1';
+      saveBtn.addEventListener('click', () => {
+        const input = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`);
+        const res = addGeneratorDimensionOption(key, input?.value);
+        if (res?.status === 'added' && input) input.value = '';
+      });
+    }
+    const input = document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}NewName`);
+    if (input && input.dataset.extrasWired !== '1') {
+      input.dataset.extrasWired = '1';
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById(`${GENERATOR_EXTENSIBLE_SELECT_IDS[key]}SaveBtn`)?.click();
+        }
+      });
+    }
+  });
+  const productSave = document.getElementById('genProductTypeSaveBtn');
+  if (productSave && productSave.dataset.extrasWired !== '1') {
+    productSave.dataset.extrasWired = '1';
+    productSave.addEventListener('click', () => {
+      const input = document.getElementById('genProductTypeNewName');
+      const res = addGeneratorProductTypeFromInput(input?.value);
+      if (res?.status === 'added' && input) input.value = '';
+    });
+  }
+  const productInput = document.getElementById('genProductTypeNewName');
+  if (productInput && productInput.dataset.extrasWired !== '1') {
+    productInput.dataset.extrasWired = '1';
+    productInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('genProductTypeSaveBtn')?.click();
+      }
+    });
+  }
+  const saveAll = document.getElementById('btnSaveAllGeneratorOptions');
+  if (saveAll && saveAll.dataset.extrasWired !== '1') {
+    saveAll.dataset.extrasWired = '1';
+    saveAll.addEventListener('click', saveAllGeneratorNewOptions);
+  }
+}
+
+let _generatorExtrasUnsub = null;
+function startGeneratorExtrasRealtimeSync() {
+  try {
+    setGeneratorExtras(readCachedGeneratorExtras(), false);
+  } catch (e) {
+    console.error('startGeneratorExtrasRealtimeSync(local): ', e);
+  }
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return;
+    if (typeof _generatorExtrasUnsub === 'function') return;
+    _generatorExtrasUnsub = db.collection(GENERATOR_EXTRAS_DOC.collection).doc(GENERATOR_EXTRAS_DOC.id)
+      .onSnapshot((snap) => {
+        if (!snap.exists) return;
+        const data = snap.data() || {};
+        const incoming = coerceGeneratorExtrasMap(data.extras || data);
+        const hasAny = GENERATOR_EXTENSIBLE_KEYS.some((k) => Object.keys(incoming[k] || {}).length);
+        if (!hasAny) {
+          applyGeneratorExtras();
+          return;
+        }
+        const merged = mergeGeneratorExtras(readGeneratorExtrasSafe(), incoming);
+        if (!extrasMapsEqual(merged, readGeneratorExtrasSafe())) setGeneratorExtras(merged);
+        else applyGeneratorExtras();
+      }, (error) => {
+        logFirestoreError('onSnapshot(generator_extras)', error);
+      });
+  } catch (e) {
+    console.error('startGeneratorExtrasRealtimeSync: ', e);
+  }
+}
+
+const DEFAULT_PRODUCT_CATEGORIES = [
+  '1-Постельное белье 1,5',
+  '2-постельное белье 1 сп',
+  '3-постельное белье 2сп',
+  '4-постельное белье Евро',
+  '5-Наволочки',
+  '6-Простыни',
+  '7-Салфетки',
+  '8-Рукавицы',
+  '9-Кухонные наборы',
+  '10-Скатерть',
+  '11 - Фартук'
+];
+const CATEGORY_CATALOG_STORAGE_KEY = 'yo_product_categories_v1';
+const GENERATOR_CATEGORY_CODES_KEY = 'yo_generator_category_codes_v1';
+const CATEGORY_ADD_SENTINEL = '__add_category__';
+let lastCategoryFilterValue = '';
+const CATEGORY_CATALOG_DOC = { collection: 'system', id: 'product_categories' };
+
+function normalizeProductCategoryName(raw) {
+  return String(raw || '').replace(/\s+/g, ' ').trim();
+}
+
+function readCachedCategoryCatalog() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CATEGORY_CATALOG_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.map(normalizeProductCategoryName).filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeCachedCategoryCatalog(names) {
+  try {
+    localStorage.setItem(CATEGORY_CATALOG_STORAGE_KEY, JSON.stringify(names));
+  } catch (_) { /* ignore */ }
+}
+
+function readCategoryCatalogSafe() {
+  const arr = Array.isArray(realtimeState.categoryCatalog) ? realtimeState.categoryCatalog : [];
+  return arr.map(normalizeProductCategoryName).filter(Boolean);
+}
+
+function setCategoryCatalog(names, persistLocal) {
+  const next = uniqueCategoryNames(names);
+  realtimeState.categoryCatalog = next;
+  if (persistLocal !== false) writeCachedCategoryCatalog(next);
+  refreshProductCategorySelectors(readProductsSafe());
+  syncGeneratorProductTypes();
+}
+
+function uniqueCategoryNames(list) {
+  const out = [];
+  const seen = new Set();
+  (list || []).forEach((raw) => {
+    const name = normalizeProductCategoryName(raw);
+    if (!name) return;
+    const key = name.toLocaleLowerCase('ru');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  });
+  return out.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }));
+}
+
+function parseCategoryNumberAndTitle(raw) {
+  const name = normalizeProductCategoryName(raw);
+  const m = name.match(/^(\d{1,2})\s*[-–—.:)]\s*(.+)$/);
+  if (m) {
+    const num = parseInt(m[1], 10);
+    const title = normalizeProductCategoryName(m[2]);
+    if (Number.isFinite(num) && num >= 1 && num <= 99 && title) return { num, title };
+  }
+  return { num: null, title: name };
+}
+
+function categoryTitleKey(raw) {
+  return parseCategoryNumberAndTitle(raw).title.toLocaleLowerCase('ru');
+}
+
+function formatNumberedCategoryName(num, title) {
+  return `${num}-${normalizeProductCategoryName(title)}`;
+}
+
+function collectUsedCategoryNumbers() {
+  const used = new Set();
+  const addNum = (n) => {
+    if (Number.isFinite(n) && n >= 1 && n <= 99) used.add(n);
+  };
+  const addFromName = (raw) => addNum(parseCategoryNumberAndTitle(raw).num);
+  DEFAULT_PRODUCT_CATEGORIES.forEach(addFromName);
+  readCategoryCatalogSafe().forEach(addFromName);
+  getAllProductCategoryNames().forEach(addFromName);
+  const genMap = (typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE)
+    ? DEFAULT_CODE_BASE_1C_PRODUCT_TYPE
+    : {};
+  Object.values(genMap).forEach((code) => addNum(parseInt(code, 10)));
+  return used;
+}
+
+function nextFreeCategoryNumber(usedSet) {
+  const used = usedSet || collectUsedCategoryNumbers();
+  for (let n = 1; n <= 99; n += 1) {
+    if (!used.has(n)) return n;
+  }
+  return null;
+}
+
+function isBuiltInProductCategoryName(raw) {
+  const key = categoryTitleKey(raw);
+  const full = normalizeProductCategoryName(raw).toLocaleLowerCase('ru');
+  return DEFAULT_PRODUCT_CATEGORIES.some((d) => (
+    categoryTitleKey(d) === key || normalizeProductCategoryName(d).toLocaleLowerCase('ru') === full
+  ));
+}
+
+function isBuiltInGeneratorProductTypeTitle(title) {
+  const key = String(title || '').toLocaleLowerCase('ru');
+  return Object.keys(DEFAULT_CODE_BASE_1C_PRODUCT_TYPE).some((label) => label.toLocaleLowerCase('ru') === key);
+}
+
+function readSavedGeneratorCategoryCodes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(GENERATOR_CATEGORY_CODES_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeSavedGeneratorCategoryCodes(map) {
+  try {
+    localStorage.setItem(GENERATOR_CATEGORY_CODES_KEY, JSON.stringify(map || {}));
+  } catch (_) { /* ignore */ }
+}
+
+function listCustomCategoriesForGenerator() {
+  const byTitle = new Map();
+  getAllProductCategoryNames().forEach((name) => {
+    if (isBuiltInProductCategoryName(name)) return;
+    const parsed = parseCategoryNumberAndTitle(name);
+    const title = parsed.title;
+    if (!title || isBuiltInGeneratorProductTypeTitle(title)) return;
+    const key = title.toLocaleLowerCase('ru');
+    const prev = byTitle.get(key);
+    if (!prev || (parsed.num && !prev.num)) byTitle.set(key, { name, title, num: parsed.num || null });
+  });
+  return Array.from(byTitle.values()).sort((a, b) => a.title.localeCompare(b.title, 'ru', { numeric: true, sensitivity: 'base' }));
+}
+
+function refreshGenProductTypeSelect() {
+  const sel = document.getElementById('genProductType');
+  if (!sel || !codeBase1C?.productType) return;
+  const prev = String(sel.value || '');
+  const builtinKeys = new Set(Object.keys(DEFAULT_CODE_BASE_1C_PRODUCT_TYPE));
+  const extras = [];
+  const builtin = [];
+  Object.entries(codeBase1C.productType).forEach(([label, code]) => {
+    if (builtinKeys.has(label)) builtin.push([label, code]);
+    else extras.push([label, code]);
+  });
+  extras.sort((a, b) => a[0].localeCompare(b[0], 'ru', { numeric: true, sensitivity: 'base' }));
+  const frag = document.createDocumentFragment();
+  if (extras.length) {
+    const g = document.createElement('optgroup');
+    g.label = 'Из базы товаров';
+    extras.forEach(([label, code]) => {
+      const o = document.createElement('option');
+      o.value = label;
+      o.textContent = `${code} — ${label}`;
+      g.appendChild(o);
+    });
+    frag.appendChild(g);
+  }
+  const g2 = document.createElement('optgroup');
+  g2.label = 'Справочник 1С';
+  builtin.forEach(([label, code]) => {
+    const o = document.createElement('option');
+    o.value = label;
+    o.textContent = label;
+    g2.appendChild(o);
+  });
+  frag.appendChild(g2);
+  sel.innerHTML = '';
+  sel.appendChild(frag);
+  if (prev && Array.from(sel.options).some((o) => o.value === prev)) sel.value = prev;
+  else if (builtin[0]) sel.value = builtin[0][0];
+}
+
+function syncGeneratorProductTypes() {
+  if (!codeBase1C) return;
+  const base = { ...DEFAULT_CODE_BASE_1C_PRODUCT_TYPE };
+  const reserved = new Set(Object.values(base).map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  const saved = readSavedGeneratorCategoryCodes();
+  const nextSaved = { ...saved };
+  const existingLabels = new Set(Object.keys(base).map((k) => k.toLocaleLowerCase('ru')));
+  listCustomCategoriesForGenerator().forEach((item) => {
+    const titleKey = item.title.toLocaleLowerCase('ru');
+    const label = item.name;
+    const labelKey = label.toLocaleLowerCase('ru');
+    if (existingLabels.has(labelKey) || existingLabels.has(titleKey)) return;
+    const savedNum = parseInt(saved[titleKey], 10);
+    let num = null;
+    if (item.num && !reserved.has(item.num)) num = item.num;
+    else if (Number.isFinite(savedNum) && savedNum >= 1 && savedNum <= 99 && !reserved.has(savedNum)) num = savedNum;
+    else num = nextFreeCategoryNumber(reserved);
+    if (!num) return;
+    reserved.add(num);
+    base[label] = String(num).padStart(2, '0');
+    existingLabels.add(labelKey);
+    existingLabels.add(titleKey);
+    nextSaved[titleKey] = num;
+  });
+  codeBase1C.productType = base;
+  writeSavedGeneratorCategoryCodes(nextSaved);
+  refreshGenProductTypeSelect();
+}
+
+function getAllProductCategoryNames(products) {
+  const fromProducts = (Array.isArray(products) ? products : readProductsSafe())
+    .map((p) => normalizeProductCategoryName(extractProductCategory(p)))
+    .filter(Boolean);
+  return uniqueCategoryNames([...DEFAULT_PRODUCT_CATEGORIES, ...readCategoryCatalogSafe(), ...fromProducts]);
+}
+
+function persistCategoryCatalogToFirestore(names) {
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return Promise.resolve(false);
+    return db.collection(CATEGORY_CATALOG_DOC.collection).doc(CATEGORY_CATALOG_DOC.id).set({
+      names: uniqueCategoryNames(names),
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+      .then(() => true)
+      .catch((error) => {
+        console.error('Ошибка записи категорий в Firestore: ', error);
+        return false;
+      });
+  } catch (e) {
+    console.error('persistCategoryCatalogToFirestore: ', e);
+    return Promise.resolve(false);
+  }
+}
+
+function addProductCategoryByName(rawName, opts = {}) {
+  const quiet = !!opts.quiet;
+  const name = normalizeProductCategoryName(rawName);
+  if (!name) {
+    if (!quiet) alert('Напиши название категории.');
+    return null;
+  }
+  if (name.length > 80) {
+    if (!quiet) alert('Название категории слишком длинное.');
+    return null;
+  }
+  const parsed = parseCategoryNumberAndTitle(name);
+  const title = parsed.title;
+  if (!title) {
+    if (!quiet) alert('Напиши название категории.');
+    return null;
+  }
+  const titleKey = title.toLocaleLowerCase('ru');
+  const existing = getAllProductCategoryNames();
+  const dup = existing.find((x) => (
+    x.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru') || categoryTitleKey(x) === titleKey
+  ));
+  if (dup) {
+    if (!quiet) alert(`Категория «${dup}» уже есть в списке.`);
+    return dup;
+  }
+  const genDup = Object.keys((typeof DEFAULT_CODE_BASE_1C_PRODUCT_TYPE !== 'undefined' && DEFAULT_CODE_BASE_1C_PRODUCT_TYPE) || {})
+    .find((label) => label.toLocaleLowerCase('ru') === titleKey);
+  if (genDup) {
+    if (!quiet) alert(`Категория «${genDup}» уже есть в генераторе кодов.`);
+    return genDup;
+  }
+  const used = collectUsedCategoryNumbers();
+  let num = parsed.num;
+  if (!num || used.has(num)) num = nextFreeCategoryNumber(used);
+  if (!num) {
+    if (!quiet) alert('Нет свободного номера категории (1–99).');
+    return null;
+  }
+  const stored = formatNumberedCategoryName(num, title);
+  const next = uniqueCategoryNames([...readCategoryCatalogSafe(), stored]);
+  setCategoryCatalog(next);
+  persistCategoryCatalogToFirestore(next);
+  return stored;
+}
+
+let _categoryCatalogUnsub = null;
+function startCategoryCatalogRealtimeSync() {
+  try {
+    setCategoryCatalog(readCachedCategoryCatalog(), false);
+  } catch (e) {
+    console.error('startCategoryCatalogRealtimeSync(local): ', e);
+  }
+  try {
+    if (typeof db === 'undefined' || !db || typeof db.collection !== 'function') return;
+    if (typeof _categoryCatalogUnsub === 'function') return;
+    _categoryCatalogUnsub = db.collection(CATEGORY_CATALOG_DOC.collection).doc(CATEGORY_CATALOG_DOC.id)
+      .onSnapshot((snap) => {
+        if (!snap.exists) return;
+        const data = snap.data() || {};
+        const names = Array.isArray(data.names) ? data.names : [];
+        if (!names.length) {
+          syncGeneratorProductTypes();
+          return;
+        }
+        setCategoryCatalog(uniqueCategoryNames([...readCategoryCatalogSafe(), ...names]));
+      }, (error) => {
+        logFirestoreError('onSnapshot(product_categories)', error);
+      });
+  } catch (e) {
+    console.error('startCategoryCatalogRealtimeSync: ', e);
+  }
+}
+
 let _componentsRealtimeUnsub = null;
 function startComponentsRealtimeSync() {
   const col = getComponentsCollectionRef();
@@ -302,6 +1053,7 @@ function startProductsRealtimeSync() {
     if (!next.length && hadRows) console.warn('products snapshot пустой после непустого состояния.');
     writeStore(STORAGE_KEYS.products, next);
     realtimeState.categories = Array.from(new Set(next.map((p) => String(extractProductCategory(p) || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
+    syncGeneratorProductTypes();
     if (changes.some((x) => x.type !== 'added') && wmsState.assemblingOpen) renderWmsDraftSummary();
     renderEverything();
   }, (error) => {
@@ -408,7 +1160,7 @@ function renderEverything() {
 }
 
 function startUnifiedRealtimeListeners() {
-  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync];
+  const tasks = [startProductsRealtimeSync, startShipmentsRealtimeSync, startComponentsRealtimeSync, startActivityLogRealtimeSync, startCategoryCatalogRealtimeSync, startGeneratorExtrasRealtimeSync];
   tasks.forEach((fn) => { try { fn(); } catch (e) { console.error('bootstrapRealtimeData: ', e); } });
 }
 setBootLoading(true);
@@ -2472,6 +3224,10 @@ function openPage(pageId) {
       window.ScaleUpYO.renderSettingsPage();
     }
   }
+  if (pageId === 'generator-section') {
+    syncGeneratorProductTypes();
+    applyGeneratorExtras();
+  }
   renderEverything();
 }
 
@@ -2482,15 +3238,6 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 document.querySelectorAll('[data-open-page]').forEach(card => {
   card.addEventListener('click', () => openPage(card.dataset.openPage));
 });
-
-const codeBase1C = {
-  productType: {"КПБ": "01", "КПБ на резинке": "02", "Неполный комплект": "03", "Салфетки": "04", "Скатерть": "05", "Декоративная подушка": "06", "Наволочки": "07", "Стеганное одеяло": "08", "Прихватка": "09", "Рукавица": "10", "Комплект Прихватка+Рукавица": "11", "Простыня на резинке": "12"},
-  size: {"1 Спальный": "01", "1,5 Спальный": "02", "2 Спальный": "03", "Евро": "04", "Семейный": "05", "25*70": "06", "35*60": "07", "35*65": "08", "35*70": "09", "40*60": "10", "40*65": "12", "45*65": "13", "145*200": "14", "145*250": "15", "150*200": "16", "150*250": "17", "30*30": "18", "35*35": "19", "40*40": "20", "50*70": "21", "70*70": "22", "160*20*25": "23", "180*200*25": "24", "140*200*20": "25", "190*85*25": "26"},
-  fabricType: {"Бязь": "01", "Поплин": "02", "Перкаль": "03", "Сатин": "04", "Страйп сатин": "05", "Ранфорс": "06", "Вафелька": "07", "Рогожка": "08", "Диагональ": "09"},
-  finishType: {"Отбелка": "01", "Крашение": "02", "Ротационная печать": "03", "Цифровая печать": "04", "Суровая": "05", "РП+КР": "06"},
-  density: {"100": "01", "105": "02", "110": "03", "120": "04", "125": "05", "130": "06", "135": "07", "140": "08", "145": "09", "150": "10", "155": "11", "160": "12", "165": "13", "170": "14", "175": "15", "180": "16", "185": "17", "190": "18", "195": "19", "200": "20", "205": "21", "210": "22", "215": "23", "220": "24", "225": "25", "230": "26", "235": "27", "240": "28", "245": "29", "250": "30", "255": "31", "260": "32", "265": "33", "270": "34", "275": "35", "280": "36", "285": "37", "290": "38", "295": "39", "300": "40", "115": "41"},
-  width: {"100": "01", "150": "02", "160": "03", "180": "04", "190": "05", "200": "06", "220": "07", "240": "08", "250": "09", "260": "10"}
-};
 
 const GENERATOR_1C_LABELS = ['Вид продукта', 'Размер', 'Вид ткани', 'Вид отделки', 'Плотность', 'Ширина'];
 const GENERATOR_1C_KEYS = ['productType', 'size', 'fabricType', 'finishType', 'density', 'width'];
@@ -2520,6 +3267,9 @@ function findLabelByCodeInCategory(categoryKey, code) {
 
 function initCodeGenerator1C() {
   GENERATOR_SELECT_IDS.forEach((id, i) => fillGeneratorSelectFromCodeBase(id, GENERATOR_1C_KEYS[i]));
+  syncGeneratorProductTypes();
+  applyGeneratorExtras();
+  wireGeneratorExtensibleSelects();
 
   document.getElementById('btnGenerate')?.addEventListener('click', () => {
     const vals = GENERATOR_SELECT_IDS.map((id) => document.getElementById(id)?.value);
@@ -4815,7 +5565,7 @@ function extractProductName(p) {
 }
 
 function extractProductCategory(p) {
-  const cat = p?.category ?? p?.cat ?? p?.productCategory;
+  const cat = p?.category ?? p?.cat ?? p?.productCategory ?? p?.calc?.productCategory ?? p?.calc?.category;
   return String(cat ?? '').trim();
 }
 
@@ -4833,7 +5583,8 @@ if (typeof state === 'object' && state) {
 
 function getProductsDbFiltersFromUi() {
   const q = (document.getElementById('productsLiveSearch')?.value || '').trim().toLowerCase();
-  const category = (document.getElementById('categoryFilter')?.value || '').trim();
+  const categoryRaw = (document.getElementById('categoryFilter')?.value || '').trim();
+  const category = categoryRaw === CATEGORY_ADD_SENTINEL ? '' : categoryRaw;
   const ltRaw = (document.getElementById('productsStockLtInput')?.value || '').trim();
   const ltVal = ltRaw === '' ? null : Math.max(0, Math.floor(Number(ltRaw)));
   const stockMode = (state?.productsDbFilters?.stockMode || 'all');
@@ -4900,24 +5651,22 @@ function filterProducts() {
 }
 
 function refreshProductCategorySelectors(products) {
-  const values = Array.from(new Set((Array.isArray(products) ? products : [])
-    .map((p) => String(extractProductCategory(p) || '').trim())
-    .filter(Boolean)))
-    .sort((a, b) => a.localeCompare(b, 'ru'));
+  const values = getAllProductCategoryNames(products);
   const filterEl = document.getElementById('categoryFilter');
   if (filterEl) {
     const cur = String(filterEl.value || '').trim();
-    filterEl.innerHTML = `<option value="" selected>Все категории</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
-    if (cur && values.includes(cur)) filterEl.value = cur;
+    filterEl.innerHTML = `<option value="" selected>Все категории</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}<option value="${CATEGORY_ADD_SENTINEL}">+ Добавить категорию</option>`;
+    if (cur && cur !== CATEGORY_ADD_SENTINEL && values.includes(cur)) filterEl.value = cur;
+    else if (lastCategoryFilterValue && values.includes(lastCategoryFilterValue)) filterEl.value = lastCategoryFilterValue;
+    else filterEl.value = '';
   }
   const productCatEl = document.getElementById('productCategory');
   if (productCatEl) {
     const cur = String(productCatEl.value || '').trim();
-    const staticOpts = Array.from(productCatEl.querySelectorAll('option')).map((o) => String(o.value || '').trim()).filter(Boolean);
-    const merged = Array.from(new Set([...staticOpts, ...values])).sort((a, b) => a.localeCompare(b, 'ru'));
-    productCatEl.innerHTML = `<option value="">— выберите категорию —</option>${merged.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
-    if (cur && merged.includes(cur)) productCatEl.value = cur;
+    productCatEl.innerHTML = `<option value="">— выберите категорию —</option>${values.map((v) => `<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join('')}`;
+    if (cur && values.includes(cur)) productCatEl.value = cur;
   }
+  syncGeneratorProductTypes();
 }
 
 function renderProducts(filteredArray) {
@@ -8946,7 +9695,17 @@ if (document.getElementById('productsLiveSearch')) {
 }
 {
   const el = document.getElementById('categoryFilter');
-  if (el) el.addEventListener('change', filterProducts);
+  if (el) {
+    el.addEventListener('change', () => {
+      if (el.value === CATEGORY_ADD_SENTINEL) {
+        el.value = lastCategoryFilterValue || '';
+        openProductsDbCategoryAddPanel();
+        return;
+      }
+      lastCategoryFilterValue = el.value;
+      filterProducts();
+    });
+  }
 }
 document.getElementById('productsStockLtInput')?.addEventListener('input', () => {
   // Ввод порога автоматически включает режим "меньше N"
@@ -8968,6 +9727,8 @@ document.getElementById('productsFiltersResetBtn')?.addEventListener('click', ()
   const cat = document.getElementById('categoryFilter');
   const lt = document.getElementById('productsStockLtInput');
   if (cat) cat.value = '';
+  lastCategoryFilterValue = '';
+  closeProductsDbCategoryAddPanel();
   if (lt) lt.value = '';
   if (state?.productsDbFilters) state.productsDbFilters.stockMode = 'all';
   const q = document.getElementById('productsLiveSearch');
@@ -9059,6 +9820,68 @@ document.getElementById('productArticle1c')?.addEventListener('input', () => {
 });
 document.getElementById('productArticle1c')?.addEventListener('change', () => {
   applySuggestedCategoryIfEmpty();
+});
+
+function handleProductCategoryAddFromInput(inputId, statusId) {
+  const input = document.getElementById(inputId);
+  const added = addProductCategoryByName(input?.value);
+  if (!added) return;
+  if (input) input.value = '';
+  const select = document.getElementById('productCategory');
+  if (select) select.value = added;
+  const status = statusId ? document.getElementById(statusId) : null;
+  if (status) {
+    status.textContent = `Категория «${added}» добавлена в базу.`;
+    status.classList.remove('hidden');
+  }
+  closeProductsDbCategoryAddPanel();
+  filterProducts();
+}
+
+function openProductsDbCategoryAddPanel() {
+  const panel = document.getElementById('productsDbCategoryAddPanel');
+  const input = document.getElementById('productsDbCategoryNewName');
+  if (panel) panel.classList.remove('hidden');
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function closeProductsDbCategoryAddPanel() {
+  const panel = document.getElementById('productsDbCategoryAddPanel');
+  const input = document.getElementById('productsDbCategoryNewName');
+  if (panel) panel.classList.add('hidden');
+  if (input) input.value = '';
+}
+
+document.getElementById('productCategoryAddBtn')?.addEventListener('click', () => {
+  handleProductCategoryAddFromInput('productCategoryNewName', 'productCategoryAddStatus');
+});
+document.getElementById('productCategoryNewName')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleProductCategoryAddFromInput('productCategoryNewName', 'productCategoryAddStatus');
+  }
+});
+document.getElementById('productsDbCategoryAddBtn')?.addEventListener('click', () => {
+  openProductsDbCategoryAddPanel();
+});
+document.getElementById('productsDbCategorySaveBtn')?.addEventListener('click', () => {
+  handleProductCategoryAddFromInput('productsDbCategoryNewName', 'productsDbCategoryAddStatus');
+});
+document.getElementById('productsDbCategoryCancelBtn')?.addEventListener('click', () => {
+  closeProductsDbCategoryAddPanel();
+});
+document.getElementById('productsDbCategoryNewName')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleProductCategoryAddFromInput('productsDbCategoryNewName', 'productsDbCategoryAddStatus');
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeProductsDbCategoryAddPanel();
+  }
 });
 
 document.getElementById('componentName')?.addEventListener('input', () => {
