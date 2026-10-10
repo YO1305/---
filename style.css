@@ -2753,8 +2753,20 @@ body.dark-mode .stock-value--outpace {
   gap: 12px;
   margin-top: 12px;
 }
-.generator-add-panel{
+.generator-add-row{
+  display:flex;
+  gap:6px;
+  align-items:center;
   margin-top:8px;
+}
+.generator-add-row .input{
+  flex:1 1 auto;
+  min-width:0;
+}
+.generator-add-row .btn-secondary{
+  margin:0;
+  min-width:42px;
+  padding:8px 10px;
 }
 .generator-add-status{
   grid-column: 1 / -1;
@@ -2766,6 +2778,10 @@ body.dark-mode .stock-value--outpace {
   }
 }
 .generator-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
   margin-top: 16px;
 }
 .generator-result-wrap {
