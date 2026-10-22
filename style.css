@@ -1201,6 +1201,45 @@ body.dark-mode .component-row {
   justify-content: space-between;
 }
 .wms-assemble.hidden { display: none !important; }
+.wms-bulk-bar {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--card);
+  display: grid;
+  gap: 10px;
+}
+.wms-bulk-bar .grid { margin-top: 0; }
+.wms-bulk-boxes-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.wms-bulk-boxes-actions button { margin: 0; }
+.wms-zk-preview {
+  margin-top: 10px;
+  overflow: auto;
+  max-height: 320px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+.wms-zk-preview table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.wms-zk-preview th,
+.wms-zk-preview td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+  vertical-align: top;
+}
+.wms-zk-preview th { font-weight: 800; }
+.wms-zk-warn { color: #b45309; font-weight: 700; }
 .wms-boxes-container {
   display: grid;
   gap: 14px;
@@ -3688,7 +3727,10 @@ input.fin-date-input {
     width: 100%;
   }
 
-  /* Кнопка добавить коробку */
+  .wms-bulk-boxes-actions {
+    flex-direction: column;
+  }
+  .wms-bulk-boxes-actions button,
   .wms-add-box-btn {
     max-width: 100% !important;
     width: 100% !important;
