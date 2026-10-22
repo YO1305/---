@@ -586,20 +586,20 @@
   }
 
   function productCost(p) {
-    const fromDb = lookupYoCost(
-      p?.sku,
-      p?.skuTitle,
-      p?.skuFullTitle,
-      p?.uzumSku,
-      p?.uzum_sku,
-      p?.barcode,
-      p?.article1c,
-      p?.name,
-      p?.title,
-      productSku(p)
+    return (
+      lookupYoCost(
+        p?.sku,
+        p?.skuTitle,
+        p?.skuFullTitle,
+        p?.uzumSku,
+        p?.uzum_sku,
+        p?.barcode,
+        p?.article1c,
+        p?.name,
+        p?.title,
+        productSku(p)
+      ) || 0
     );
-    if (fromDb > 0) return fromDb;
-    return Number(p?.costGross ?? p?.costPrice ?? p?.cost ?? p?.purchasePrice ?? 0) || 0;
   }
 
   function productStock(p) {
@@ -2415,24 +2415,41 @@
       </div>`;
   }
 
-  function viewStock() {
-    const rows = _products
-      .map((p) => ({ sku: productSku(p), name: p.name || p.title, stock: productStock(p), cost: productCost(p) }))
+  function stockRows() {
+    return _products
+      .map((p) => {
+        const stock = productStock(p);
+        const cost = productCost(p);
+        return {
+          sku: productSku(p),
+          name: p.name || p.title || '',
+          stock,
+          cost,
+          sum: stock * cost
+        };
+      })
       .sort((a, b) => a.stock - b.stock);
+  }
+
+  function viewStock() {
+    const rows = stockRows();
     const zero = rows.filter((r) => r.stock <= 0).length;
-    const value = rows.reduce((s, r) => s + r.stock * r.cost, 0);
+    const value = rows.reduce((s, r) => s + r.sum, 0);
+    const withCost = rows.filter((r) => r.cost > 0).length;
     return `<div class="sc-kpi-row cols-3">
         ${kpiCard('SKU', String(rows.length), '', 'blue')}
         ${kpiCard('Нулевой остаток', String(zero), '', 'red')}
-        ${kpiCard('Стоимость склада', money(value), 'по себестоимости YO', 'green')}
+        ${kpiCard('Стоимость склада', money(value), `себестоимость из базы YO · ${withCost} SKU с ценой`, 'green')}
+      </div>
+      <div class="sc-toolbar" style="display:flex;gap:8px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" class="sc-export btn-secondary" data-sc-export="stock">Скачать Excel</button>
       </div>
       <div class="sc-table-wrap"><table class="sc-table">
         <thead><tr><th>SKU</th><th>Название</th><th>Остаток</th><th>Себест.</th><th>Сумма</th></tr></thead>
         <tbody>${rows
-          .slice(0, 400)
           .map(
             (r) =>
-              `<tr><td>${esc(r.sku)}</td><td>${esc(r.name || '—')}</td><td>${r.stock}</td><td>${money(r.cost)}</td><td>${money(r.stock * r.cost)}</td></tr>`
+              `<tr><td>${esc(r.sku)}</td><td>${esc(r.name || '—')}</td><td>${r.stock}</td><td>${r.cost ? money(r.cost) : '—'}</td><td>${money(r.sum)}</td></tr>`
           )
           .join('')}</tbody>
       </table></div>`;
@@ -2831,6 +2848,27 @@
     ]);
   }
 
+  function exportXlsx(filename, sheetName, aoa) {
+    if (typeof XLSX === 'undefined' || !XLSX?.utils) {
+      exportCsv(filename.replace(/\.xlsx$/i, '.csv'), aoa);
+      return;
+    }
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = aoa[0].map((h) => ({ wch: Math.max(12, String(h || '').length + 4) }));
+    XLSX.utils.book_append_sheet(wb, ws, sheetName || 'Лист1');
+    XLSX.writeFile(wb, filename);
+  }
+
+  function exportStock() {
+    const rows = stockRows();
+    const day = new Date().toISOString().slice(0, 10);
+    exportXlsx(`yo-sklad-${day}.xlsx`, 'Склад', [
+      ['SKU', 'Название', 'Остаток, шт', 'Себестоимость YO, сум', 'Сумма, сум'],
+      ...rows.map((r) => [r.sku, r.name || '', r.stock, r.cost, r.sum])
+    ]);
+  }
+
   function editProd() {
     /* reserved */
   }
@@ -2978,6 +3016,7 @@
         if (kind === 'products') exportProducts();
         if (kind === 'abcxyz') exportAbcXyz();
         if (kind === 'cost') exportCost();
+        if (kind === 'stock') exportStock();
         return;
       }
       if (e.target.closest('[data-sc-save-settings]')) {
@@ -3065,6 +3104,7 @@
     exportProducts,
     exportAbcXyz,
     exportCost,
+    exportStock,
     editProd,
     matGroup,
     recalcNew,
