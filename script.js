@@ -873,11 +873,13 @@ function productSearchMatchesQuery(p, qq) {
     p.uzumSku,
     p.uzum_barcode,
     p.wbSku,
+    p.ozonSku,
     p.yandexSku,
     p.uzum_sku,
     p.wb_nmid,
     p.wb_nm_id,
     p.nmid,
+    p.ozon_sku,
     p.yandex_sku,
     p.sku,
     p.code1c,
@@ -886,11 +888,27 @@ function productSearchMatchesQuery(p, qq) {
     p.mp_wb_sku,
     p.calc?.mpSkuUzum,
     p.calc?.mpWbNmid,
+    p.calc?.mpSkuOzon,
     p.calc?.mpSkuYandex,
     p.design,
     p.calc?.productDesign
   ];
   return fields.some(x => String(x ?? '').toLowerCase().includes(qq));
+}
+
+function extractOzonSku(p) {
+  const c = p?.calc || {};
+  return String(
+    p?.ozonSku ?? p?.ozon_sku ?? c.mpSkuOzon ??
+    p?.yandexSku ?? p?.yandex_sku ?? c.mpSkuYandex ??
+    ''
+  ).trim();
+}
+
+function getOzonSkuFromForm() {
+  return document.getElementById('mpSkuOzon')?.value.trim()
+    || document.getElementById('mpSkuYandex')?.value.trim()
+    || '';
 }
 
 /** Скрытое поле sku: для WMS/легаси — артикул 1С или первый заполненный код МП. */
@@ -900,12 +918,13 @@ function syncCostFormHiddenSku() {
   const a = document.getElementById('productArticle1c')?.value.trim() || '';
   const u = document.getElementById('mpSkuUzum')?.value.trim() || '';
   const w = document.getElementById('mpWbNmid')?.value.trim() || '';
-  const y = document.getElementById('mpSkuYandex')?.value.trim() || '';
-  el.value = a || u || w || y;
+  const o = getOzonSkuFromForm();
+  el.value = a || u || w || o;
 }
 
 function getCurrentMarketplace() {
-  return String(realtimeState.selectedMarketplace || 'uzum');
+  const mp = String(realtimeState.selectedMarketplace || 'uzum');
+  return mp === 'yandex' ? 'ozon' : mp;
 }
 
 function initUzumCostWarehouseListeners() {
@@ -929,22 +948,22 @@ function initUzumCostWarehouseListeners() {
   });
 }
 
-/** Вкладка «Себестоимость»: полная форма для Uzum и WB; для Yandex — заглушка. */
+/** Вкладка «Себестоимость»: полная форма для Uzum и WB; для Ozon — заглушка. */
 function applyCostTabMarketplaceLayout() {
   const mp = getCurrentMarketplace();
-  const yandexStub = mp === 'yandex';
+  const ozonStub = mp === 'ozon';
   const nonUz = mp !== 'uzum';
   document.querySelectorAll('.cost-uzum-only').forEach(el => el.classList.toggle('hidden', nonUz));
   document.querySelectorAll('.cost-uzum-storage-only').forEach(el => el.classList.toggle('hidden', nonUz));
   document.querySelectorAll('.cost-wb-dims-hint').forEach(el => el.classList.toggle('hidden', mp !== 'wb'));
   const flow = document.getElementById('costTabUzumFlow');
-  if (flow) flow.classList.toggle('hidden', yandexStub);
+  if (flow) flow.classList.toggle('hidden', ozonStub);
   const resUz = document.getElementById('costTabResultsUzum');
-  if (resUz) resUz.classList.toggle('hidden', yandexStub);
+  if (resUz) resUz.classList.toggle('hidden', ozonStub);
   document.getElementById('costWbRubWrap')?.classList.toggle('hidden', mp !== 'wb');
   const stubStack = document.getElementById('costTabMpStubStack');
   if (stubStack) {
-    if (yandexStub) {
+    if (ozonStub) {
       stubStack.innerHTML = '<h2>Калькуляция</h2><p>Раздел в разработке</p>';
       stubStack.classList.remove('hidden');
     } else {
@@ -954,7 +973,7 @@ function applyCostTabMarketplaceLayout() {
   }
   const stubRes = document.getElementById('costTabMpStubResults');
   if (stubRes) {
-    if (yandexStub) {
+    if (ozonStub) {
       stubRes.innerHTML = '<h2>Итоги</h2><p>Раздел в разработке</p>';
       stubRes.classList.remove('hidden');
     } else {
@@ -964,13 +983,13 @@ function applyCostTabMarketplaceLayout() {
   }
   const sendBtn = document.getElementById('sendToUnitBtn');
   if (sendBtn) {
-    sendBtn.closest('div')?.classList.toggle('hidden', yandexStub);
-    if (!yandexStub) {
+    sendBtn.closest('div')?.classList.toggle('hidden', ozonStub);
+    if (!ozonStub) {
       sendBtn.textContent = mp === 'wb' ? '➕ Перейти к Unit-экономике WB' : 'Перенести в юнит-экономику →';
     }
   }
   const sendHint = document.getElementById('sendToUnitHint');
-  if (sendHint && !yandexStub) {
+  if (sendHint && !ozonStub) {
     sendHint.textContent = mp === 'wb'
       ? 'Переносит в WB-юнит: артикул 1С, литраж по габаритам и себестоимость в ₽ по курсу из поля выше.'
       : 'При переносе подставятся себестоимость в сумах, НДС и ВГХ (если товар на складе Uzum) в юнит Uzum.';
@@ -991,8 +1010,8 @@ function updateMpContextHint() {
   const mp = getCurrentMarketplace();
   if (mp === 'wb') {
     el.innerHTML = 'Сейчас <strong>WB</strong>: калькуляция в сумах с пересчётом в ₽; юнит-экономика — в рублях по модели 2026. Во вкладке «Аналитика» — глубокая аналитика по еженедельной детализации WB (все суммы в сумах); «Поставки» — заглушка.';
-  } else if (mp === 'yandex') {
-    el.innerHTML = 'Сейчас <strong>Yandex</strong>: «Себестоимость» в разработке; «Аналитика» и «Поставки» — заглушка. Юнит — по модели Uzum.';
+  } else if (mp === 'ozon') {
+    el.innerHTML = 'Сейчас <strong>Ozon</strong>: «Себестоимость» в разработке; «Аналитика» и «Поставки» — заглушка. Юнит — по модели Uzum.';
   } else {
     el.innerHTML = '<strong>Uzum</strong>: блоки А–Г ниже; калькуляция товара — во вкладке «Себестоимость».';
   }
@@ -1050,10 +1069,10 @@ function getProductLabelSkuLines(product) {
   const lines = [];
   const wb = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
   const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
-  const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+  const oz = extractOzonSku(p);
   if (wb) lines.push({ label: 'SKU WB', value: wb });
   if (uz) lines.push({ label: 'SKU Uzum', value: uz });
-  if (ya) lines.push({ label: 'SKU Yandex', value: ya });
+  if (oz) lines.push({ label: 'SKU Ozon', value: oz });
   return lines;
 }
 
@@ -1663,7 +1682,7 @@ function calcBreakEven(base) {
 
 function renderProductCost() {
   applyCostTabMarketplaceLayout();
-  if (getCurrentMarketplace() === 'yandex') {
+  if (getCurrentMarketplace() === 'ozon') {
     renderUnit();
     return;
   }
@@ -1778,8 +1797,8 @@ function exportProductCostToExcel() {
     return;
   }
   const mp = getCurrentMarketplace();
-  if (mp === 'yandex') {
-    alert('Для Yandex выгрузка пока недоступна.');
+  if (mp === 'ozon') {
+    alert('Для Ozon выгрузка пока недоступна.');
     return;
   }
 
@@ -1798,7 +1817,7 @@ function exportProductCostToExcel() {
   const fabricUnitLabel = { m: 'метры', kg: 'килограммы', unit: 'усл. ед.' }[fabricUnit] || fabricUnit;
   const mpSkuUzum = String(document.getElementById('mpSkuUzum')?.value || '').trim();
   const mpWbNmid = String(document.getElementById('mpWbNmid')?.value || '').trim();
-  const mpSkuYandex = String(document.getElementById('mpSkuYandex')?.value || '').trim();
+  const mpSkuOzon = getOzonSkuFromForm();
 
   const costLineDefs = [
     { label: 'Пошив', amountId: 'sewingCost', modeId: 'sewingCostVatIncluded' },
@@ -1836,7 +1855,7 @@ function exportProductCostToExcel() {
   push(['Единица расхода ткани', fabricUnitLabel]);
   push(['SKU Uzum', mpSkuUzum]);
   push(['nmId WB', mpWbNmid]);
-  push(['SKU Yandex', mpSkuYandex]);
+  push(['SKU Ozon', mpSkuOzon]);
   push(['Ставка НДС по умолчанию, %', defaultVatRate]);
   push(['Дата выгрузки', new Date().toLocaleString('ru-RU')]);
   push([]);
@@ -3155,7 +3174,7 @@ wbUzRenderTariffsTable();
 
 [
   'productArticle1c', 'productCode1c', 'productStockQty', 'productDesign', 'productLink',
-  'mpSkuUzum', 'mpWbNmid', 'mpSkuYandex',
+  'mpSkuUzum', 'mpWbNmid', 'mpSkuOzon',
   'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate', 'sewingCost', 'packageCost',
   'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost', 'promoPolygraphyCost', 'inboundLogisticsCost',
   'transportBoxCost', 'otherProductCost',
@@ -3380,7 +3399,7 @@ function buildProductFinancialSnapshot(product) {
 function normalizeWmsMarketplaceKey(mp) {
   const v = normalizeShipmentMarketplace({ marketplace: mp });
   if (v === 'Wildberries') return 'wb';
-  if (v === 'Yandex Market') return 'yandex';
+  if (v === 'Ozon' || v === 'Yandex Market') return 'ozon';
   return 'uzum';
 }
 
@@ -3392,9 +3411,9 @@ function getMarketplaceSkuForProduct(product, marketplaceKey) {
     const wb = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? c.mpWbNmid ?? '').trim();
     return { label: 'WB SKU', value: wb };
   }
-  if (key === 'yandex') {
-    const y = String(p.yandexSku ?? p.yandex_sku ?? c.mpSkuYandex ?? '').trim();
-    return { label: 'Yandex SKU', value: y };
+  if (key === 'ozon' || key === 'yandex') {
+    const oz = extractOzonSku(p);
+    return { label: 'Ozon SKU', value: oz };
   }
   const u = String(p.uzumSku ?? p.uzum_sku ?? c.mpSkuUzum ?? '').trim();
   return { label: 'Uzum SKU', value: u };
@@ -3559,7 +3578,7 @@ function resolveCurrentUzumBarcode() {
 
 function snapshotCurrentProduct() {
   const mpGuard = getCurrentMarketplace();
-  if (mpGuard === 'yandex' && !wmsState.shipmentCalcEdit?.active) {
+  if (mpGuard === 'ozon' && !wmsState.shipmentCalcEdit?.active) {
     return null;
   }
   syncCostFormHiddenSku();
@@ -3567,16 +3586,16 @@ function snapshotCurrentProduct() {
   // Источник SKU: блок "Связки с маркетплейсами" (конкретные ID инпутов)
   const mpUz = document.getElementById('mpSkuUzum')?.value.trim() || '';
   const mpWb = document.getElementById('mpWbNmid')?.value.trim() || '';
-  const mpYa = document.getElementById('mpSkuYandex')?.value.trim() || '';
+  const mpOz = getOzonSkuFromForm();
   const productArticle1c = document.getElementById('productArticle1c').value.trim();
-  const sku = productArticle1c || mpUz || mpWb || mpYa;
+  const sku = productArticle1c || mpUz || mpWb || mpOz;
   const productCode1c = document.getElementById('productCode1c').value.trim();
   const productStockQty = Math.max(0, Math.floor(n(document.getElementById('productStockQty').value) || 0));
   const productCategory = (document.getElementById('productCategory')?.value || '').trim();
   const productDesign = (document.getElementById('productDesign')?.value || '').trim();
   const productLink = document.getElementById('productLink').value.trim();
   if (!sku) {
-    alert('Укажите артикул 1С или хотя бы один код в блоке «Связки с маркетплейсами» (Uzum, WB, Yandex).');
+    alert('Укажите артикул 1С или хотя бы один код в блоке «Связки с маркетплейсами» (Uzum, WB, Ozon).');
     return null;
   }
   if (!productCategory) {
@@ -3629,7 +3648,8 @@ function snapshotCurrentProduct() {
     otherProductCostVatIncluded: document.getElementById('otherProductCostVatIncluded').value,
     mpSkuUzum: mpUz,
     mpWbNmid: mpWb,
-    mpSkuYandex: mpYa,
+    mpSkuOzon: mpOz,
+    mpSkuYandex: mpOz,
     uzumLengthCm: uzL,
     uzumWidthCm: uzW,
     uzumHeightCm: uzH,
@@ -3646,12 +3666,14 @@ function snapshotCurrentProduct() {
     // Явные поля для Firebase / UI (новая схема)
     uzumSku: mpUz,
     wbSku: mpWb,
-    yandexSku: mpYa,
+    ozonSku: mpOz,
+    yandexSku: mpOz,
     uzum_barcode: resolveCurrentUzumBarcode(),
     // Легаси-поля (оставляем для обратной совместимости)
     uzum_sku: mpUz,
     wb_nmid: mpWb,
-    yandex_sku: mpYa,
+    ozon_sku: mpOz,
+    yandex_sku: mpOz,
     name: productArticle1c,
     article1c: productArticle1c,
     code1c: productCode1c,
@@ -3708,7 +3730,10 @@ const HISTORY_TOP_LABELS = {
   uzum_sku: 'SKU Uzum',
   uzum_barcode: 'Штрихкод Uzum',
   wb_nmid: 'nmId WB',
-  yandex_sku: 'SKU Yandex',
+  ozon_sku: 'SKU Ozon',
+  yandex_sku: 'SKU Ozon',
+  ozonSku: 'SKU Ozon',
+  yandexSku: 'SKU Ozon',
   name: 'Имя записи (легаси, как правило = артикул 1С)',
   article1c: 'Артикул 1С',
   code1c: 'Код 1С',
@@ -3767,7 +3792,8 @@ const HISTORY_CALC_LABELS = {
   productNewSkuDays: 'Калькуляция · Дней нового SKU',
   mpSkuUzum: 'Калькуляция · SKU Uzum',
   mpWbNmid: 'Калькуляция · nmId WB',
-  mpSkuYandex: 'Калькуляция · SKU Yandex',
+  mpSkuOzon: 'Калькуляция · SKU Ozon',
+  mpSkuYandex: 'Калькуляция · SKU Ozon',
   uzumLengthCm: 'Калькуляция · Uzum Длина, см',
   uzumWidthCm: 'Калькуляция · Uzum Ширина, см',
   uzumHeightCm: 'Калькуляция · Uzum Высота, см',
@@ -3855,6 +3881,7 @@ function resetCostCalculatorForm() {
     'mpSkuUzum',
     'mpUzumBarcode',
     'mpWbNmid',
+    'mpSkuOzon',
     'mpSkuYandex'
   ];
   textIds.forEach(id => {
@@ -4107,8 +4134,8 @@ function exportToDbFromCalculator() {
   const article1c = (document.getElementById('productArticle1c')?.value || '').trim();
   const mpUz = (document.getElementById('mpSkuUzum')?.value || '').trim();
   const mpWb = (document.getElementById('mpWbNmid')?.value || '').trim();
-  const mpYa = (document.getElementById('mpSkuYandex')?.value || '').trim();
-  if (!article1c && !mpUz && !mpWb && !mpYa) {
+  const mpOz = getOzonSkuFromForm();
+  if (!article1c && !mpUz && !mpWb && !mpOz) {
     alert('Укажите артикул 1С или хотя бы один код в блоке «Связки с маркетплейсами».');
     return;
   }
@@ -4208,12 +4235,12 @@ function loadProductIntoCalculator(product, preserveTab=false, options = {}) {
   });
   const mpU = document.getElementById('mpSkuUzum');
   const mpW = document.getElementById('mpWbNmid');
-  const mpY = document.getElementById('mpSkuYandex');
+  const mpO = document.getElementById('mpSkuOzon');
   if (mpU) mpU.value = String(product.uzumSku ?? product.uzum_sku ?? c.mpSkuUzum ?? '').trim();
   const mpBc = document.getElementById('mpUzumBarcode');
   if (mpBc) mpBc.value = normalizeUzumBarcode(product.uzum_barcode);
   if (mpW) mpW.value = String(product.wbSku ?? product.wb_nmid ?? c.mpWbNmid ?? '').trim();
-  if (mpY) mpY.value = String(product.yandexSku ?? product.yandex_sku ?? c.mpSkuYandex ?? '').trim();
+  if (mpO) mpO.value = extractOzonSku(product);
   const uzl = c.uzumLengthCm != null ? n(c.uzumLengthCm) : n(product.length) / 10;
   const uzw = c.uzumWidthCm != null ? n(c.uzumWidthCm) : n(product.width) / 10;
   const uzh = c.uzumHeightCm != null ? n(c.uzumHeightCm) : n(product.height) / 10;
@@ -4308,6 +4335,8 @@ function duplicateProductInDb(recordId) {
   clone.wb_nmid = '';
   clone.wb_nm_id = '';
   clone.nmid = '';
+  clone.ozonSku = '';
+  clone.ozon_sku = '';
   clone.yandexSku = '';
   clone.yandex_sku = '';
   if (clone.calc && typeof clone.calc === 'object') {
@@ -4317,6 +4346,7 @@ function duplicateProductInDb(recordId) {
       productStockQty: 0,
       mpSkuUzum: '',
       mpWbNmid: '',
+      mpSkuOzon: '',
       mpSkuYandex: ''
     };
   }
@@ -4971,7 +5001,7 @@ function renderProducts(filteredArray) {
     const uzumSku = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
     const uzumBarcode = normalizeUzumBarcode(p.uzum_barcode);
     const wbSku = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
-    const yandexSku = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+    const ozonSku = extractOzonSku(p);
     const design = String(p.design ?? p.calc?.productDesign ?? '').trim();
     const category = extractProductCategory(p);
     const monthShip = recordId ? (shippedMonthByRid.get(String(recordId)) || 0) : 0;
@@ -5022,7 +5052,7 @@ function renderProducts(filteredArray) {
         </div>
       </div>
 
-      ${(design || uzumSku || uzumBarcode || wbSku || yandexSku) ? `
+      ${(design || uzumSku || uzumBarcode || wbSku || ozonSku) ? `
         <div class="product-mp-skus" aria-label="Коды и идентификаторы">
           ${design ? `
             <div class="product-mp-sku-pill product-mp-sku-pill--design">
@@ -5060,12 +5090,12 @@ function renderProducts(filteredArray) {
               </div>
             </div>
           ` : ''}
-          ${yandexSku ? `
-            <div class="product-mp-sku-pill product-mp-sku-pill--yandex">
-              <span class="k">Yandex SKU</span>
+          ${ozonSku ? `
+            <div class="product-mp-sku-pill product-mp-sku-pill--ozon">
+              <span class="k">Ozon SKU</span>
               <div class="product-mp-sku-valrow">
-                <span class="v">${escapeHtml(yandexSku)}</span>
-                ${productCopyBtnHtml(yandexSku, 'Yandex SKU')}
+                <span class="v">${escapeHtml(ozonSku)}</span>
+                ${productCopyBtnHtml(ozonSku, 'Ozon SKU')}
               </div>
             </div>
           ` : ''}
@@ -5173,7 +5203,7 @@ async function exportProductsDbToExcelDirect() {
     'SKU Uzum (uzumSku)',
     'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
-    'SKU Яндекс (yandexSku)',
+    'SKU Озон (ozonSku)',
     'Себестоимость, сум',
     'Остаток шт',
     'Категория',
@@ -5190,7 +5220,7 @@ async function exportProductsDbToExcelDirect() {
     const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
     const uzBc = normalizeUzumBarcode(p.uzum_barcode);
     const wb = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
-    const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+    const ya = extractOzonSku(p);
     const costUzs = Math.round(productCostPriceUzs(p) * 100) / 100;
     const stockQty = intOrZero(p.stockQty);
     const category = String(p?.category ?? '').trim(); // выгружаем как есть; если пусто — пусто
@@ -5257,7 +5287,7 @@ async function exportProductsDeficitToExcel() {
     'SKU Uzum (uzumSku)',
     'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
-    'SKU Яндекс (yandexSku)',
+    'SKU Озон (ozonSku)',
     'Себестоимость, сум',
     'Упущенная выгода, сум',
     'Остаток шт',
@@ -5274,7 +5304,7 @@ async function exportProductsDeficitToExcel() {
     const uz = String(p.uzumSku ?? p.uzum_sku ?? p.calc?.mpSkuUzum ?? '').trim();
     const uzBc = normalizeUzumBarcode(p.uzum_barcode);
     const wbSku = String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? p.calc?.mpWbNmid ?? '').trim();
-    const ya = String(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex ?? '').trim();
+    const ya = extractOzonSku(p);
     const costUzs = Math.round(productCostPriceUzs(p) * 100) / 100;
     // Упущенная выгода: минимальная оценка на базе себестоимости (без цены продажи).
     const missed = costUzs;
@@ -5334,7 +5364,7 @@ function buildProductsImportTemplateWorkbook() {
     'SKU Uzum (uzumSku)',
     'Штрихкод Uzum (uzum_barcode)',
     'SKU Wildberries (wbSku)',
-    'SKU Яндекс (yandexSku)',
+    'SKU Озон (ozonSku)',
     'Себестоимость, сум',
     'Остаток шт',
     'Категория',
@@ -5478,7 +5508,19 @@ async function importProductsFromXlsxFile(file) {
     ));
     const uzumBarcode = normalizeUzumBarcode(uzumBarcodeRaw);
     const wbSku = stripLeadingApostrophe(pickCell(row, headerIdx, 'SKU Wildberries (wbSku)', 'SKU Wildberries', 'wbSku', 'wb_nmid', 'nmId WB'));
-    const yandexSku = stripLeadingApostrophe(pickCell(row, headerIdx, 'SKU Яндекс (yandexSku)', 'SKU Яндекс', 'yandexSku', 'yandex_sku'));
+    const ozonSku = stripLeadingApostrophe(pickCell(
+      row,
+      headerIdx,
+      'SKU Озон (ozonSku)',
+      'SKU Озон',
+      'SKU Ozon',
+      'ozonSku',
+      'ozon_sku',
+      'SKU Яндекс (yandexSku)',
+      'SKU Яндекс',
+      'yandexSku',
+      'yandex_sku'
+    ));
     const costUzs = numOrZero(pickCell(
       row,
       headerIdx,
@@ -5510,10 +5552,12 @@ async function importProductsFromXlsxFile(file) {
         code1c,
         uzumSku: String(uzumSku ?? '').trim(),
         wbSku: String(wbSku ?? '').trim(),
-        yandexSku: String(yandexSku ?? '').trim(),
+        ozonSku: String(ozonSku ?? '').trim(),
+        yandexSku: String(ozonSku ?? '').trim(),
         uzum_sku: String(uzumSku ?? '').trim(),
         wb_nmid: String(wbSku ?? '').trim(),
-        yandex_sku: String(yandexSku ?? '').trim(),
+        ozon_sku: String(ozonSku ?? '').trim(),
+        yandex_sku: String(ozonSku ?? '').trim(),
         stockQty,
         updatedAt: now
       };
@@ -5543,17 +5587,19 @@ async function importProductsFromXlsxFile(file) {
       const doc = {
         recordId: rid,
         id: String(rid),
-        sku: article1c || String(uzumSku || wbSku || yandexSku || '').trim(),
+        sku: article1c || String(uzumSku || wbSku || ozonSku || '').trim(),
         name,
         article1c,
         code1c,
         uzumSku: String(uzumSku ?? '').trim(),
         wbSku: String(wbSku ?? '').trim(),
-        yandexSku: String(yandexSku ?? '').trim(),
+        ozonSku: String(ozonSku ?? '').trim(),
+        yandexSku: String(ozonSku ?? '').trim(),
         uzum_barcode: uzumBarcode,
         uzum_sku: String(uzumSku ?? '').trim(),
         wb_nmid: String(wbSku ?? '').trim(),
-        yandex_sku: String(yandexSku ?? '').trim(),
+        ozon_sku: String(ozonSku ?? '').trim(),
+        yandex_sku: String(ozonSku ?? '').trim(),
         stockQty,
         updatedAt: now,
         changeHistory: []
@@ -5601,7 +5647,7 @@ function readShipmentsSafe() {
   return Array.isArray(arr) ? arr : [];
 }
 
-const WMS_MARKETPLACE_OPTIONS = ['Uzum Market', 'Wildberries', 'Yandex Market'];
+const WMS_MARKETPLACE_OPTIONS = ['Uzum Market', 'Wildberries', 'Ozon'];
 
 function getWmsMarketplaceFromUi() {
   const el = document.getElementById('wmsMarketplace');
@@ -5612,9 +5658,9 @@ function getWmsMarketplaceFromUi() {
 function setWmsMarketplaceUi(value) {
   const el = document.getElementById('wmsMarketplace');
   if (!el) return;
-  const v = WMS_MARKETPLACE_OPTIONS.includes(String(value || '').trim())
-    ? String(value).trim()
-    : 'Uzum Market';
+  const raw = String(value || '').trim();
+  const mapped = (raw === 'Yandex Market' || raw === 'Яндекс маркет') ? 'Ozon' : raw;
+  const v = WMS_MARKETPLACE_OPTIONS.includes(mapped) ? mapped : 'Uzum Market';
   el.value = v;
 }
 
@@ -5629,8 +5675,9 @@ function normalizeSkuKey(sku) {
 
 /** Для старых поставок без поля marketplace. */
 function normalizeShipmentMarketplace(sh) {
-  const v = sh?.marketplace;
-  if (v && WMS_MARKETPLACE_OPTIONS.includes(String(v).trim())) return String(v).trim();
+  const v = String(sh?.marketplace || '').trim();
+  if (v === 'Yandex Market' || v === 'Яндекс маркет' || v === 'Ozon') return 'Ozon';
+  if (WMS_MARKETPLACE_OPTIONS.includes(v)) return v;
   return 'Uzum Market';
 }
 
@@ -5639,7 +5686,8 @@ function marketplaceToNakladnayaRecipient(mp) {
   const map = {
     'Uzum Market': 'UZUM MARKET',
     Wildberries: 'WILDBERRIES',
-    'Yandex Market': 'YANDEX MARKET'
+    Ozon: 'OZON',
+    'Yandex Market': 'OZON'
   };
   const key = normalizeShipmentMarketplace({ marketplace: mp });
   return map[key] || String(mp || '').toUpperCase();
@@ -5859,7 +5907,7 @@ function getShipmentLineBreakdown(line, fromDraft) {
 
 const COST_CALC_BACKUP_IDS = [
   'sku', 'productArticle1c', 'productCode1c', 'productStockQty', 'productDesign', 'productLink',
-  'mpSkuUzum', 'mpUzumBarcode', 'mpWbNmid', 'mpSkuYandex', 'costRubUzRate',
+  'mpSkuUzum', 'mpUzumBarcode', 'mpWbNmid', 'mpSkuOzon', 'costRubUzRate',
   'fabricPrice', 'fabricConsumption', 'fabricUnit', 'fabricVatIncluded', 'fabricVatRate',
   'sewingCost', 'packageCost', 'zipperCost', 'elasticCost', 'polygraphyCost', 'stickersCost',
   'promoPolygraphyCost', 'inboundLogisticsCost', 'transportBoxCost', 'otherProductCost',
@@ -6662,11 +6710,11 @@ function renderWmsProductPickList(q) {
     const badgeClass =
       mpKey === 'wb' ? 'wms-sku-badge wms-sku-badge--wb'
       : mpKey === 'uzum' ? 'wms-sku-badge wms-sku-badge--uzum'
-      : mpKey === 'yandex' ? 'wms-sku-badge wms-sku-badge--yandex'
+      : mpKey === 'ozon' ? 'wms-sku-badge wms-sku-badge--ozon'
       : 'wms-sku-badge';
     const badgeText =
       mpKey === 'wb' ? 'WB'
-      : mpKey === 'yandex' ? 'Yandex'
+      : mpKey === 'ozon' ? 'Ozon'
       : 'Uzum';
     row.innerHTML = `
       <div class="sku wms-pick-article">${escapeHtml(a1 || title)}</div>
@@ -7446,6 +7494,8 @@ function resolveShipmentLineProduct(it) {
       p.uzum_sku,
       p.wbSku,
       p.wb_nmid,
+      p.ozonSku,
+      p.ozon_sku,
       p.yandexSku,
       p.yandex_sku
     ].map((v) => String(v || '').trim()).filter(Boolean);
@@ -7867,7 +7917,8 @@ function exportWmsShipmentToXlsx(shipmentId) {
     const map = {
       'Uzum Market': 'Узум маркет',
       Wildberries: 'Вайлдберриз',
-      'Yandex Market': 'Яндекс маркет'
+      Ozon: 'Озон',
+      'Yandex Market': 'Озон'
     };
     return map[mp] || mp;
   })();
@@ -10685,8 +10736,8 @@ function findAnalyticsProductBySku(localProducts, skuRaw) {
     const uz = String(p.uzum_sku ?? '').trim();
     const sk = String(p.sku ?? '').trim();
     const wb = String(p.wb_nmid ?? '').trim();
-    const ya = String(p.yandex_sku ?? '').trim();
-    return a1 === s || uz === s || sk === s || wb === s || ya === s;
+    const oz = extractOzonSku(p);
+    return a1 === s || uz === s || sk === s || wb === s || oz === s;
   });
 }
 

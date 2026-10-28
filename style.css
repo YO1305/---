@@ -583,11 +583,12 @@ tr:last-child td { border-bottom:none; }
   border-color: #db2777;
   box-shadow: 0 8px 22px rgba(219, 39, 119, 0.22);
 }
+.badge.ozon-badge,
 .badge.yandex-badge {
-  background: linear-gradient(135deg, #fde047 0%, #facc15 45%, #eab308 100%);
-  color: #422006;
-  border-color: #ca8a04;
-  box-shadow: 0 8px 22px rgba(202, 138, 4, 0.28);
+  background: linear-gradient(135deg, #93c5fd 0%, #3b82f6 50%, #005bff 100%);
+  color: #0c1a3a;
+  border-color: #005bff;
+  box-shadow: 0 8px 22px rgba(0, 91, 255, 0.28);
 }
 .badge.mp-badge--empty {
   background: #f3f4f6;
@@ -1463,10 +1464,11 @@ body.dark-mode .wms-ship-delete-btn:hover {
   background:rgba(236,72,153,.14);
   color:#db2777;
 }
+.wms-sku-badge--ozon,
 .wms-sku-badge--yandex{
-  border-color:rgba(245,158,11,.6);
-  background:rgba(245,158,11,.16);
-  color:#b45309;
+  border-color:rgba(0,91,255,.55);
+  background:rgba(0,91,255,.14);
+  color:#005bff;
 }
 .wms-pick-selected { margin-top: 14px; padding: 12px; border-radius: 14px; border: 1px solid var(--wms-pick-selected-border); background: var(--wms-pick-selected-bg); }
 .wms-pick-selected.hidden { display: none !important; }
@@ -1505,9 +1507,10 @@ body.dark-mode .wms-ship-delete-btn:hover {
   border-color:rgba(236,72,153,.45);
   background:linear-gradient(135deg, rgba(236,72,153,.10), rgba(236,72,153,.04));
 }
+.product-mp-sku-pill--ozon,
 .product-mp-sku-pill--yandex{
-  border-color:rgba(245,158,11,.45);
-  background:linear-gradient(135deg, rgba(245,158,11,.12), rgba(245,158,11,.04));
+  border-color:rgba(0,91,255,.45);
+  background:linear-gradient(135deg, rgba(0,91,255,.12), rgba(0,91,255,.04));
 }
 .product-mp-sku-pill--design{
   border-color:rgba(59,130,246,.45);
