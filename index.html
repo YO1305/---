@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-10-fin-period" />
+  <link rel="stylesheet" href="style.css?v=2026-10-28-ozon" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -30,9 +30,9 @@
           <div class="marketplace-switcher" id="mpSwitcher" role="tablist" aria-label="Маркетплейс">
             <button type="button" class="mp-btn active" data-mp="uzum" role="tab">Uzum</button>
             <button type="button" class="mp-btn" data-mp="wb" role="tab">WB</button>
-            <button type="button" class="mp-btn" data-mp="yandex" role="tab">Yandex</button>
+            <button type="button" class="mp-btn" data-mp="ozon" role="tab">Ozon</button>
           </div>
-          <p class="mp-context-hint" id="mpContextHint">Выберите маркетплейс: для <strong>Uzum</strong> доступны все разделы; для <strong>WB</strong> и <strong>Yandex</strong> часть разделов пока в разработке.</p>
+          <p class="mp-context-hint" id="mpContextHint">Выберите маркетплейс: для <strong>Uzum</strong> доступны все разделы; для <strong>WB</strong> и <strong>Ozon</strong> часть разделов пока в разработке.</p>
         </div>
 
         <nav class="nav-menu">
@@ -530,7 +530,7 @@
           <div id="costTabUzumFlow" class="cost-tab-uzum-flow">
           <div class="card">
             <h2>Калькуляция самого товара</h2>
-            <p class="sub">Основной идентификатор записи — <strong>артикул 1С</strong>. Коды витрин (Uzum, WB, Яндекс) вводите только в блоке «Связки с маркетплейсами» ниже.</p>
+            <p class="sub">Основной идентификатор записи — <strong>артикул 1С</strong>. Коды витрин (Uzum, WB, Ozon) вводите только в блоке «Связки с маркетплейсами» ниже.</p>
             <input type="hidden" id="sku" value="" autocomplete="off" />
             <div class="grid grid-3">
               <div class="field">
@@ -611,7 +611,7 @@
 
           <div class="card">
             <h2>Связки с маркетплейсами</h2>
-            <p class="sub">Один товар в PIM — разные коды на витринах (Uzum, Wildberries, Яндекс).</p>
+            <p class="sub">Один товар в PIM — разные коды на витринах (Uzum, Wildberries, Ozon).</p>
             <div class="grid grid-3">
               <div class="field">
                 <label for="mpSkuUzum">SKU Uzum</label>
@@ -624,8 +624,8 @@
                 <input id="mpWbNmid" class="input" type="text" placeholder="номер nmId" inputmode="numeric" autocomplete="off" />
               </div>
               <div class="field">
-                <label for="mpSkuYandex">SKU Yandex</label>
-                <input id="mpSkuYandex" class="input" type="text" placeholder="артикул на Я.Маркете" autocomplete="off" />
+                <label for="mpSkuOzon">SKU Ozon</label>
+                <input id="mpSkuOzon" class="input" type="text" placeholder="артикул на Ozon" autocomplete="off" />
               </div>
             </div>
           </div>
@@ -946,7 +946,7 @@
           <div class="card">
             <div class="products-toolbar">
               <div class="products-search">
-                <input id="productsLiveSearch" class="input products-live-search-input" type="search" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum, nmId WB, SKU Yandex…" autocomplete="off" />
+                <input id="productsLiveSearch" class="input products-live-search-input" type="search" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum, nmId WB, SKU Ozon…" autocomplete="off" />
               </div>
               <div class="products-meta">
                 <span class="chip" id="productsFilteredCountChip">0 найдено</span>
@@ -1208,7 +1208,7 @@
                 <select id="wmsMarketplace" class="select">
                   <option value="Uzum Market">Uzum Market</option>
                   <option value="Wildberries">Wildberries</option>
-                  <option value="Yandex Market">Yandex Market</option>
+                  <option value="Ozon">Ozon</option>
                 </select>
               </div>
               <div class="field"></div>
@@ -1343,7 +1343,7 @@
           <h3 class="labels-panel-title">Параметры этикетки</h3>
           <div class="field labels-search-field">
             <label for="labelProductSearch">Поиск товара</label>
-            <input id="labelProductSearch" class="input" type="search" placeholder="Артикул 1С, код 1С, SKU Uzum / WB / Yandex…" autocomplete="off" />
+            <input id="labelProductSearch" class="input" type="search" placeholder="Артикул 1С, код 1С, SKU Uzum / WB / Ozon…" autocomplete="off" />
             <div id="labelProductSearchDropdown" class="label-product-dropdown hidden" role="listbox" aria-label="Результаты поиска товаров"></div>
           </div>
           <div id="labelProductPreview" class="label-product-preview hidden" aria-live="polite">
@@ -2152,7 +2152,7 @@
         </div>
         <div class="modal-body">
           <p class="sub" style="margin:0 0 10px;">Шаг 1 — выберите строку в списке (видны артикул 1С, код 1С и SKU выбранного маркетплейса). Шаг 2 — укажите количество и нажмите «Добавить в коробку».</p>
-          <input id="wmsProductPickSearch" class="input" type="text" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum / WB / Yandex…" autocomplete="off" />
+          <input id="wmsProductPickSearch" class="input" type="text" placeholder="Поиск: артикул 1С, код 1С, SKU Uzum / WB / Ozon…" autocomplete="off" />
           <div id="wmsProductPickList" class="wms-pick-list"></div>
           <div class="wms-pick-selected hidden" id="wmsPickSelectedPanel">
             <p class="sub" style="margin:0 0 8px;">Выбрано: <strong id="wmsPickSelectedName">—</strong></p>
@@ -2197,8 +2197,8 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-10-23-wms-bulk"></script>
+  <script src="script.js?v=2026-10-28-ozon"></script>
   <script src="finances.js?v=2026-06-16o"></script>
-  <script src="scaleup-yo.js?v=2026-10-22-stock-xlsx"></script>
+  <script src="scaleup-yo.js?v=2026-10-28-ozon"></script>
 </body>
 </html>

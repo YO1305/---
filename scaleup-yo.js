@@ -542,7 +542,7 @@
       add(p.uzum_barcode, c, { allowWeak: false });
       add(p.barcode, c, { allowWeak: false });
       add(p.wbSku ?? p.wb_nmid ?? p.calc?.mpWbNmid, c);
-      add(p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex, c);
+      add(p.ozonSku ?? p.ozon_sku ?? p.calc?.mpSkuOzon ?? p.yandexSku ?? p.yandex_sku ?? p.calc?.mpSkuYandex, c);
       add(p.code1c, c);
     });
     _yoCostProductCount = withCost;
