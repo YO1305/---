@@ -2518,6 +2518,37 @@ function findLabelByCodeInCategory(categoryKey, code) {
   return hit ? hit[0] : null;
 }
 
+/** Разбор кода 1С: 6 пар по 2 цифры + опциональный суффикс цвета после «-». */
+function decodeCode1cParts(code1c) {
+  let raw = String(code1c || '').trim();
+  let colorSuffix = '';
+  const dash = raw.indexOf('-');
+  if (dash !== -1) {
+    colorSuffix = raw.slice(dash + 1).trim();
+    raw = raw.slice(0, dash);
+  }
+  const digits = raw.replace(/\D/g, '').slice(0, 12);
+  const pairs = [];
+  for (let i = 0; i < 6; i += 1) {
+    const pair = digits.length >= (i + 1) * 2 ? digits.slice(i * 2, i * 2 + 2) : '';
+    const key = GENERATOR_1C_KEYS[i];
+    pairs.push({
+      key,
+      label: GENERATOR_1C_LABELS[i],
+      code: pair,
+      value: pair ? (findLabelByCodeInCategory(key, pair) || '') : ''
+    });
+  }
+  const byKey = {};
+  pairs.forEach((p) => { byKey[p.key] = p; });
+  return { raw: String(code1c || '').trim(), digits, colorSuffix, pairs, byKey, ok: digits.length >= 12 };
+}
+
+function fabricUnitExportLabel(unit) {
+  const u = String(unit || 'm').trim() || 'm';
+  return { m: 'метры', kg: 'килограммы', unit: 'усл. ед.' }[u] || u;
+}
+
 function initCodeGenerator1C() {
   GENERATOR_SELECT_IDS.forEach((id, i) => fillGeneratorSelectFromCodeBase(id, GENERATOR_1C_KEYS[i]));
 
@@ -2541,30 +2572,21 @@ function initCodeGenerator1C() {
     const ul = document.getElementById('decodeResultList');
     if (!ul) return;
     ul.innerHTML = '';
-    let raw = String(document.getElementById('decodeInput')?.value || '').trim();
-    let colorSuffix = '';
-    const dash = raw.indexOf('-');
-    if (dash !== -1) {
-      colorSuffix = raw.slice(dash + 1).trim();
-      raw = raw.slice(0, dash);
-    }
-    const digits = raw.replace(/\D/g, '').slice(0, 12);
-    if (digits.length < 12) {
+    const parsed = decodeCode1cParts(document.getElementById('decodeInput')?.value);
+    if (!parsed.ok) {
       const li = document.createElement('li');
-      li.textContent = `Введите 12 цифр кода (сейчас ${digits.length}).`;
+      li.textContent = `Введите 12 цифр кода (сейчас ${parsed.digits.length}).`;
       ul.appendChild(li);
       return;
     }
-    for (let i = 0; i < 6; i += 1) {
-      const pair = digits.slice(i * 2, i * 2 + 2);
-      const name = findLabelByCodeInCategory(GENERATOR_1C_KEYS[i], pair);
+    parsed.pairs.forEach((part) => {
       const li = document.createElement('li');
-      li.textContent = `${GENERATOR_1C_LABELS[i]}: ${name || `— (код ${pair})`}`;
+      li.textContent = `${part.label}: ${part.value || `— (код ${part.code})`}`;
       ul.appendChild(li);
-    }
-    if (colorSuffix) {
+    });
+    if (parsed.colorSuffix) {
       const li = document.createElement('li');
-      li.textContent = `Цвет: ${colorSuffix}`;
+      li.textContent = `Цвет: ${parsed.colorSuffix}`;
       ul.appendChild(li);
     }
   });
@@ -5237,6 +5259,201 @@ async function exportProductsDbToExcelDirect() {
   const d = new Date();
   const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   XLSX.writeFile(wb, `products_export_${stamp}.xlsx`);
+}
+
+function aoaToExportSheet(aoa, colWidths) {
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  if (colWidths && colWidths.length) ws['!cols'] = colWidths.map((wch) => ({ wch }));
+  return ws;
+}
+
+function buildCode1cRuleSheets() {
+  const howToRead = [
+    ['Детальный экспорт базы YO — как читать этот файл'],
+    [],
+    ['Назначение'],
+    ['Отчёт для разбора ткани и характеристик изделия по коду 1С. Лист «Товары» — расход ткани на каждое изделие. Остальные листы — справочники и правила сборки кода.'],
+    [],
+    ['Лист «Товары»'],
+    ['Колонка', 'Смысл'],
+    ['Артикул 1С', 'Название/артикул позиции в базе YO'],
+    ['Код 1С', 'Характеристика: 12 цифр (6 пар) и опционально «-цвет»'],
+    ['Расход ткани', 'Сколько ткани заложено в калькуляцию на 1 изделие'],
+    ['Ед. расхода ткани', 'Обычно метры. Если кг или усл. ед. — не пересчитывать в метры'],
+    ['Цена ткани, сум', 'Цена за единицу расхода'],
+    ['Сумма ткани, сум', 'Цена × расход'],
+    ['Вид ткани / Отделка / Плотность / Ширина ткани, см', 'Расшифровка пар кода 1С, не габариты упаковки'],
+    ['Длина/Ширина/Высота мм', 'ВГХ готового изделия для склада, не ширина рулона'],
+    [],
+    ['Листы «Коды …»'],
+    ['Каждый лист — одна пара кода: 2 цифры → значение. Актуальный справочник из генератора 1С в системе.']
+  ];
+
+  const rules = [
+    ['Правила прописывания кода 1С'],
+    [],
+    ['Формат'],
+    ['Код = 6 пар по 2 цифры подряд (ровно 12 цифр). После дефиса можно добавить цвет текстом, например 010401030812-синий.'],
+    [],
+    ['Порядок пар слева направо'],
+    ['№ пары', 'Символы', 'Поле', 'Лист справочника'],
+    [1, '1–2', 'Вид продукта', 'Коды вид продукта'],
+    [2, '3–4', 'Размер', 'Коды размер'],
+    [3, '5–6', 'Вид ткани', 'Коды вид ткани'],
+    [4, '7–8', 'Вид отделки', 'Коды отделка'],
+    [5, '9–10', 'Плотность (г/м²)', 'Коды плотность'],
+    [6, '11–12', 'Ширина ткани (см)', 'Коды ширина'],
+    [],
+    ['Сборка'],
+    ['Для каждой характеристики взять 2-значный код из соответствующего листа и склеить без пробелов. Неизвестная пара в расшифровке товара остаётся пустой.'],
+    [],
+    ['Пример'],
+    ['КПБ + Евро + Бязь + Отбелка + 125 + 220 → 01 + 04 + 01 + 01 + 05 + 07 → 010401010507']
+  ];
+
+  const sheets = [
+    { name: 'Как читать', aoa: howToRead, cols: [36, 72] },
+    { name: 'Правила кода 1С', aoa: rules, cols: [16, 16, 28, 24] }
+  ];
+
+  const dictMeta = [
+    { key: 'productType', name: 'Коды вид продукта', unit: '' },
+    { key: 'size', name: 'Коды размер', unit: '' },
+    { key: 'fabricType', name: 'Коды вид ткани', unit: '' },
+    { key: 'finishType', name: 'Коды отделка', unit: '' },
+    { key: 'density', name: 'Коды плотность', unit: 'г/м²' },
+    { key: 'width', name: 'Коды ширина', unit: 'см' }
+  ];
+  dictMeta.forEach((meta, idx) => {
+    const map = codeBase1C[meta.key] || {};
+    const aoa = [
+      [meta.name],
+      [`Пара ${idx + 1} в коде 1С (символы ${idx * 2 + 1}–${idx * 2 + 2})`],
+      [],
+      ['Код (2 цифры)', 'Значение', 'Единица']
+    ];
+    Object.entries(map)
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ru'))
+      .forEach(([label, code]) => {
+        aoa.push([String(code), label, meta.unit]);
+      });
+    sheets.push({ name: meta.name, aoa, cols: [16, 36, 12] });
+  });
+  return sheets;
+}
+
+function buildDetailedProductsSheetAoa(products) {
+  const header = [
+    'Артикул 1С',
+    'Код 1С',
+    'Цвет (суффикс кода)',
+    'Вид продукта',
+    'Размер',
+    'Вид ткани',
+    'Вид отделки',
+    'Плотность, г/м²',
+    'Ширина ткани, см',
+    'Код пары вид продукта',
+    'Код пары размер',
+    'Код пары вид ткани',
+    'Код пары отделка',
+    'Код пары плотность',
+    'Код пары ширина',
+    'Расход ткани',
+    'Ед. расхода ткани',
+    'Цена ткани, сум',
+    'Сумма ткани, сум',
+    'Дизайн',
+    'Категория',
+    'SKU Uzum',
+    'Штрихкод Uzum',
+    'SKU WB',
+    'SKU Ozon',
+    'Себестоимость, сум',
+    'Остаток шт',
+    'Длина мм',
+    'Ширина мм',
+    'Высота мм'
+  ];
+  const aoa = [header];
+  (products || []).forEach((p) => {
+    const article1c = String(p.article1c ?? '').trim();
+    const code1c = String(p.code1c ?? '').trim();
+    const parsed = decodeCode1cParts(code1c);
+    const c = p.calc || {};
+    const fabricConsumption = n(c.fabricConsumption);
+    const fabricPrice = n(c.fabricPrice);
+    const fabricUnit = fabricUnitExportLabel(c.fabricUnit);
+    const fabricSum = Math.round(fabricPrice * fabricConsumption * 100) / 100;
+    const dims = extractDimsMm(p);
+    const oz = String(
+      p.ozonSku ?? p.ozon_sku ?? c.mpSkuOzon ??
+      p.yandexSku ?? p.yandex_sku ?? c.mpSkuYandex ??
+      ''
+    ).trim();
+    aoa.push([
+      article1c,
+      code1c,
+      parsed.colorSuffix,
+      parsed.byKey.productType?.value || '',
+      parsed.byKey.size?.value || '',
+      parsed.byKey.fabricType?.value || '',
+      parsed.byKey.finishType?.value || '',
+      parsed.byKey.density?.value || '',
+      parsed.byKey.width?.value || '',
+      parsed.byKey.productType?.code || '',
+      parsed.byKey.size?.code || '',
+      parsed.byKey.fabricType?.code || '',
+      parsed.byKey.finishType?.code || '',
+      parsed.byKey.density?.code || '',
+      parsed.byKey.width?.code || '',
+      fabricConsumption,
+      fabricUnit,
+      fabricPrice,
+      fabricSum,
+      String(p.design ?? c.productDesign ?? '').trim(),
+      String(p.category ?? '').trim() || extractProductCategory(p),
+      String(p.uzumSku ?? p.uzum_sku ?? c.mpSkuUzum ?? '').trim(),
+      normalizeUzumBarcode(p.uzum_barcode),
+      String(p.wbSku ?? p.wb_nmid ?? p.wb_nm_id ?? p.nmid ?? c.mpWbNmid ?? '').trim(),
+      oz,
+      Math.round(productCostPriceUzs(p) * 100) / 100,
+      intOrZero(p.stockQty),
+      dims.length,
+      dims.width,
+      dims.height
+    ]);
+  });
+  return aoa;
+}
+
+function buildDetailedProductsExportWorkbook(products) {
+  const wb = XLSX.utils.book_new();
+  const productAoa = buildDetailedProductsSheetAoa(products);
+  const productCols = productAoa[0].map((h) => ({
+    wch: Math.min(28, Math.max(12, String(h).length + 2))
+  }));
+  XLSX.utils.book_append_sheet(wb, aoaToExportSheet(productAoa, productCols.map((c) => c.wch)), 'Товары');
+  buildCode1cRuleSheets().forEach((sheet) => {
+    XLSX.utils.book_append_sheet(wb, aoaToExportSheet(sheet.aoa, sheet.cols), sheet.name);
+  });
+  return wb;
+}
+
+async function exportProductsDbDetailedToExcel() {
+  ensureXlsxReady();
+  const productsAll = await fetchAllProductsFromFirebase();
+  const filters = getProductsDbFiltersFromUi();
+  const products = applyProductsDbFilters(productsAll, filters);
+  products.sort((a, b) => {
+    const aa = String(a.article1c || '').localeCompare(String(b.article1c || ''), 'ru');
+    if (aa !== 0) return aa;
+    return String(a.code1c || '').localeCompare(String(b.code1c || ''), 'ru');
+  });
+  const wb = buildDetailedProductsExportWorkbook(products);
+  const d = new Date();
+  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  XLSX.writeFile(wb, `products_detailed_${stamp}.xlsx`);
 }
 
 async function exportProductsDeficitToExcel() {
@@ -8132,6 +8349,13 @@ document.getElementById('productsFiltersResetBtn')?.addEventListener('click', ()
 document.getElementById('productsExportXlsxBtn')?.addEventListener('click', async () => {
   try {
     await exportProductsDbToExcelDirect();
+  } catch (e) {
+    alert(e?.message || String(e));
+  }
+});
+document.getElementById('productsExportDetailedBtn')?.addEventListener('click', async () => {
+  try {
+    await exportProductsDbDetailedToExcel();
   } catch (e) {
     alert(e?.message || String(e));
   }
