@@ -4880,6 +4880,31 @@ body.dark-mode .sc-insight.good  { background: #0f2419; }
 .ar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ar-table td { vertical-align: top; }
 .ar-settings-global { margin: 16px; }
+.ar-pending-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.ar-pending-head h3 { margin: 0; }
+.ar-review-card {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  background: #fff;
+}
+.ar-review-meta { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.ar-review-label { font-size: 12px; font-weight: 700; color: var(--muted); margin: 8px 0 4px; }
+.ar-review-body { white-space: pre-wrap; line-height: 1.4; }
+.ar-reply-view { white-space: pre-wrap; line-height: 1.45; background: #f8fafc; border-radius: 8px; padding: 10px 12px; }
+.ar-review-card.is-editing .ar-reply-view { display: none; }
+.ar-review-card .ar-reply-edit { display: none; width: 100%; min-height: 120px; }
+.ar-review-card.is-editing .ar-reply-edit { display: block; }
+.ar-review-card.is-editing [data-ar-edit] { display: none; }
+.ar-review-card:not(.is-editing) [data-ar-save],
+.ar-review-card:not(.is-editing) [data-ar-cancel] { display: none; }
 @media (max-width: 900px) {
   .ar-tpl-grid { grid-template-columns: 1fr; }
 }

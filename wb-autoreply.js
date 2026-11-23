@@ -51,7 +51,7 @@
   let _busy = false;
   let _cache = [];
   let _unanswered = null;
-  let _tab = 'answered';
+  let _tab = 'pending';
   let _filterRating = '';
   let _filterDateFrom = '';
   let _filterDateTo = '';
@@ -93,6 +93,38 @@
 
   function isBlankReview(fb) {
     return !String(fb.text || '').trim() && !String(fb.pros || '').trim() && !String(fb.cons || '').trim();
+  }
+
+  function isPendingRow(r) {
+    if (!r) return false;
+    if (r.status === 'pending') return true;
+    if (r.sentToWb === false && r.status === 'answered') return true;
+    return r.status === 'answered' && String(r.error || '') === 'test';
+  }
+
+  function isSentRow(r) {
+    return r && r.status === 'answered' && !isPendingRow(r);
+  }
+
+  function readFiltersFromDom() {
+    _filterRating = String(document.getElementById('arFilterRating')?.value || '');
+    _filterDateFrom = String(document.getElementById('arFilterFrom')?.value || '');
+    _filterDateTo = String(document.getElementById('arFilterTo')?.value || '');
+  }
+
+  function dateToUnix(dateStr, endOfDay) {
+    if (!dateStr) return '';
+    const iso = endOfDay ? `${dateStr}T23:59:59` : `${dateStr}T00:00:00`;
+    const ms = Date.parse(iso);
+    return Number.isFinite(ms) ? String(Math.floor(ms / 1000)) : '';
+  }
+
+  function matchesFilters(fb, rating, from, to) {
+    if (rating && Number(fb.rating) !== Number(rating)) return false;
+    const d = String(fb.createdDate || fb.answeredAt || '').slice(0, 10);
+    if (from && d && d < from) return false;
+    if (to && d && d > to) return false;
+    return true;
   }
 
   function detectLang(text) {
@@ -397,8 +429,11 @@
 
   async function processOne(fb, testMode) {
     const stored = await getStored(fb.id);
-    if (stored?.status === 'answered' || fb.answered) {
+    if (fb.answered || isSentRow(stored)) {
       return { status: 'skipped', reason: 'уже отвечен' };
+    }
+    if (isPendingRow(stored)) {
+      return { status: 'skipped', reason: 'уже на проверке' };
     }
 
     const nowIso = new Date().toISOString();
@@ -427,13 +462,13 @@
         lang: 'ru',
         sentiment: fb.rating >= 4 ? 'positive' : fb.rating === 3 ? 'neutral' : 'negative',
         complaintTypes: [],
-        status: 'answered',
+        status: testMode ? 'pending' : 'answered',
         reply,
-        answeredAt: nowIso,
-        error: testMode ? 'test' : '',
+        answeredAt: testMode ? '' : nowIso,
+        error: '',
+        sentToWb: !testMode,
         source: 'template'
       });
-      if (testMode) row.status = 'answered';
       await upsertFeedback(row);
       return row;
     }
@@ -499,14 +534,49 @@
       lang,
       sentiment: ai.sentiment || 'positive',
       complaintTypes: [],
-      status: 'answered',
+      status: testMode ? 'pending' : 'answered',
       reply,
-      answeredAt: nowIso,
-      error: testMode ? 'test' : '',
+      answeredAt: testMode ? '' : nowIso,
+      error: '',
+      sentToWb: !testMode,
       source: 'ai'
     });
     await upsertFeedback(row);
     return row;
+  }
+
+  async function fetchUnansweredForRun() {
+    readFiltersFromDom();
+    const out = [];
+    let skip = 0;
+    const take = 100;
+    const maxScan = 1000;
+    let scanned = 0;
+    while (out.length < MAX_BATCH && skip < maxScan) {
+      const query = {
+        isAnswered: 'false',
+        take: String(take),
+        skip: String(skip),
+        order: 'dateAsc'
+      };
+      const fromUnix = dateToUnix(_filterDateFrom, false);
+      const toUnix = dateToUnix(_filterDateTo, true);
+      if (fromUnix) query.dateFrom = fromUnix;
+      if (toUnix) query.dateTo = toUnix;
+      const listJson = await wbGet('api/v1/feedbacks', query);
+      const rawList = listJson?.data?.feedbacks || listJson?.data || listJson?.feedbacks || [];
+      const chunk = (Array.isArray(rawList) ? rawList : []).map(normalizeFeedback).filter((x) => x.id);
+      scanned += chunk.length;
+      if (!chunk.length) break;
+      chunk.forEach((fb) => {
+        if (out.length >= MAX_BATCH) return;
+        if (matchesFilters(fb, _filterRating, _filterDateFrom, _filterDateTo)) out.push(fb);
+      });
+      if (chunk.length < take) break;
+      skip += take;
+      await sleep(400);
+    }
+    return { list: out, scanned };
   }
 
   async function runBatch() {
@@ -522,22 +592,18 @@
     try {
       await loadSettings();
       await detectFeedbackStore();
-      const listJson = await wbGet('api/v1/feedbacks', {
-        isAnswered: 'false',
-        take: String(MAX_BATCH),
-        skip: '0',
-        order: 'dateAsc'
-      });
-      const rawList = listJson?.data?.feedbacks || listJson?.data || listJson?.feedbacks || [];
-      const list = (Array.isArray(rawList) ? rawList : []).map(normalizeFeedback).filter((x) => x.id);
+      readFiltersFromDom();
+      const fetched = await fetchUnansweredForRun();
+      const list = fetched.list;
       summary.loaded = list.length;
+      summary.scanned = fetched.scanned;
       if (list.length >= MAX_BATCH) summary.more = true;
 
       for (let i = 0; i < list.length; i += 1) {
         setProgress(i + 1, list.length, _testMode ? 'тестовый режим — в WB не отправляем' : 'отправка в WB');
         try {
           const result = await processOne(list[i], _testMode);
-          if (result.status === 'answered') summary.answered += 1;
+          if (result.status === 'answered' || result.status === 'pending') summary.answered += 1;
           else if (result.status === 'manual') summary.manual += 1;
           else if (result.status === 'error') summary.errors += 1;
           else summary.skipped += 1;
@@ -570,12 +636,16 @@
         await refreshUnansweredCount();
       } catch (_) { /* ignore count errors after run */ }
       await loadFeedbacksFromDb();
+      if (_testMode) switchTab('pending');
       renderLists();
       setCountLabel();
-      const extra = summary.more ? ' Нажмите ещё раз — есть следующие 100.' : '';
-      const mode = _testMode ? ' Тестовый режим: в WB не отправляли.' : '';
+      const extra = summary.more ? ' Нажмите ещё раз — есть следующие 100 подходящих.' : '';
+      const starsHint = _filterRating ? ` Фильтр: ${_filterRating}★ (просмотрено ${summary.scanned || list.length} с WB).` : '';
+      const mode = _testMode
+        ? ' Тестовый режим: ответы на вкладке «На проверке», в WB не отправляли.'
+        : '';
       alert(
-        `Загружено: ${summary.loaded}. Отвечено: ${summary.answered}. Ручной ответ: ${summary.manual}. Ошибок: ${summary.errors}. Пропущено: ${summary.skipped}.${mode}${extra}`
+        `По фильтру: ${summary.loaded}. Черновиков: ${summary.answered}. Ручной ответ: ${summary.manual}. Ошибок: ${summary.errors}. Пропущено: ${summary.skipped}.${starsHint}${mode}${extra}`
       );
     } catch (e) {
       alert(friendlyError(e));
@@ -587,13 +657,8 @@
   }
 
   function applyFilters(rows) {
-    return rows.filter((r) => {
-      if (_filterRating && String(r.rating) !== String(_filterRating)) return false;
-      const d = String(r.createdDate || r.answeredAt || '').slice(0, 10);
-      if (_filterDateFrom && d && d < _filterDateFrom) return false;
-      if (_filterDateTo && d && d > _filterDateTo) return false;
-      return true;
-    });
+    readFiltersFromDom();
+    return rows.filter((r) => matchesFilters(r, _filterRating, _filterDateFrom, _filterDateTo));
   }
 
   function stars(n) {
@@ -644,17 +709,51 @@
     }).join('')}</tbody></table></div>`;
   }
 
+  function renderPendingList(host, rows) {
+    if (!host) return;
+    if (!rows.length) {
+      host.innerHTML = '<p class="muted">Пока нет черновиков. Нажмите «Ответить на новые отзывы» в тестовом режиме — они появятся здесь.</p>';
+      return;
+    }
+    host.innerHTML = rows.map((r) => {
+      const date = esc(String(r.createdDate || '').replace('T', ' ').slice(0, 16));
+      const name = esc(r.productName || r.nmId || '—');
+      const user = esc(r.userName || '');
+      const review = [r.text, r.pros && `+ ${r.pros}`, r.cons && `− ${r.cons}`].filter(Boolean).join('\n') || 'только оценка';
+      return `<article class="ar-review-card" data-ar-card="${esc(r.id)}">
+        <div class="ar-review-meta">${stars(r.rating)} · ${date}${user ? ` · ${user}` : ''} · ${name}</div>
+        <div class="ar-review-label">Отзыв</div>
+        <div class="ar-review-body">${esc(review)}</div>
+        <div class="ar-review-label">Наш ответ</div>
+        <div class="ar-reply-view">${esc(r.reply || '')}</div>
+        <textarea class="input ar-textarea ar-reply-edit">${esc(r.reply || '')}</textarea>
+        <div class="ar-actions" style="margin-top:10px;">
+          <button type="button" class="btn-secondary" data-ar-edit="${esc(r.id)}">Изменить</button>
+          <button type="button" class="btn-secondary" data-ar-save="${esc(r.id)}">Сохранить</button>
+          <button type="button" class="btn-secondary" data-ar-cancel="${esc(r.id)}">Отмена</button>
+          <button type="button" class="btn-primary" data-ar-confirm="${esc(r.id)}">Подтвердить</button>
+        </div>
+      </article>`;
+    }).join('');
+  }
+
   function renderLists() {
-    const answered = applyFilters(_cache.filter((r) => r.status === 'answered'));
+    const pending = applyFilters(_cache.filter(isPendingRow));
+    const answered = applyFilters(_cache.filter(isSentRow));
     const manual = applyFilters(_cache.filter((r) => r.status === 'manual'));
     const errors = applyFilters(_cache.filter((r) => r.status === 'error'));
+    renderPendingList(document.getElementById('arListPending'), pending);
     renderTable(document.getElementById('arListAnswered'), answered, 'answered');
     renderTable(document.getElementById('arListManual'), manual, 'manual');
     renderTable(document.getElementById('arListErrors'), errors, 'error');
+    const badgePend = document.getElementById('arBadgePending');
     const badgeMan = document.getElementById('arBadgeManual');
     const badgeErr = document.getElementById('arBadgeError');
+    if (badgePend) badgePend.textContent = String(pending.length);
     if (badgeMan) badgeMan.textContent = String(manual.length);
     if (badgeErr) badgeErr.textContent = String(errors.length);
+    const allBtn = document.getElementById('arConfirmAllBtn');
+    if (allBtn) allBtn.textContent = pending.length ? `Подтвердить все (${pending.length})` : 'Подтвердить все';
   }
 
   function fillSettingsForm() {
@@ -700,6 +799,7 @@
     document.querySelectorAll('[data-ar-tab]').forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-ar-tab') === name);
     });
+    document.getElementById('arPanePending')?.classList.toggle('hidden', name !== 'pending');
     document.getElementById('arPaneAnswered')?.classList.toggle('hidden', name !== 'answered');
     document.getElementById('arPaneManual')?.classList.toggle('hidden', name !== 'manual');
     document.getElementById('arPaneErrors')?.classList.toggle('hidden', name !== 'error');
@@ -707,8 +807,107 @@
     if (name === 'settings') fillSettingsForm();
   }
 
+  function cardById(id) {
+    const safe = String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return document.querySelector(`[data-ar-card="${safe}"]`);
+  }
+
+  async function savePendingReply(id) {
+    const card = cardById(id);
+    const text = String(card?.querySelector('.ar-reply-edit')?.value || '').trim();
+    const bad = validateReply(text);
+    if (bad) {
+      alert(bad);
+      return null;
+    }
+    await upsertFeedback({ id, reply: text, status: 'pending', sentToWb: false, error: '' });
+    const row = _cache.find((r) => r.id === id);
+    if (row) row.reply = text;
+    if (card) {
+      const view = card.querySelector('.ar-reply-view');
+      if (view) view.textContent = text;
+      card.classList.remove('is-editing');
+    }
+    return text;
+  }
+
+  async function confirmOne(id, { silent } = {}) {
+    if (_busy && !silent) return;
+    const row = _cache.find((r) => r.id === id);
+    if (!row) return;
+    const card = cardById(id);
+    let reply = String(card?.querySelector('.ar-reply-edit')?.value || row.reply || '').trim();
+    const bad = validateReply(reply);
+    if (bad) throw new Error(bad);
+    await wbAnswerWithRetry(id, reply);
+    await upsertFeedback({
+      id,
+      reply,
+      status: 'answered',
+      sentToWb: true,
+      error: '',
+      answeredAt: new Date().toISOString()
+    });
+    return true;
+  }
+
+  async function confirmAllPending() {
+    if (_busy) return;
+    if (!getSecret()) {
+      alert('Сначала укажите пароль автоответа во вкладке «Настройки» раздела.');
+      return;
+    }
+    const list = applyFilters(_cache.filter(isPendingRow));
+    if (!list.length) {
+      alert('Нет черновиков для отправки.');
+      return;
+    }
+    if (!window.confirm(`Отправить ${list.length} ответов в Wildberries?`)) return;
+    _busy = true;
+    const btn = document.getElementById('arConfirmAllBtn');
+    if (btn) btn.disabled = true;
+    let ok = 0;
+    let fail = 0;
+    try {
+      for (let i = 0; i < list.length; i += 1) {
+        setProgress(i + 1, list.length, 'отправка в WB');
+        try {
+          await confirmOne(list[i].id, { silent: true });
+          ok += 1;
+        } catch (e) {
+          fail += 1;
+          await upsertFeedback({
+            id: list[i].id,
+            status: 'error',
+            error: friendlyError(e),
+            sentToWb: false
+          });
+        }
+        await sleep(WB_GAP_MS);
+      }
+      await loadFeedbacksFromDb();
+      renderLists();
+      try {
+        await refreshUnansweredCount();
+        setCountLabel();
+      } catch (_) { /* ignore */ }
+      alert(`Отправлено в WB: ${ok}. Ошибок: ${fail}.`);
+      if (ok && !fail) switchTab('answered');
+    } finally {
+      _busy = false;
+      if (btn) btn.disabled = false;
+      setProgress('', 0, '');
+    }
+  }
+
   async function markAnswered(id) {
-    await upsertFeedback({ id, status: 'answered', answeredAt: new Date().toISOString(), error: '' });
+    await upsertFeedback({
+      id,
+      status: 'answered',
+      sentToWb: true,
+      answeredAt: new Date().toISOString(),
+      error: ''
+    });
     await loadFeedbacksFromDb();
     renderLists();
   }
@@ -738,6 +937,7 @@
       }
     });
     document.getElementById('arRunBtn')?.addEventListener('click', () => void runBatch());
+    document.getElementById('arConfirmAllBtn')?.addEventListener('click', () => void confirmAllPending());
     document.querySelectorAll('[data-ar-tab]').forEach((btn) => {
       btn.addEventListener('click', () => switchTab(btn.getAttribute('data-ar-tab')));
     });
@@ -767,6 +967,33 @@
     document.getElementById('arListErrors')?.addEventListener('click', (e) => {
       const id = e.target?.getAttribute?.('data-ar-retry');
       if (id) void retryOne(id);
+    });
+    document.getElementById('arListPending')?.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t?.getAttribute) return;
+      const editId = t.getAttribute('data-ar-edit');
+      const saveId = t.getAttribute('data-ar-save');
+      const cancelId = t.getAttribute('data-ar-cancel');
+      const confirmId = t.getAttribute('data-ar-confirm');
+      if (editId) cardById(editId)?.classList.add('is-editing');
+      if (cancelId) cardById(cancelId)?.classList.remove('is-editing');
+      if (saveId) void savePendingReply(saveId);
+      if (confirmId) {
+        if (_busy) return;
+        if (!window.confirm('Отправить этот ответ в Wildberries?')) return;
+        _busy = true;
+        void confirmOne(confirmId)
+          .then(async () => {
+            await loadFeedbacksFromDb();
+            renderLists();
+            try {
+              await refreshUnansweredCount();
+              setCountLabel();
+            } catch (_) { /* ignore */ }
+          })
+          .catch((err) => alert(friendlyError(err)))
+          .finally(() => { _busy = false; });
+      }
     });
   }
 
@@ -809,6 +1036,9 @@
     detectLang,
     validateReply,
     isBlankReview,
+    isPendingRow,
+    isSentRow,
+    matchesFilters,
     pickTemplate,
     DEFAULT_STOP_WORDS,
     DEFAULT_TEMPLATES
