@@ -21,6 +21,9 @@ service cloud.firestore {
     match /system/{docId} {
       allow read, write: if true;
     }
+    match /wb_feedbacks/{docId} {
+      allow read, write: if true;
+    }
 
     // Раздел «Финансы» (отгрузки, выплаты, баланс ЛК, остатки)
     match /finance_payments/{docId} {

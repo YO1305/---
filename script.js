@@ -2472,6 +2472,9 @@ function openPage(pageId) {
       window.ScaleUpYO.renderSettingsPage();
     }
   }
+  if (pageId === 'autoreply-tab' && window.WbAutoreply && typeof window.WbAutoreply.onShow === 'function') {
+    window.WbAutoreply.onShow();
+  }
   renderEverything();
 }
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" /> 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Калькулятор юнит-экономики Uzum + себестоимость</title>
-  <link rel="stylesheet" href="style.css?v=2026-08-10-fin-period" />
+  <link rel="stylesheet" href="style.css?v=2026-11-23-autoreply" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
@@ -83,6 +83,10 @@
           <button class="nav-btn" data-page="analytics-scaleup-tab">
             <span class="nav-icon">📊</span>
             <span>Аналитика</span>
+          </button>
+          <button class="nav-btn" data-page="autoreply-tab">
+            <span class="nav-icon">💬</span>
+            <span>Автоответ</span>
           </button>
           <button class="nav-btn" data-page="settings-tab">
             <span class="nav-icon">⚙️</span>
@@ -2131,6 +2135,112 @@
       </div>
     </section>
 
+    <section class="page-panel" id="autoreply-tab" aria-label="Автоответ">
+      <div class="layout">
+        <div class="stack">
+          <div class="card">
+            <h2>Автоответ на отзывы Wildberries</h2>
+            <p class="sub">Загружает неотвеченные отзывы WB, отвечает шаблоном или через Gemini и сразу отправляет ответ. Жалобы уходят во вкладку «Ручной ответ». Модерации перед отправкой нет.</p>
+            <div class="ar-toolbar">
+              <strong id="arUnansweredCount">Неотвеченных на WB: —</strong>
+              <button type="button" id="arRefreshCountBtn" class="btn-secondary">Обновить счётчик</button>
+              <button type="button" id="arRunBtn" class="btn-primary">Ответить на новые отзывы</button>
+              <span id="arProgress" class="muted"></span>
+            </div>
+            <div class="ar-filters">
+              <label>Оценка
+                <select id="arFilterRating" class="select">
+                  <option value="">все</option>
+                  <option value="5">5</option>
+                  <option value="4">4</option>
+                  <option value="3">3</option>
+                  <option value="2">2</option>
+                  <option value="1">1</option>
+                </select>
+              </label>
+              <label>С даты <input id="arFilterFrom" class="input" type="date" /></label>
+              <label>По дату <input id="arFilterTo" class="input" type="date" /></label>
+            </div>
+            <div class="ar-tabs" role="tablist">
+              <button type="button" class="btn-secondary active" data-ar-tab="answered">Отвечено</button>
+              <button type="button" class="btn-secondary" data-ar-tab="manual">Ручной ответ <span id="arBadgeManual" class="ar-badge">0</span></button>
+              <button type="button" class="btn-secondary" data-ar-tab="error">Ошибки <span id="arBadgeError" class="ar-badge">0</span></button>
+              <button type="button" class="btn-secondary" data-ar-tab="settings">Настройки</button>
+            </div>
+          </div>
+
+          <div id="arPaneAnswered" class="card">
+            <h3>Отвечено</h3>
+            <div id="arListAnswered"></div>
+          </div>
+          <div id="arPaneManual" class="card hidden">
+            <h3>Ручной ответ</h3>
+            <p class="sub">Система не стала отвечать: жалоба по стоп-словам или по оценке Gemini.</p>
+            <div id="arListManual"></div>
+          </div>
+          <div id="arPaneErrors" class="card hidden">
+            <h3>Ошибки</h3>
+            <div id="arListErrors"></div>
+          </div>
+          <div id="arPaneSettings" class="card hidden">
+            <h3>Настройки автоответа</h3>
+            <div class="field">
+              <label for="arSecretInput">Пароль автоответа (должен совпадать с APP_SECRET на сервере)</label>
+              <input id="arSecretInput" class="input" type="password" autocomplete="off" />
+            </div>
+            <label class="ar-check">
+              <input id="arTestMode" type="checkbox" checked />
+              Тестовый режим — генерировать ответы, но не отправлять в WB
+            </label>
+            <p class="hint">Сначала прогоните 30–50 отзывов в тестовом режиме, затем снимите галочку.</p>
+            <div class="field">
+              <label for="arStopWords">Стоп-слова (по одному на строку, поиск по вхождению)</label>
+              <textarea id="arStopWords" class="input ar-textarea" rows="8"></textarea>
+            </div>
+            <h4>Шаблоны для отзывов без текста</h4>
+            <p class="sub">По 3 варианта на оценку; выбирается случайно. 1★ и 2★ используют блок «1–2».</p>
+            <div class="ar-tpl-grid">
+              <div>
+                <label>5★ вариант 1</label>
+                <textarea id="arTpl_5_0" class="input ar-textarea" rows="4"></textarea>
+                <label>5★ вариант 2</label>
+                <textarea id="arTpl_5_1" class="input ar-textarea" rows="4"></textarea>
+                <label>5★ вариант 3</label>
+                <textarea id="arTpl_5_2" class="input ar-textarea" rows="4"></textarea>
+              </div>
+              <div>
+                <label>4★ вариант 1</label>
+                <textarea id="arTpl_4_0" class="input ar-textarea" rows="4"></textarea>
+                <label>4★ вариант 2</label>
+                <textarea id="arTpl_4_1" class="input ar-textarea" rows="4"></textarea>
+                <label>4★ вариант 3</label>
+                <textarea id="arTpl_4_2" class="input ar-textarea" rows="4"></textarea>
+              </div>
+              <div>
+                <label>3★ вариант 1</label>
+                <textarea id="arTpl_3_0" class="input ar-textarea" rows="4"></textarea>
+                <label>3★ вариант 2</label>
+                <textarea id="arTpl_3_1" class="input ar-textarea" rows="4"></textarea>
+                <label>3★ вариант 3</label>
+                <textarea id="arTpl_3_2" class="input ar-textarea" rows="4"></textarea>
+              </div>
+              <div>
+                <label>1–2★ вариант 1</label>
+                <textarea id="arTpl_1_0" class="input ar-textarea" rows="4"></textarea>
+                <label>1–2★ вариант 2</label>
+                <textarea id="arTpl_1_1" class="input ar-textarea" rows="4"></textarea>
+                <label>1–2★ вариант 3</label>
+                <textarea id="arTpl_1_2" class="input ar-textarea" rows="4"></textarea>
+              </div>
+            </div>
+            <div class="toolbar" style="margin-top:14px;">
+              <button type="button" id="arSaveSettingsBtn" class="btn-primary">Сохранить настройки</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="page-panel" id="settings-tab" aria-label="Настройки">
       <div class="sc-settings-shell">
         <div class="sc-settings-top">
@@ -2140,6 +2250,15 @@
         </div>
         <div id="settingsTabContent" class="sc-settings-page">
           <div class="sc-loader"><div class="sc-spinner"></div>Загрузка настроек…</div>
+        </div>
+        <div class="card ar-settings-global">
+          <h3>Пароль автоответа</h3>
+          <p class="sub">Нужен, чтобы вызывать WB и Gemini с сервера. Совпадает с переменной APP_SECRET в Vercel. Хранится только в этом браузере.</p>
+          <div class="field">
+            <label for="arSecretInputSettings">Пароль автоответа</label>
+            <input id="arSecretInputSettings" class="input" type="password" autocomplete="off" />
+          </div>
+          <button type="button" id="arSecretSaveSettings" class="btn-primary">Сохранить пароль</button>
         </div>
       </div>
     </section>
@@ -2197,8 +2316,9 @@
   <script src="assets/uzum-invoice-template.base64.js"></script>
   <script src="wb-uz-calibration.js?v=2026-07-04"></script>
   <script src="wb-uz-calibration-v4.js?v=2026-07-06"></script>
-  <script src="script.js?v=2026-10-23-wms-bulk"></script>
+  <script src="script.js?v=2026-11-23-autoreply"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-10-22-stock-xlsx"></script>
+  <script src="wb-autoreply.js?v=2026-11-23-autoreply2"></script>
 </body>
 </html>
