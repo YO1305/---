@@ -2140,7 +2140,7 @@
         <div class="stack">
           <div class="card">
             <h2>Автоответ на отзывы Wildberries</h2>
-            <p class="sub">Загружает неотвеченные отзывы WB, отвечает шаблоном или через Gemini и сразу отправляет ответ. Жалобы уходят во вкладку «Ручной ответ». Модерации перед отправкой нет.</p>
+            <p class="sub">В тестовом режиме ответы только генерируются и ждут на вкладке «На проверке». Оценка и даты сверху применяются к прогону, не только к списку. «Подтвердить» отправляет выбранный ответ в WB.</p>
             <div class="ar-toolbar">
               <strong id="arUnansweredCount">Неотвеченных на WB: —</strong>
               <button type="button" id="arRefreshCountBtn" class="btn-secondary">Обновить счётчик</button>
@@ -2160,17 +2160,27 @@
               </label>
               <label>С даты <input id="arFilterFrom" class="input" type="date" /></label>
               <label>По дату <input id="arFilterTo" class="input" type="date" /></label>
+              <p class="hint" style="margin:0;">Оценка и даты действуют и на кнопку «Ответить», и на списки. WB сам по звёздам не фильтрует — отсекаем на нашей стороне.</p>
             </div>
             <div class="ar-tabs" role="tablist">
-              <button type="button" class="btn-secondary active" data-ar-tab="answered">Отвечено</button>
+              <button type="button" class="btn-secondary active" data-ar-tab="pending">На проверке <span id="arBadgePending" class="ar-badge">0</span></button>
+              <button type="button" class="btn-secondary" data-ar-tab="answered">Отправлено в WB</button>
               <button type="button" class="btn-secondary" data-ar-tab="manual">Ручной ответ <span id="arBadgeManual" class="ar-badge">0</span></button>
               <button type="button" class="btn-secondary" data-ar-tab="error">Ошибки <span id="arBadgeError" class="ar-badge">0</span></button>
               <button type="button" class="btn-secondary" data-ar-tab="settings">Настройки</button>
             </div>
           </div>
 
-          <div id="arPaneAnswered" class="card">
-            <h3>Отвечено</h3>
+          <div id="arPanePending" class="card">
+            <div class="ar-pending-head">
+              <h3>На проверке</h3>
+              <button type="button" id="arConfirmAllBtn" class="btn-primary">Подтвердить все</button>
+            </div>
+            <p class="sub">Тестовые ответы. Проверьте текст, при необходимости измените, затем подтвердите — только после этого уходит в WB.</p>
+            <div id="arListPending"></div>
+          </div>
+          <div id="arPaneAnswered" class="card hidden">
+            <h3>Отправлено в WB</h3>
             <div id="arListAnswered"></div>
           </div>
           <div id="arPaneManual" class="card hidden">
@@ -2192,7 +2202,7 @@
               <input id="arTestMode" type="checkbox" checked />
               Тестовый режим — генерировать ответы, но не отправлять в WB
             </label>
-            <p class="hint">Сначала прогоните 30–50 отзывов в тестовом режиме, затем снимите галочку.</p>
+            <p class="hint">В тестовом режиме ответы копятся во вкладке «На проверке». В WB они уходят только после «Подтвердить» / «Подтвердить все».</p>
             <div class="field">
               <label for="arStopWords">Стоп-слова (по одному на строку, поиск по вхождению)</label>
               <textarea id="arStopWords" class="input ar-textarea" rows="8"></textarea>
@@ -2319,6 +2329,6 @@
   <script src="script.js?v=2026-11-23-autoreply"></script>
   <script src="finances.js?v=2026-06-16o"></script>
   <script src="scaleup-yo.js?v=2026-10-22-stock-xlsx"></script>
-  <script src="wb-autoreply.js?v=2026-11-23-autoreply2"></script>
+  <script src="wb-autoreply.js?v=2026-11-23-autoreply3"></script>
 </body>
 </html>
