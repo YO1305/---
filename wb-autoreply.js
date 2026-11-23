@@ -7,6 +7,7 @@
 
   const SECRET_KEY = 'yo_autoreply_secret';
   const COL_FEEDBACKS = 'wb_feedbacks';
+  const DOC_INBOX = 'autoreply_inbox';
   const DOC_TEMPLATES = 'autoreply_templates';
   const DOC_STOPWORDS = 'autoreply_stopwords';
   const DOC_CONFIG = 'autoreply_config';
@@ -251,7 +252,7 @@
     return apiJson('/api/ai-reply', { method: 'POST', body: JSON.stringify(payload) });
   }
 
-  let _fbStore = 'auto'; // wb_feedbacks | system
+  let _inbox = null;
 
   function settingsDoc(id) {
     return dbRef().collection('system').doc(id);
@@ -264,29 +265,33 @@
 
   function friendlyError(err) {
     if (isPermissionError(err)) {
-      return 'Firestore не дал записать отзыв. Обновите страницу после деплоя — ответы сохраняются в разрешённую коллекцию system.';
+      return 'Не удалось сохранить черновик в Firestore. Обновите страницу и попробуйте ещё раз.';
     }
     return err?.message || String(err);
   }
 
-  function feedbackDocRef(id) {
-    const d = dbRef();
-    if (!d) throw new Error('Firestore недоступен.');
-    if (_fbStore === 'system') return d.collection('system').doc(`wbfb_${id}`);
-    return d.collection(COL_FEEDBACKS).doc(id);
+  function safeFbKey(id) {
+    return String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 700);
   }
 
-  async function detectFeedbackStore() {
-    const d = dbRef();
-    if (!d) throw new Error('Firestore недоступен.');
-    if (_fbStore !== 'auto') return;
-    try {
-      await d.collection(COL_FEEDBACKS).limit(1).get();
-      _fbStore = 'wb_feedbacks';
-    } catch (e) {
-      if (isPermissionError(e)) _fbStore = 'system';
-      else throw e;
-    }
+  function sanitizePayload(obj) {
+    if (obj == null) return null;
+    if (Array.isArray(obj)) return obj.map(sanitizePayload).filter((x) => x !== undefined);
+    if (typeof obj !== 'object') return obj;
+    const out = {};
+    Object.keys(obj).forEach((k) => {
+      const v = obj[k];
+      if (v === undefined) return;
+      out[k] = typeof v === 'object' && v !== null && !(v instanceof Date) ? sanitizePayload(v) : v;
+    });
+    return out;
+  }
+
+  async function loadInboxMap() {
+    const snap = await settingsDoc(DOC_INBOX).get();
+    const data = snap.exists ? snap.data() || {} : {};
+    _inbox = data.items && typeof data.items === 'object' ? data.items : {};
+    return _inbox;
   }
 
   async function loadSettings() {
@@ -340,55 +345,38 @@
 
   async function getStored(id) {
     if (!id) return null;
-    await detectFeedbackStore();
-    const snap = await feedbackDocRef(id).get();
-    if (!snap.exists) return null;
-    const data = snap.data() || {};
-    return Object.assign({ id: data.id || id }, data);
+    if (!_inbox) {
+      try {
+        await loadInboxMap();
+      } catch {
+        _inbox = _inbox || {};
+      }
+    }
+    const row = _inbox[safeFbKey(id)];
+    return row ? Object.assign({ id: row.id || id }, row) : null;
   }
 
   async function upsertFeedback(doc) {
     const id = String(doc.id || '').trim();
     if (!id) return;
-    await detectFeedbackStore();
-    const payload = Object.assign({ id, _kind: 'wb_feedback' }, doc);
-    await feedbackDocRef(id).set(payload, { merge: true });
-    if (_fbStore === 'system' && firebase?.firestore?.FieldValue?.arrayUnion) {
-      await settingsDoc('autoreply_index').set(
-        { ids: firebase.firestore.FieldValue.arrayUnion(id) },
-        { merge: true }
-      );
-    }
+    if (!dbRef()) throw new Error('Firestore недоступен.');
+    const key = safeFbKey(id);
+    const payload = sanitizePayload(Object.assign({ id, _kind: 'wb_feedback' }, doc));
+    await settingsDoc(DOC_INBOX).set({ [`items.${key}`]: payload }, { merge: true });
+    if (!_inbox) _inbox = {};
+    _inbox[key] = payload;
   }
 
   async function loadFeedbacksFromDb() {
-    await detectFeedbackStore();
-    const d = dbRef();
-    _cache = [];
-    let snap;
-    if (_fbStore === 'system') {
-      try {
-        snap = await d.collection('system').where('_kind', '==', 'wb_feedback').limit(400).get();
-      } catch {
-        const idx = await settingsDoc('autoreply_index').get();
-        const ids = Array.isArray(idx.data()?.ids) ? idx.data().ids : [];
-        const rows = [];
-        for (const fid of ids.slice(-400)) {
-          const one = await feedbackDocRef(fid).get();
-          if (one.exists) rows.push({ data: () => one.data(), id: one.id });
-        }
-        snap = { forEach(fn) { rows.forEach(fn); } };
-      }
-    } else {
-      try {
-        snap = await d.collection(COL_FEEDBACKS).orderBy('createdDate', 'desc').limit(400).get();
-      } catch {
-        snap = await d.collection(COL_FEEDBACKS).limit(400).get();
-      }
+    try {
+      await loadInboxMap();
+    } catch (e) {
+      console.warn('autoreply inbox', e);
+      _inbox = _inbox || {};
     }
-    snap.forEach((docSnap) => {
-      const data = docSnap.data() || {};
-      _cache.push(Object.assign({ id: data.id || String(docSnap.id).replace(/^wbfb_/, '') }, data));
+    _cache = Object.keys(_inbox).map((k) => {
+      const row = _inbox[k] || {};
+      return Object.assign({ id: row.id || k }, row);
     });
     _cache.sort((a, b) => String(b.createdDate || '').localeCompare(String(a.createdDate || '')));
   }
@@ -591,7 +579,6 @@
     const summary = { loaded: 0, answered: 0, manual: 0, errors: 0, skipped: 0, more: false, testMode: _testMode };
     try {
       await loadSettings();
-      await detectFeedbackStore();
       readFiltersFromDom();
       const fetched = await fetchUnansweredForRun();
       const list = fetched.list;
@@ -603,6 +590,11 @@
         setProgress(i + 1, list.length, _testMode ? 'тестовый режим — в WB не отправляем' : 'отправка в WB');
         try {
           const result = await processOne(list[i], _testMode);
+          if (result && result.id) {
+            const ix = _cache.findIndex((r) => r.id === result.id);
+            if (ix >= 0) _cache[ix] = Object.assign({}, _cache[ix], result);
+            else _cache.push(result);
+          }
           if (result.status === 'answered' || result.status === 'pending') summary.answered += 1;
           else if (result.status === 'manual') summary.manual += 1;
           else if (result.status === 'error') summary.errors += 1;
@@ -635,7 +627,11 @@
       try {
         await refreshUnansweredCount();
       } catch (_) { /* ignore count errors after run */ }
-      await loadFeedbacksFromDb();
+      try {
+        await loadFeedbacksFromDb();
+      } catch (e) {
+        console.warn('autoreply reload', e);
+      }
       if (_testMode) switchTab('pending');
       renderLists();
       setCountLabel();
