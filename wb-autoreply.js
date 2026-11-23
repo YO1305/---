@@ -219,14 +219,42 @@
     return apiJson('/api/ai-reply', { method: 'POST', body: JSON.stringify(payload) });
   }
 
-  function feedbackCol() {
-    const d = dbRef();
-    if (!d) throw new Error('Firestore недоступен.');
-    return d.collection(COL_FEEDBACKS);
-  }
+  let _fbStore = 'auto'; // wb_feedbacks | system
 
   function settingsDoc(id) {
     return dbRef().collection('system').doc(id);
+  }
+
+  function isPermissionError(err) {
+    const m = String(err?.code || err?.message || err);
+    return /permission-denied|insufficient permissions|Missing or insufficient/i.test(m);
+  }
+
+  function friendlyError(err) {
+    if (isPermissionError(err)) {
+      return 'Firestore не дал записать отзыв. Обновите страницу после деплоя — ответы сохраняются в разрешённую коллекцию system.';
+    }
+    return err?.message || String(err);
+  }
+
+  function feedbackDocRef(id) {
+    const d = dbRef();
+    if (!d) throw new Error('Firestore недоступен.');
+    if (_fbStore === 'system') return d.collection('system').doc(`wbfb_${id}`);
+    return d.collection(COL_FEEDBACKS).doc(id);
+  }
+
+  async function detectFeedbackStore() {
+    const d = dbRef();
+    if (!d) throw new Error('Firestore недоступен.');
+    if (_fbStore !== 'auto') return;
+    try {
+      await d.collection(COL_FEEDBACKS).limit(1).get();
+      _fbStore = 'wb_feedbacks';
+    } catch (e) {
+      if (isPermissionError(e)) _fbStore = 'system';
+      else throw e;
+    }
   }
 
   async function loadSettings() {
@@ -280,25 +308,56 @@
 
   async function getStored(id) {
     if (!id) return null;
-    const snap = await feedbackCol().doc(id).get();
-    return snap.exists ? Object.assign({ id: snap.id }, snap.data()) : null;
+    await detectFeedbackStore();
+    const snap = await feedbackDocRef(id).get();
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    return Object.assign({ id: data.id || id }, data);
   }
 
   async function upsertFeedback(doc) {
     const id = String(doc.id || '').trim();
     if (!id) return;
-    await feedbackCol().doc(id).set(Object.assign({ id }, doc), { merge: true });
+    await detectFeedbackStore();
+    const payload = Object.assign({ id, _kind: 'wb_feedback' }, doc);
+    await feedbackDocRef(id).set(payload, { merge: true });
+    if (_fbStore === 'system' && firebase?.firestore?.FieldValue?.arrayUnion) {
+      await settingsDoc('autoreply_index').set(
+        { ids: firebase.firestore.FieldValue.arrayUnion(id) },
+        { merge: true }
+      );
+    }
   }
 
   async function loadFeedbacksFromDb() {
+    await detectFeedbackStore();
+    const d = dbRef();
     _cache = [];
     let snap;
-    try {
-      snap = await feedbackCol().orderBy('createdDate', 'desc').limit(400).get();
-    } catch {
-      snap = await feedbackCol().limit(400).get();
+    if (_fbStore === 'system') {
+      try {
+        snap = await d.collection('system').where('_kind', '==', 'wb_feedback').limit(400).get();
+      } catch {
+        const idx = await settingsDoc('autoreply_index').get();
+        const ids = Array.isArray(idx.data()?.ids) ? idx.data().ids : [];
+        const rows = [];
+        for (const fid of ids.slice(-400)) {
+          const one = await feedbackDocRef(fid).get();
+          if (one.exists) rows.push({ data: () => one.data(), id: one.id });
+        }
+        snap = { forEach(fn) { rows.forEach(fn); } };
+      }
+    } else {
+      try {
+        snap = await d.collection(COL_FEEDBACKS).orderBy('createdDate', 'desc').limit(400).get();
+      } catch {
+        snap = await d.collection(COL_FEEDBACKS).limit(400).get();
+      }
     }
-    snap.forEach((d) => _cache.push(Object.assign({ id: d.id }, d.data())));
+    snap.forEach((docSnap) => {
+      const data = docSnap.data() || {};
+      _cache.push(Object.assign({ id: data.id || String(docSnap.id).replace(/^wbfb_/, '') }, data));
+    });
     _cache.sort((a, b) => String(b.createdDate || '').localeCompare(String(a.createdDate || '')));
   }
 
@@ -462,6 +521,7 @@
     const summary = { loaded: 0, answered: 0, manual: 0, errors: 0, skipped: 0, more: false, testMode: _testMode };
     try {
       await loadSettings();
+      await detectFeedbackStore();
       const listJson = await wbGet('api/v1/feedbacks', {
         isAnswered: 'false',
         take: String(MAX_BATCH),
@@ -483,20 +543,22 @@
           else summary.skipped += 1;
         } catch (e) {
           summary.errors += 1;
-          await upsertFeedback({
-            id: list[i].id,
-            nmId: list[i].nmId,
-            productName: list[i].productName,
-            rating: list[i].rating,
-            text: list[i].text,
-            pros: list[i].pros,
-            cons: list[i].cons,
-            userName: list[i].userName,
-            createdDate: list[i].createdDate,
-            status: 'error',
-            error: e.message || String(e),
-            source: 'ai'
-          });
+          try {
+            await upsertFeedback({
+              id: list[i].id,
+              nmId: list[i].nmId,
+              productName: list[i].productName,
+              rating: list[i].rating,
+              text: list[i].text,
+              pros: list[i].pros,
+              cons: list[i].cons,
+              userName: list[i].userName,
+              createdDate: list[i].createdDate,
+              status: 'error',
+              error: friendlyError(e),
+              source: 'ai'
+            });
+          } catch (_) { /* ignore */ }
         }
         await sleep(WB_GAP_MS);
       }
@@ -516,7 +578,7 @@
         `Загружено: ${summary.loaded}. Отвечено: ${summary.answered}. Ручной ответ: ${summary.manual}. Ошибок: ${summary.errors}. Пропущено: ${summary.skipped}.${mode}${extra}`
       );
     } catch (e) {
-      alert(e.message || String(e));
+      alert(friendlyError(e));
     } finally {
       _busy = false;
       if (btn) btn.disabled = false;
@@ -662,7 +724,7 @@
       await loadFeedbacksFromDb();
       renderLists();
     } catch (e) {
-      alert(e.message || String(e));
+      alert(friendlyError(e));
     }
   }
 
@@ -672,7 +734,7 @@
         await refreshUnansweredCount();
         setCountLabel();
       } catch (e) {
-        alert(e.message || String(e));
+        alert(friendlyError(e));
       }
     });
     document.getElementById('arRunBtn')?.addEventListener('click', () => void runBatch());
