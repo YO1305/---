@@ -120,9 +120,27 @@
     return Number.isFinite(ms) ? String(Math.floor(ms / 1000)) : '';
   }
 
+  function dateKey(value) {
+    if (!value) return '';
+    if (typeof value === 'object' && typeof value.toDate === 'function') {
+      try {
+        return value.toDate().toISOString().slice(0, 10);
+      } catch {
+        return '';
+      }
+    }
+    const s = String(value);
+    const iso = s.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const ru = s.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+    if (ru) return `${ru[3]}-${ru[2]}-${ru[1]}`;
+    const ms = Date.parse(s);
+    return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : '';
+  }
+
   function matchesFilters(fb, rating, from, to) {
     if (rating && Number(fb.rating) !== Number(rating)) return false;
-    const d = String(fb.createdDate || fb.answeredAt || '').slice(0, 10);
+    const d = dateKey(fb.createdDate || fb.answeredAt);
     if (from && d && d < from) return false;
     if (to && d && d > to) return false;
     return true;
@@ -276,21 +294,52 @@
 
   function sanitizePayload(obj) {
     if (obj == null) return null;
+    if (obj instanceof Date) return obj.toISOString();
+    if (typeof obj === 'object' && typeof obj.toDate === 'function') {
+      try {
+        return obj.toDate().toISOString();
+      } catch {
+        return String(obj);
+      }
+    }
     if (Array.isArray(obj)) return obj.map(sanitizePayload).filter((x) => x !== undefined);
     if (typeof obj !== 'object') return obj;
     const out = {};
     Object.keys(obj).forEach((k) => {
       const v = obj[k];
       if (v === undefined) return;
-      out[k] = typeof v === 'object' && v !== null && !(v instanceof Date) ? sanitizePayload(v) : v;
+      out[k] = typeof v === 'object' && v !== null ? sanitizePayload(v) : v;
     });
     return out;
   }
 
+  function readLocalInbox() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('yo_ar_inbox') || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeLocalInbox() {
+    try {
+      localStorage.setItem('yo_ar_inbox', JSON.stringify(_inbox || {}));
+    } catch (_) { /* quota */ }
+  }
+
   async function loadInboxMap() {
-    const snap = await settingsDoc(DOC_INBOX).get();
-    const data = snap.exists ? snap.data() || {} : {};
-    _inbox = data.items && typeof data.items === 'object' ? data.items : {};
+    const local = readLocalInbox();
+    let remote = {};
+    try {
+      const snap = await settingsDoc(DOC_INBOX).get();
+      const data = snap.exists ? snap.data() || {} : {};
+      if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) remote = data.items;
+    } catch (e) {
+      console.warn('autoreply inbox remote', e);
+    }
+    _inbox = Object.assign({}, remote, local, _inbox && typeof _inbox === 'object' ? _inbox : {});
+    writeLocalInbox();
     return _inbox;
   }
 
@@ -362,22 +411,41 @@
     if (!dbRef()) throw new Error('Firestore недоступен.');
     const key = safeFbKey(id);
     const payload = sanitizePayload(Object.assign({ id, _kind: 'wb_feedback' }, doc));
-    await settingsDoc(DOC_INBOX).set({ [`items.${key}`]: payload }, { merge: true });
-    if (!_inbox) _inbox = {};
+    if (!_inbox) {
+      try {
+        await loadInboxMap();
+      } catch {
+        _inbox = {};
+      }
+    }
     _inbox[key] = payload;
+    writeLocalInbox();
+    await settingsDoc(DOC_INBOX).set({ items: _inbox }, { merge: true });
+  }
+
+  function rowsFromInbox() {
+    return Object.keys(_inbox || {}).map((k) => {
+      const row = _inbox[k] || {};
+      return Object.assign({ id: row.id || k }, row);
+    });
   }
 
   async function loadFeedbacksFromDb() {
+    const keep = Array.isArray(_cache) ? _cache.slice() : [];
     try {
       await loadInboxMap();
     } catch (e) {
       console.warn('autoreply inbox', e);
       _inbox = _inbox || {};
     }
-    _cache = Object.keys(_inbox).map((k) => {
-      const row = _inbox[k] || {};
-      return Object.assign({ id: row.id || k }, row);
+    const byId = new Map();
+    keep.forEach((r) => {
+      if (r && r.id) byId.set(String(r.id), r);
     });
+    rowsFromInbox().forEach((r) => {
+      if (r && r.id) byId.set(String(r.id), Object.assign({}, byId.get(String(r.id)) || {}, r));
+    });
+    _cache = Array.from(byId.values());
     _cache.sort((a, b) => String(b.createdDate || '').localeCompare(String(a.createdDate || '')));
   }
 
@@ -634,6 +702,9 @@
       }
       if (_testMode) switchTab('pending');
       renderLists();
+      if (_testMode && !_cache.some(isPendingRow)) {
+        console.warn('autoreply pending empty after run', { inbox: Object.keys(_inbox || {}).length, cache: _cache.length });
+      }
       setCountLabel();
       const extra = summary.more ? ' Нажмите ещё раз — есть следующие 100 подходящих.' : '';
       const starsHint = _filterRating ? ` Фильтр: ${_filterRating}★ (просмотрено ${summary.scanned || list.length} с WB).` : '';
@@ -734,10 +805,10 @@
   }
 
   function renderLists() {
-    const pending = applyFilters(_cache.filter(isPendingRow));
+    const pending = _cache.filter(isPendingRow);
     const answered = applyFilters(_cache.filter(isSentRow));
-    const manual = applyFilters(_cache.filter((r) => r.status === 'manual'));
-    const errors = applyFilters(_cache.filter((r) => r.status === 'error'));
+    const manual = _cache.filter((r) => r.status === 'manual');
+    const errors = _cache.filter((r) => r.status === 'error');
     renderPendingList(document.getElementById('arListPending'), pending);
     renderTable(document.getElementById('arListAnswered'), answered, 'answered');
     renderTable(document.getElementById('arListManual'), manual, 'manual');
