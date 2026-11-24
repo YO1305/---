@@ -17,7 +17,9 @@ The user has granted standing permission: after completing meaningful code chang
 2. Stage relevant files (never `.env`, credentials, secrets, `node_modules`)
 3. Commit with a concise message focused on why
 4. `git push -u origin HEAD` (or the tracked remote/branch) — **push is allowed**
-5. Report the commit hash and that push succeeded (or the error)
+5. Open or update the PR, then **merge it into `main` immediately** (`gh pr merge --merge`) so Vercel production `https://yo-unit.vercel.app` updates. Do not wait for «мержи».
+6. Confirm the Production deployment succeeded and tell the user the live URL.
+7. Report the commit hash, that push succeeded, and that production was updated (or the error)
 
 ## Safety
 - Never `git push --force` to main/master unless the user explicitly asks in that message
